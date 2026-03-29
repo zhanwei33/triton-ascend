@@ -294,6 +294,9 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleIfOp(scf::IfOp ifOp, cfg::Contro
   // 创建 if 后面的汇合块
   auto *mergeBB = cfg.createBasicBlock(BlockType::NORMAL, parentStructure);
 
+  // 设置 ifCondBB 的出口块为 mergeBB
+  ifCondBB->setExitBlock(mergeBB);
+
   // 处理 then 分支
   cfg::BasicBlock *thenExitBB = nullptr;
   if (!ifOp.getThenRegion().empty()) {
@@ -354,6 +357,9 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleForOp(scf::ForOp forOp, cfg::Con
   // 创建循环出口块
   auto *loopExitBB = cfg.createBasicBlock(BlockType::LOOP_EXIT, parentStructure);
 
+  // 设置 forCondBB 的出口块为 loopExitBB
+  forCondBB->setExitBlock(loopExitBB);
+
   // 构建循环体的 CFG
   auto result = buildForRegion(forOp.getRegion(), cfg, loopBodyEntryBB, forCondBB);
 
@@ -394,6 +400,9 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleWhileOp(scf::WhileOp whileOp, cf
 
   // 创建循环出口块
   auto *loopExitBB = cfg.createBasicBlock(BlockType::LOOP_EXIT, parentStructure);
+
+  // 设置 whileCondBB 的出口块为 loopExitBB
+  whileCondBB->setExitBlock(loopExitBB);
 
   // 构建 before 区域的 CFG（条件计算区域）
   // before 区域以一个 scf.condition 操作结束

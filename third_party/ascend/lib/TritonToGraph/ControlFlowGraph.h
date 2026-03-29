@@ -112,6 +112,11 @@ public:
   BasicBlock *getParentStructure() const { return parentStructure; }
   void setParentStructure(BasicBlock *parent) { parentStructure = parent; }
 
+  // 对应控制流结构的出口块（用于 IF_COND/FOR_COND/WHILE_COND）
+  // 指向 if/for/while 结束后到达的基本块
+  BasicBlock *getExitBlock() const { return exitBlock; }
+  void setExitBlock(BasicBlock *exit) { exitBlock = exit; }
+
   // Instruction 操作
   void addInstruction(std::unique_ptr<Instruction> inst);
   Instruction *getInstruction(size_t idx) const;
@@ -146,6 +151,7 @@ private:
   size_t id;                                          // 唯一ID
   BlockType type;                                     // 块类型
   BasicBlock *parentStructure;                        // 外层结构（loop/if）的 basic block
+  BasicBlock *exitBlock = nullptr;                    // 对应控制流结构的出口块（用于 IF_COND/FOR_COND/WHILE_COND）
   SmallVector<std::unique_ptr<Instruction>> instructions;  // 指令列表
   SmallVector<BasicBlock *> successors;               // 后继块指针列表
   SmallVector<BasicBlock *> predecessors;             // 前驱块指针列表
