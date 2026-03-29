@@ -28,6 +28,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <deque>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -269,10 +270,10 @@ void ControlFlowGraph::addEdge(BasicBlock *from, BasicBlock *to) {
 // 判断是否为回边（从循环体回到循环头）
 bool ControlFlowGraph::isBackEdge(BasicBlock *from, BasicBlock *to) const {
   // 回边定义：指向 FOR_COND/WHILE_COND 且 from 是该循环的后代
-  if (to->getType() != BlockType::FOR_COND && 
-      to->getType() != BlockType::WHILE_COND) 
+  if (to->getType() != BlockType::FOR_COND &&
+      to->getType() != BlockType::WHILE_COND)
     return false;
-  
+
   // 检查 from 是否属于以 to 为头的循环
   // 方法：检查 from 的 parentStructure 链是否包含 to
   BasicBlock *current = from;
@@ -281,6 +282,81 @@ bool ControlFlowGraph::isBackEdge(BasicBlock *from, BasicBlock *to) const {
     current = current->getParentStructure();
   }
   return false;
+}
+
+void ControlFlowGraph::searchNormalBlock(BasicBlock* block, OperationVisitor callback) const
+{
+  for (const auto &inst : block->getInstructions()) {
+    if (Operation *op = inst->getOperation()) {
+      callback(op);
+    }
+  }
+}
+
+void ControlFlowGraph::searchCondBlock(BasicBlock *block, OperationVisitor callback) const
+{
+  if (!block)
+    return;
+
+  // 获取该 Cond block 对应的 exit block（停止条件）
+  BasicBlock *exitBlock = block->getExitBlock();
+
+  // 遍历 Cond block 的每一个 successor
+  for (BasicBlock *succ : block->getSuccessors()) {
+    if (!succ)
+      continue;
+
+    // 从每个 successor 开始，沿着 block 链条向下遍历
+    // 使用队列进行 BFS 遍历该分支
+    std::deque<BasicBlock *> workList;
+    workList.push_back(succ);
+
+    while (!workList.empty()) {
+      BasicBlock *current = workList.front();
+      workList.pop_front();
+
+      // 如果碰到 exit block，停止该分支的遍历
+      if (current == exitBlock)
+        break;
+
+      // 对当前 block 调用 searchBlock
+      searchBlock(current, callback);
+
+      if(current->getType() == BlockType::NORMAL)
+      {
+        // 将后继加入队列（排除回边）
+        for (BasicBlock *next : current->getSuccessors()) {
+          // 跳过回边避免无限循环
+          if (isBackEdge(current, next))
+            continue;
+          workList.push_back(next);
+        }
+      }
+      else if (block->getType() == BlockType::IF_COND ||
+              block->getType() == BlockType::FOR_COND ||
+              block->getType() == BlockType::WHILE_COND) 
+      {
+        BasicBlock *next = block->getExitBlock();
+        if (isBackEdge(current, next))
+          continue;
+        workList.push_back(next);
+      }
+    }
+  }
+}
+
+voiod ControlFlowGraph::searchBlock(BasicBlock *block, OperationVisitor callback) const
+{
+  if (block->getType() == BlockType::NORMAL) 
+  {
+    searchNormalBlock(block, callback);
+  } 
+  else if (block->getType() == BlockType::IF_COND ||
+          block->getType() == BlockType::FOR_COND ||
+          block->getType() == BlockType::WHILE_COND) 
+  {
+    searchCondBlock(block, callback);
+  }
 }
 
 void ControlFlowGraph::traverse(BlockVisitor visitor) {

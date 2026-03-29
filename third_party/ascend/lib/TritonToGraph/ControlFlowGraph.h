@@ -30,6 +30,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "MemorySSA.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -208,6 +209,16 @@ public:
   }
 
   bool isBackEdge(BasicBlock *from, BasicBlock *to) const;
+
+  // 结构化搜索 API
+  // 从起始块开始，沿着 successor 顺序向下结构化搜索
+  // NORMAL 块：遍历每个 Instruction，调用 callback 传入 Operation*
+  // IF_COND/FOR_COND/WHILE_COND 块：递归访问每个 successor
+  // 遇到 exitBlock 时停止
+  using OperationVisitor = llvm::function_ref<void(Operation *)>;
+  void searchNormalBlock(BasicBlock* block, OperationVisitor callback) const;
+  void searchCondBlock(BasicBlock *block, OperationVisitor callback) const;
+  void searchBlock(BasicBlock *block, OperationVisitor callback) const;
 
   // 打印
   void print(raw_ostream &os) const;
