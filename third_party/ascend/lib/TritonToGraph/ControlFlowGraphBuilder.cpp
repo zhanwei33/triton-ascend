@@ -503,7 +503,7 @@ std::unique_ptr<OperationPass<ModuleOp>> mlir::triton::cfg::createBuildCFGPass()
 //===----------------------------------------------------------------------===//
 
 SmallVector<cfg::BasicBlock *>
-ControlFlowGraphBuilderWithQueries::collectIfCondBlocks(cfg::ControlFlowGraph &cfg) {
+ControlFlowGraphBuilder::collectIfCondBlocks(cfg::ControlFlowGraph &cfg) {
   SmallVector<cfg::BasicBlock *> ifCondBlocks;
 
   // 遍历 CFG 中的所有基本块
@@ -518,7 +518,7 @@ ControlFlowGraphBuilderWithQueries::collectIfCondBlocks(cfg::ControlFlowGraph &c
 }
 
 SmallVector<cfg::BasicBlock *>
-ControlFlowGraphBuilderWithQueries::collectForCondBlocks(cfg::ControlFlowGraph &cfg) {
+ControlFlowGraphBuilder::collectForCondBlocks(cfg::ControlFlowGraph &cfg) {
   SmallVector<cfg::BasicBlock *> forCondBlocks;
 
   // 遍历 CFG 中的所有基本块
@@ -533,7 +533,7 @@ ControlFlowGraphBuilderWithQueries::collectForCondBlocks(cfg::ControlFlowGraph &
 }
 
 std::optional<IfYieldResultMapping>
-ControlFlowGraphBuilderWithQueries::getIfYieldResultMapping(cfg::BasicBlock *ifCondBB) {
+ControlFlowGraphBuilder::getIfYieldResultMapping(cfg::BasicBlock *ifCondBB) {
   // 验证输入基本块类型
   if (!ifCondBB || ifCondBB->getType() != BlockType::IF_COND) {
     return std::nullopt;
@@ -592,7 +592,7 @@ ControlFlowGraphBuilderWithQueries::getIfYieldResultMapping(cfg::BasicBlock *ifC
 }
 
 std::optional<ForYieldIterArgMapping>
-ControlFlowGraphBuilderWithQueries::getForYieldIterArgMapping(cfg::BasicBlock *forCondBB) {
+ControlFlowGraphBuilder::getForYieldIterArgMapping(cfg::BasicBlock *forCondBB) {
   // 验证输入基本块类型
   if (!forCondBB || forCondBB->getType() != BlockType::FOR_COND) {
     return std::nullopt;

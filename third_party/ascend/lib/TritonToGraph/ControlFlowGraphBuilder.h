@@ -66,6 +66,30 @@ protected:
   std::unique_ptr<cfg::ControlFlowGraph> buildForFunction(triton::FuncOp func);
 };
 
+// 添加数据结构定义
+// IF_COND 的 yield value 和 result value 的对应关系
+struct IfYieldResultMapping {
+  // then 分支的 yield values（来自 scf.yield 操作的操作数）
+  SmallVector<Value> thenYieldValues;
+  // else 分支的 yield values（如果有 else 分支）
+  SmallVector<Value> elseYieldValues;
+  // if 操作的 result values
+  SmallVector<Value> resultValues;
+  // 对应关系: resultValues[i] 对应 thenYieldValues[i] 或 elseYieldValues[i]
+};
+
+// FOR_COND 的 yield value 和 iter args value 的对应关系
+struct ForYieldIterArgMapping {
+  // yield 操作的 values（来自循环体末尾的 scf.yield）
+  SmallVector<Value> yieldValues;
+  // iter_args（循环初始参数，对应 for 操作的 iter_args）
+  SmallVector<Value> iterArgValues;
+  // for 操作的 result values
+  SmallVector<Value> resultValues;
+  // 对应关系: iterArgValues[i] 在循环体中使用时被更新，yieldValues[i] 是新的值
+  // resultValues[i] 对应最后一次迭代的 yieldValues[i]
+};
+
 // 独立的 CFG 构建器类（用于非 Pass 场景）
 class ControlFlowGraphBuilder {
 public:
@@ -108,43 +132,6 @@ public:
   // 创建一个新的指令并添加到 basic block
   cfg::Instruction *createInstruction(Operation *op, cfg::BasicBlock *parentBlock, cfg::ControlFlowGraph &cfg);
 
-  // 获取下一个指令 ID
-  size_t getNextInstructionId() { return nextInstructionId++; }
-
-private:
-  size_t nextInstructionId = 0;      // 下一个指令 ID
-};
-
-// 创建 Pass 的工厂函数
-std::unique_ptr<OperationPass<mlir::ModuleOp>> createBuildCFGPass();
-
-// 添加数据结构定义
-// IF_COND 的 yield value 和 result value 的对应关系
-struct IfYieldResultMapping {
-  // then 分支的 yield values（来自 scf.yield 操作的操作数）
-  SmallVector<Value> thenYieldValues;
-  // else 分支的 yield values（如果有 else 分支）
-  SmallVector<Value> elseYieldValues;
-  // if 操作的 result values
-  SmallVector<Value> resultValues;
-  // 对应关系: resultValues[i] 对应 thenYieldValues[i] 或 elseYieldValues[i]
-};
-
-// FOR_COND 的 yield value 和 iter args value 的对应关系
-struct ForYieldIterArgMapping {
-  // yield 操作的 values（来自循环体末尾的 scf.yield）
-  SmallVector<Value> yieldValues;
-  // iter_args（循环初始参数，对应 for 操作的 iter_args）
-  SmallVector<Value> iterArgValues;
-  // for 操作的 result values
-  SmallVector<Value> resultValues;
-  // 对应关系: iterArgValues[i] 在循环体中使用时被更新，yieldValues[i] 是新的值
-  // resultValues[i] 对应最后一次迭代的 yieldValues[i]
-};
-
-// 扩展 ControlFlowGraphBuilder 类，添加新的查询方法
-class ControlFlowGraphBuilderWithQueries : public ControlFlowGraphBuilder {
-public:
   // 1. 快速收集所有的 IF_COND 基本块
   // 遍历 CFG 中所有基本块，返回类型为 IF_COND 的基本块列表
   SmallVector<cfg::BasicBlock *> collectIfCondBlocks(cfg::ControlFlowGraph &cfg);
@@ -162,7 +149,16 @@ public:
   // 参数: FOR_COND 类型的基本块
   // 返回: ForYieldIterArgMapping 结构体，包含 yield values、iter_args 和 result values
   std::optional<ForYieldIterArgMapping> getForYieldIterArgMapping(cfg::BasicBlock *forCondBB);
+
+  // 获取下一个指令 ID
+  size_t getNextInstructionId() { return nextInstructionId++; }
+
+private:
+  size_t nextInstructionId = 0;      // 下一个指令 ID
 };
+
+// 创建 Pass 的工厂函数
+std::unique_ptr<OperationPass<mlir::ModuleOp>> createBuildCFGPass();
 
 }
 } // namespace triton
