@@ -345,7 +345,7 @@ void ControlFlowGraph::searchCondBlock(BasicBlock *block, OperationVisitor callb
   }
 }
 
-voiod ControlFlowGraph::searchBlock(BasicBlock *block, OperationVisitor callback) const
+void ControlFlowGraph::searchBlock(BasicBlock *block, OperationVisitor callback) const
 {
   if (block->getType() == BlockType::NORMAL) 
   {

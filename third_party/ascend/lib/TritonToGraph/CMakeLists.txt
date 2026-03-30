@@ -3,7 +3,6 @@ add_triton_library(TritonToGraph
   ControlFlowGraph.cpp
   ControlFlowGraphBuilder.cpp
   DataflowGraph.cpp
-  InterProceduralCFG.cpp
   MemorySsaBuilder.cpp
   Passes.cpp
 
