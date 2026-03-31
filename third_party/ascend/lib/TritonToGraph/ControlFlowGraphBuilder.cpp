@@ -138,10 +138,43 @@ ControlFlowGraphBuilder::buildForRegion(Region &region, cfg::ControlFlowGraph &c
   cfg::BasicBlock *currentBB = entryBlock;
   cfg::BasicBlock *lastBlock = entryBlock;
 
+  // 首先为 region 中的所有 block 创建对应的 BasicBlock 映射
+  // 这样可以确保在处理 cf.cond_br 等跳转指令时目标块已存在
+  for (Block &block : region) {
+    if (!blockToBasicBlockMap.count(&block)) {
+      auto *bb = cfg.createBasicBlock(cfg::BlockType::NORMAL, parentStructure);
+      registerBlockMapping(&block, bb);
+    }
+  }
+
   // 遍历 region 中的所有 block
   for (Block &block : region) {
-    // 处理当前 block 的操作
-    currentBB = processBlock(block, cfg, currentBB, parentStructure);
+    // 获取该 block 对应的 BasicBlock
+    cfg::BasicBlock *blockBB = blockToBasicBlockMap[&block];
+
+    // 如果是第一个 block，合并到 entryBlock
+    if (blockBB == blockToBasicBlockMap.lookup(&region.front())) {
+      // 将 entryBlock 的指令移动到 blockBB（或者反过来）
+      // 这里简化处理：使用 entryBlock 继续处理
+      currentBB = processBlock(block, cfg, currentBB, parentStructure);
+    } else {
+      // 确保从上一个 block 的结尾连接到这个 block
+      if (lastBlock && lastBlock != blockBB) {
+        // 检查是否已经有边连接
+        bool hasEdge = false;
+        for (auto *succ : lastBlock->getSuccessors()) {
+          if (succ == blockBB) {
+            hasEdge = true;
+            break;
+          }
+        }
+        if (!hasEdge) {
+          cfg.addEdge(lastBlock, blockBB);
+        }
+      }
+      currentBB = processBlock(block, cfg, blockBB, parentStructure);
+    }
+
     if (currentBB) {
       lastBlock = currentBB;
     }
@@ -206,11 +239,17 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
       createInstruction(&op, currentBB, cfg);
     }
     else if (isa<cf::CondBranchOp>(op)) {
-      // cf.cond_br 条件分支
-      createInstruction(&op, currentBB, cfg);
+      // cf.cond_br 条件分支 - 创建专门的 COND_BR 块并处理
+      auto *condBrBB = cfg.createBasicBlock(BlockType::COND_BR, parentStructure);
 
-      // 注意：cf.cond_br 的目标块会在后续处理中连接
-      // 这里我们依赖于 MLIR 的 block 结构已经建立
+      // 将 cond_br 指令添加到 condBrBB
+      createInstruction(&op, condBrBB, cfg);
+
+      // 连接当前块到 COND_BR 块
+      cfg.addEdge(currentBB, condBrBB);
+
+      // 处理 cond_br 操作，返回后续的基本块
+      currentBB = handleCondBranchOp(cast<cf::CondBranchOp>(op), cfg, condBrBB, parentStructure);
     }
     else if (isa<cf::BranchOp>(op)) {
       // cf.br 无条件跳转
@@ -492,6 +531,128 @@ ControlFlowGraphBuilder::buildForModule(ModuleOp module) {
   }
 
   return cfgs;
+}
+
+cfg::BasicBlock *ControlFlowGraphBuilder::handleCondBranchOp(cf::CondBranchOp condBrOp,
+                                                             cfg::ControlFlowGraph &cfg,
+                                                             cfg::BasicBlock *condBrBB,
+                                                             cfg::BasicBlock *parentStructure) {
+  // 创建汇合块（用于 cond_br 之后的代码）
+  auto *mergeBB = cfg.createBasicBlock(BlockType::NORMAL, parentStructure);
+
+  // 设置 condBrBB 的出口块为 mergeBB
+  condBrBB->setExitBlock(mergeBB);
+
+  // 获取条件值
+  Value condition = condBrOp.getCondition();
+
+  // 获取 true 分支的目标块和参数
+  Block *trueDest = condBrOp.getTrueDest();
+  SmallVector<Value> trueOperands(condBrOp.getTrueDestOperands());
+
+  // 获取 false 分支的目标块和参数
+  Block *falseDest = condBrOp.getFalseDest();
+  SmallVector<Value> falseOperands(condBrOp.getFalseDestOperands());
+
+  LLVM_DEBUG(llvm::dbgs() << "  CondBr: condition=" << condition << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "    True dest: " << trueDest << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "    False dest: " << falseDest << "\n");
+
+  // 为 true 分支创建入口块（如果目标块还没有对应的 BasicBlock）
+  cfg::BasicBlock *trueEntryBB = getOrCreateBasicBlockForBlock(trueDest, cfg, parentStructure);
+
+  // 为 false 分支创建入口块
+  cfg::BasicBlock *falseEntryBB = getOrCreateBasicBlockForBlock(falseDest, cfg, parentStructure);
+
+  // 连接 COND_BR 块到两个分支
+  cfg.addEdge(condBrBB, trueEntryBB);
+  cfg.addEdge(condBrBB, falseEntryBB);
+
+  // 存储分支信息到指令的 MemorySSAInfo 中（用于后续查询）
+  if (condBrBB->getNumInstructions() > 0) {
+    cfg::Instruction *inst = condBrBB->getInstruction(0);
+    // 可以通过 inst->getMemorySSAInfo() 存储额外信息
+  }
+
+  // 返回汇合块，后续代码将在此块中继续
+  return mergeBB;
+}
+
+cfg::BasicBlock *ControlFlowGraphBuilder::getOrCreateBasicBlockForBlock(
+    Block *block, cfg::ControlFlowGraph &cfg, cfg::BasicBlock *parentStructure) {
+  // 检查是否已经有对应的 BasicBlock
+  auto it = blockToBasicBlockMap.find(block);
+  if (it != blockToBasicBlockMap.end()) {
+    return it->second;
+  }
+
+  // 创建新的 BasicBlock
+  auto *bb = cfg.createBasicBlock(BlockType::NORMAL, parentStructure);
+
+  // 注册映射关系
+  registerBlockMapping(block, bb);
+
+  return bb;
+}
+
+void ControlFlowGraphBuilder::registerBlockMapping(Block *mlirBlock, cfg::BasicBlock *cfgBlock) {
+  blockToBasicBlockMap[mlirBlock] = cfgBlock;
+}
+
+SmallVector<cfg::BasicBlock *>
+ControlFlowGraphBuilder::collectCondBrBlocks(cfg::ControlFlowGraph &cfg) {
+  SmallVector<cfg::BasicBlock *> condBrBlocks;
+
+  // 遍历 CFG 中的所有基本块
+  for (size_t i = 0; i < cfg.getNumBlocks(); ++i) {
+    cfg::BasicBlock *bb = cfg.getBasicBlock(i);
+    if (bb && bb->getType() == BlockType::COND_BR) {
+      condBrBlocks.push_back(bb);
+    }
+  }
+
+  return condBrBlocks;
+}
+
+std::optional<CondBranchMapping>
+ControlFlowGraphBuilder::getCondBranchMapping(cfg::BasicBlock *condBrBB) {
+  // 验证输入基本块类型
+  if (!condBrBB || condBrBB->getType() != BlockType::COND_BR) {
+    return std::nullopt;
+  }
+
+  // 获取 COND_BR 块中的指令（应该包含 cf.cond_br 操作）
+  if (condBrBB->getNumInstructions() == 0) {
+    return std::nullopt;
+  }
+
+  cfg::Instruction *inst = condBrBB->getInstruction(0);
+  Operation *op = inst->getOperation();
+
+  // 确保是 cf.cond_br 操作
+  auto condBrOp = dyn_cast<cf::CondBranchOp>(op);
+  if (!condBrOp) {
+    return std::nullopt;
+  }
+
+  CondBranchMapping mapping;
+
+  // 收集条件值
+  mapping.condition = condBrOp.getCondition();
+
+  // 收集 true 分支信息
+  mapping.trueDest = condBrOp.getTrueDest();
+  for (Value operand : condBrOp.getTrueDestOperands()) {
+    mapping.trueOperands.push_back(operand);
+  }
+
+  // 收集 false 分支信息
+  mapping.falseDest = condBrOp.getFalseDest();
+  for (Value operand : condBrOp.getFalseDestOperands()) {
+    mapping.falseOperands.push_back(operand);
+  }
+
+  return mapping;
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> mlir::triton::cfg::createBuildCFGPass() {

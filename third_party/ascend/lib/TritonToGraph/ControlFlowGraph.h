@@ -94,6 +94,7 @@ enum class BlockType {
   IF_COND,        // if 条件判断块（包含单个 scf.if 指令）
   FOR_COND,       // for 循环头块（包含单个 scf.for 指令）
   WHILE_COND,     // while 条件块（包含单个 scf.while 指令）
+  COND_BR,        // cf.cond_br 条件分支块（包含单个 cf.cond_br 指令）
   LOOP_BODY,      // 循环体块
   LOOP_EXIT,      // 循环出口块
 };

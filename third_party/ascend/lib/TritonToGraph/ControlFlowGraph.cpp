@@ -55,8 +55,8 @@ void Instruction::print(raw_ostream &os, unsigned indent) const {
 
   if (operation) {
     BlockType parentType = parentBlock->getType();
-    if (parentType == BlockType::IF_COND || parentType == BlockType::FOR_COND || 
-        parentType == BlockType::WHILE_COND) {
+    if (parentType == BlockType::IF_COND || parentType == BlockType::FOR_COND ||
+        parentType == BlockType::WHILE_COND || parentType == BlockType::COND_BR) {
       size_t newlinePos = instStr.find('\n');
       if (newlinePos != std::string::npos) {
         instStr = instStr.substr(0, newlinePos) + " ...";
@@ -120,6 +120,7 @@ StringRef BasicBlock::getTypeString() const {
   case BlockType::IF_COND: return "IF_COND";
   case BlockType::FOR_COND: return "FOR_COND";
   case BlockType::WHILE_COND: return "WHILE_COND";
+  case BlockType::COND_BR: return "COND_BR";
   case BlockType::LOOP_BODY: return "LOOP_BODY";
   case BlockType::LOOP_EXIT: return "LOOP_EXIT";
   }

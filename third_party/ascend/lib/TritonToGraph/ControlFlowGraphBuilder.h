@@ -90,6 +90,20 @@ struct ForYieldIterArgMapping {
   // resultValues[i] 对应最后一次迭代的 yieldValues[i]
 };
 
+// COND_BR 的 true/false 分支信息
+struct CondBranchMapping {
+  // true 分支的目标块参数值（来自 cf.cond_br 的 trueOperands）
+  SmallVector<Value> trueOperands;
+  // false 分支的目标块参数值（来自 cf.cond_br 的 falseOperands）
+  SmallVector<Value> falseOperands;
+  // 条件值
+  Value condition;
+  // true 分支目标块
+  Block *trueDest;
+  // false 分支目标块
+  Block *falseDest;
+};
+
 // 独立的 CFG 构建器类（用于非 Pass 场景）
 class ControlFlowGraphBuilder {
 public:
@@ -129,6 +143,11 @@ public:
                                   cfg::BasicBlock *currentBB,
                                   cfg::BasicBlock *parentStructure = nullptr);
 
+  // 处理 cf.cond_br 操作，返回条件分支后面的基本块
+  cfg::BasicBlock *handleCondBranchOp(cf::CondBranchOp condBrOp, cfg::ControlFlowGraph &cfg,
+                                       cfg::BasicBlock *currentBB,
+                                       cfg::BasicBlock *parentStructure = nullptr);
+
   // 创建一个新的指令并添加到 basic block
   cfg::Instruction *createInstruction(Operation *op, cfg::BasicBlock *parentBlock, cfg::ControlFlowGraph &cfg);
 
@@ -150,8 +169,30 @@ public:
   // 返回: ForYieldIterArgMapping 结构体，包含 yield values、iter_args 和 result values
   std::optional<ForYieldIterArgMapping> getForYieldIterArgMapping(cfg::BasicBlock *forCondBB);
 
+  // 5. 快速收集所有的 COND_BR 基本块
+  // 遍历 CFG 中所有基本块，返回类型为 COND_BR 的基本块列表
+  SmallVector<cfg::BasicBlock *> collectCondBrBlocks(cfg::ControlFlowGraph &cfg);
+
+  // 6. 获取 COND_BR 对应的条件分支信息
+  // 参数: COND_BR 类型的基本块
+  // 返回: CondBranchMapping 结构体，包含条件、目标块和参数信息
+  std::optional<CondBranchMapping> getCondBranchMapping(cfg::BasicBlock *condBrBB);
+
   // 获取下一个指令 ID
   size_t getNextInstructionId() { return nextInstructionId++; }
+
+private:
+  size_t nextInstructionId = 0;      // 下一个指令 ID
+
+  // MLIR Block 到 CFG BasicBlock 的映射（用于处理 cf.cond_br 等跳转指令）
+  DenseMap<Block *, cfg::BasicBlock *> blockToBasicBlockMap;
+
+  // 获取或创建 Block 对应的 BasicBlock
+  cfg::BasicBlock *getOrCreateBasicBlockForBlock(Block *block, cfg::ControlFlowGraph &cfg,
+                                                  cfg::BasicBlock *parentStructure = nullptr);
+
+  // 注册 Block 到 BasicBlock 的映射
+  void registerBlockMapping(Block *mlirBlock, cfg::BasicBlock *cfgBlock);
 
 private:
   size_t nextInstructionId = 0;      // 下一个指令 ID
