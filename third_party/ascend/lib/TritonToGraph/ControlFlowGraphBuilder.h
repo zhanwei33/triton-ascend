@@ -104,6 +104,14 @@ struct CondBranchMapping {
   Block *falseDest;
 };
 
+// BR 的分支信息
+struct BranchMapping {
+  // 目标块参数值（来自 cf.br 的 destOperands）
+  SmallVector<Value> destOperands;
+  // 目标块
+  Block *dest;
+};
+
 // 独立的 CFG 构建器类（用于非 Pass 场景）
 class ControlFlowGraphBuilder {
 public:
@@ -148,6 +156,11 @@ public:
                                        cfg::BasicBlock *currentBB,
                                        cfg::BasicBlock *parentStructure = nullptr);
 
+  // 处理 cf.br 操作，返回无条件跳转后面的基本块
+  cfg::BasicBlock *handleBranchOp(cf::BranchOp brOp, cfg::ControlFlowGraph &cfg,
+                                   cfg::BasicBlock *currentBB,
+                                   cfg::BasicBlock *parentStructure = nullptr);
+
   // 创建一个新的指令并添加到 basic block
   cfg::Instruction *createInstruction(Operation *op, cfg::BasicBlock *parentBlock, cfg::ControlFlowGraph &cfg);
 
@@ -177,6 +190,15 @@ public:
   // 参数: COND_BR 类型的基本块
   // 返回: CondBranchMapping 结构体，包含条件、目标块和参数信息
   std::optional<CondBranchMapping> getCondBranchMapping(cfg::BasicBlock *condBrBB);
+
+  // 7. 快速收集所有的 BR 基本块
+  // 遍历 CFG 中所有基本块，返回类型为 BR 的基本块列表
+  SmallVector<cfg::BasicBlock *> collectBrBlocks(cfg::ControlFlowGraph &cfg);
+
+  // 8. 获取 BR 对应的分支信息
+  // 参数: BR 类型的基本块
+  // 返回: BranchMapping 结构体，包含目标块和参数信息
+  std::optional<BranchMapping> getBranchMapping(cfg::BasicBlock *brBB);
 
   // 获取下一个指令 ID
   size_t getNextInstructionId() { return nextInstructionId++; }

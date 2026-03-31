@@ -252,8 +252,17 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
       currentBB = handleCondBranchOp(cast<cf::CondBranchOp>(op), cfg, condBrBB, parentStructure);
     }
     else if (isa<cf::BranchOp>(op)) {
-      // cf.br 无条件跳转
-      createInstruction(&op, currentBB, cfg);
+      // cf.br 无条件跳转 - 创建专门的 BR 块并处理
+      auto *brBB = cfg.createBasicBlock(BlockType::BR, parentStructure);
+
+      // 将 br 指令添加到 brBB
+      createInstruction(&op, brBB, cfg);
+
+      // 连接当前块到 BR 块
+      cfg.addEdge(currentBB, brBB);
+
+      // 处理 br 操作
+      currentBB = handleBranchOp(cast<cf::BranchOp>(op), cfg, brBB, parentStructure);
     }
     else if (isa<triton::ReturnOp>(op)) {
       // return 操作
@@ -578,6 +587,29 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleCondBranchOp(cf::CondBranchOp co
   return mergeBB;
 }
 
+cfg::BasicBlock *ControlFlowGraphBuilder::handleBranchOp(cf::BranchOp brOp,
+                                                         cfg::ControlFlowGraph &cfg,
+                                                         cfg::BasicBlock *brBB,
+                                                         cfg::BasicBlock *parentStructure) {
+  // 无条件跳转没有汇合块，直接连接到目标块
+
+  // 获取目标块和参数
+  Block *dest = brOp.getDest();
+  SmallVector<Value> destOperands(brOp.getDestOperands());
+
+  LLVM_DEBUG(llvm::dbgs() << "  Br: unconditional branch\n");
+  LLVM_DEBUG(llvm::dbgs() << "    Dest: " << dest << "\n");
+
+  // 获取或创建目标块对应的 BasicBlock
+  cfg::BasicBlock *destBB = getOrCreateBasicBlockForBlock(dest, cfg, parentStructure);
+
+  // 连接 BR 块到目标块
+  cfg.addEdge(brBB, destBB);
+
+  // 无条件跳转没有后续代码，返回 nullptr 表示当前路径结束
+  return nullptr;
+}
+
 cfg::BasicBlock *ControlFlowGraphBuilder::getOrCreateBasicBlockForBlock(
     Block *block, cfg::ControlFlowGraph &cfg, cfg::BasicBlock *parentStructure) {
   // 检查是否已经有对应的 BasicBlock
@@ -650,6 +682,53 @@ ControlFlowGraphBuilder::getCondBranchMapping(cfg::BasicBlock *condBrBB) {
   mapping.falseDest = condBrOp.getFalseDest();
   for (Value operand : condBrOp.getFalseDestOperands()) {
     mapping.falseOperands.push_back(operand);
+  }
+
+  return mapping;
+}
+
+SmallVector<cfg::BasicBlock *>
+ControlFlowGraphBuilder::collectBrBlocks(cfg::ControlFlowGraph &cfg) {
+  SmallVector<cfg::BasicBlock *> brBlocks;
+
+  // 遍历 CFG 中的所有基本块
+  for (size_t i = 0; i < cfg.getNumBlocks(); ++i) {
+    cfg::BasicBlock *bb = cfg.getBasicBlock(i);
+    if (bb && bb->getType() == BlockType::BR) {
+      brBlocks.push_back(bb);
+    }
+  }
+
+  return brBlocks;
+}
+
+std::optional<BranchMapping>
+ControlFlowGraphBuilder::getBranchMapping(cfg::BasicBlock *brBB) {
+  // 验证输入基本块类型
+  if (!brBB || brBB->getType() != BlockType::BR) {
+    return std::nullopt;
+  }
+
+  // 获取 BR 块中的指令（应该包含 cf.br 操作）
+  if (brBB->getNumInstructions() == 0) {
+    return std::nullopt;
+  }
+
+  cfg::Instruction *inst = brBB->getInstruction(0);
+  Operation *op = inst->getOperation();
+
+  // 确保是 cf.br 操作
+  auto brOp = dyn_cast<cf::BranchOp>(op);
+  if (!brOp) {
+    return std::nullopt;
+  }
+
+  BranchMapping mapping;
+
+  // 收集目标块信息
+  mapping.dest = brOp.getDest();
+  for (Value operand : brOp.getDestOperands()) {
+    mapping.destOperands.push_back(operand);
   }
 
   return mapping;
