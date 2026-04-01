@@ -113,6 +113,28 @@ std::string BasicBlock::getName() const {
   return name;
 }
 
+bool BasicBlock::endsWithReturnOp() const {
+  // 空块检查
+  if (instructions.empty()) {
+    return false;
+  }
+  
+  // 获取最后一条指令
+  const Instruction *lastInst = instructions.back().get();
+  if (!lastInst) {
+    return false;
+  }
+  
+  // 获取对应的 Operation
+  Operation *op = lastInst->getOperation();
+  if (!op) {
+    return false;
+  }
+  
+  // 检查是否为 triton::ReturnOp
+  return isa<triton::ReturnOp>(op);
+}
+
 StringRef BasicBlock::getTypeString() const {
   switch (type) {
   case BlockType::NORMAL: return "NORMAL";

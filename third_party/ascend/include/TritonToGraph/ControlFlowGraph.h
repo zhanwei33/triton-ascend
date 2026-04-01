@@ -126,6 +126,9 @@ public:
   size_t getNumInstructions() const { return instructions.size(); }
   const SmallVector<std::unique_ptr<Instruction>> &getInstructions() const { return instructions; }
 
+  // 检查最后一条指令是否为 ReturnOp
+  bool endsWithReturnOp() const;
+
   // 获取后继和前驱
   ArrayRef<BasicBlock *> getSuccessors() const { return successors; }
   ArrayRef<BasicBlock *> getPredecessors() const { return predecessors; }

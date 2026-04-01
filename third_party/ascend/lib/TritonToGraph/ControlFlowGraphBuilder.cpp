@@ -168,7 +168,7 @@ ControlFlowGraphBuilder::buildForRegion(Region &region, cfg::ControlFlowGraph &c
             break;
           }
         }
-        if (!hasEdge) {
+        if (!hasEdge && !lastBlock->endsWithReturnOp()) {
           cfg.addEdge(lastBlock, blockBB);
         }
       }
@@ -177,6 +177,10 @@ ControlFlowGraphBuilder::buildForRegion(Region &region, cfg::ControlFlowGraph &c
 
     if (currentBB) {
       lastBlock = currentBB;
+      if(lastBlock->endsWithReturnOp())
+      {
+        cfg.addEdge(lastBlock, cfg.getExitBlock());
+      }
     }
   }
 
