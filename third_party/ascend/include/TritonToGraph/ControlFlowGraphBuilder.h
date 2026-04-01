@@ -23,7 +23,7 @@
 #ifndef TRITON_TO_CFG_CONTROL_FLOW_GRAPH_BUILDER_H
 #define TRITON_TO_CFG_CONTROL_FLOW_GRAPH_BUILDER_H
 
-#include "ControlFlowGraph.h"
+#include "TritonToGraph/ControlFlowGraph.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -202,9 +202,6 @@ public:
 
   // 获取下一个指令 ID
   size_t getNextInstructionId() { return nextInstructionId++; }
-
-private:
-  size_t nextInstructionId = 0;      // 下一个指令 ID
 
   // MLIR Block 到 CFG BasicBlock 的映射（用于处理 cf.cond_br 等跳转指令）
   DenseMap<Block *, cfg::BasicBlock *> blockToBasicBlockMap;

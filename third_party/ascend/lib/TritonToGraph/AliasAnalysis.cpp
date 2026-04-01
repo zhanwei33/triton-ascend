@@ -20,9 +20,9 @@
  * THE SOFTWARE.
  */
 
-#include "AliasAnalysis.h"
-#include "MemorySSA.h"
-#include "ControlFlowGraph.h"
+#include "TritonToGraph/AliasAnalysis.h"
+#include "TritonToGraph/MemorySSA.h"
+#include "TritonToGraph/ControlFlowGraph.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "llvm/Support/Debug.h"

@@ -20,8 +20,8 @@
  * THE SOFTWARE.
  */
 
-#include "ControlFlowGraphBuilder.h"
-#include "DataflowGraph.h"
+#include "TritonToGraph/ControlFlowGraphBuilder.h"
+#include "TritonToGraph/DataflowGraph.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"

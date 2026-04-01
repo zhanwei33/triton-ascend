@@ -30,7 +30,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "llvm/ADT/DenseMap.h"
-#include "tensor.h"
+#include "TritonToGraph/tensor.h"
 
 namespace mlir {
 namespace triton {

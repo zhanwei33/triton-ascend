@@ -2,7 +2,7 @@
  * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  */
 
-#include "GraphAnalysis.h"
+#include "TritonToGraph/GraphAnalysis.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "graph-analysis"

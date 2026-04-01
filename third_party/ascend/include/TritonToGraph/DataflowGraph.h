@@ -23,10 +23,10 @@
 #ifndef TRITON_TO_CFG_DATAFLOW_GRAPH_H
 #define TRITON_TO_CFG_DATAFLOW_GRAPH_H
 
-#include "MemorySSA.h"
-#include "ControlFlowGraph.h"
-#include "MemorySsaBuilder.h"
-#include "AliasAnalysis.h"
+#include "TritonToGraph/MemorySSA.h"
+#include "TritonToGraph/ControlFlowGraph.h"
+#include "TritonToGraph/MemorySsaBuilder.h"
+#include "TritonToGraph/AliasAnalysis.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseMap.h"

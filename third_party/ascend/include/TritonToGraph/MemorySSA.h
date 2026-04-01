@@ -27,7 +27,7 @@
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "tensor.h"
+#include "TritonToGraph/tensor.h"
 
 namespace mlir {
 namespace triton {

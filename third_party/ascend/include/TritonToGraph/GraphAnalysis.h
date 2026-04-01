@@ -5,8 +5,8 @@
 #ifndef TRITON_TO_GRAPH_GRAPH_ANALYSIS_H
 #define TRITON_TO_GRAPH_GRAPH_ANALYSIS_H
 
-#include "ControlFlowGraph.h"
-#include "DataflowGraph.h"
+#include "TritonToGraph/ControlFlowGraph.h"
+#include "TritonToGraph/DataflowGraph.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseSet.h"

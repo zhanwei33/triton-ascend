@@ -20,10 +20,10 @@
  * THE SOFTWARE.
  */
 
-#include "MemorySsaBuilder.h"
-#include "ControlFlowGraph.h"
-#include "DataflowGraph.h"
-#include "tensor.h"
+#include "TritonToGraph/MemorySsaBuilder.h"
+#include "TritonToGraph/ControlFlowGraph.h"
+#include "TritonToGraph/DataflowGraph.h"
+#include "TritonToGraph/tensor.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "llvm/Support/Debug.h"

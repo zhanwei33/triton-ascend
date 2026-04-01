@@ -28,7 +28,7 @@
 #include "mlir/IR/Region.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "MemorySSA.h"
+#include "TritonToGraph/MemorySSA.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"

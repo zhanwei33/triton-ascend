@@ -23,8 +23,8 @@
 #ifndef TRITON_TO_CFG_MEMORY_SSA_BUILDER_H
 #define TRITON_TO_CFG_MEMORY_SSA_BUILDER_H
 
-#include "MemorySSA.h"
-#include "AliasAnalysis.h"
+#include "TritonToGraph/MemorySSA.h"
+#include "TritonToGraph/AliasAnalysis.h"
 #include "mlir/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/DenseMap.h"
