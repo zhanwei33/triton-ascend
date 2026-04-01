@@ -21,7 +21,7 @@
  */
 
 #include "TritonToGraph/Passes.h"
-#include "ControlFlowGraphBuilder.h"
+#include "TritonToGraph/ControlFlowGraphBuilder.h"
 
 #include "mlir/Pass/PassRegistry.h"
 
