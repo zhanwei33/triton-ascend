@@ -241,6 +241,15 @@ public:
   // 导出为 JSON
   void exportToJSON(raw_ostream &os) const;
 
+  //===----------------------------------------------------------------------===
+  // 拓扑序计算 - 用于程序切片时保证指令顺序
+  //===----------------------------------------------------------------------===
+
+  /// 计算每条指令在CFG中的拓扑序
+  /// 返回一个map: Instruction* -> topoOrder (值越小表示越先执行)
+  /// 注意：回边会被忽略，确保拓扑序有意义
+  std::unordered_map<Instruction*, unsigned> computeInstructionTopoOrder() const;
+
 private:
   triton::FuncOp function;                                      // 所属函数
   SmallVector<std::unique_ptr<BasicBlock>> basicBlocks;         // 基本块节点

@@ -32,6 +32,9 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <unordered_map>
+
+#include "llvm/Support/Debug.h"
 
 using namespace mlir;
 using namespace triton;
@@ -578,6 +581,49 @@ llvm::Error ControlFlowGraph::exportToFile(StringRef filename) const {
 
   os.close();
   return llvm::Error::success();
+}
+
+//===----------------------------------------------------------------------===//
+// 拓扑序计算
+//===----------------------------------------------------------------------===//
+
+std::unordered_map<Instruction*, unsigned>
+ControlFlowGraph::computeInstructionTopoOrder() const {
+  std::unordered_map<Instruction*, unsigned> topoOrder;
+  unsigned order = 0;
+
+  // 使用 BFS 从入口块开始遍历
+  // 注意：忽略回边，确保拓扑序有意义
+  DenseSet<const BasicBlock*> visitedBlocks;
+  std::deque<const BasicBlock*> worklist;
+
+  worklist.push_back(entryBlock);
+  visitedBlocks.insert(entryBlock);
+
+  while (!worklist.empty()) {
+    const BasicBlock* bb = worklist.front();
+    worklist.pop_front();
+
+    // 遍历当前块的所有指令
+    for (const auto& instPtr : bb->getInstructions()) {
+      Instruction* inst = instPtr.get();
+      topoOrder[inst] = order++;
+    }
+
+    // 将后继块加入队列（跳过回边）
+    for (BasicBlock* succ : bb->getSuccessors()) {
+      if (!visitedBlocks.contains(succ) && !isBackEdge(const_cast<BasicBlock*>(bb), succ)) {
+        visitedBlocks.insert(succ);
+        worklist.push_back(succ);
+      }
+    }
+  }
+
+  LLVM_DEBUG(llvm::dbgs()
+                 << "[CFG] Computed topo order for " << topoOrder.size()
+                 << " instructions\n");
+
+  return topoOrder;
 }
 
 void ControlFlowGraph::exportToJSON(raw_ostream &os) const {
