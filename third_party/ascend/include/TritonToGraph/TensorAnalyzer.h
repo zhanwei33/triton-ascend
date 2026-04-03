@@ -124,7 +124,7 @@ private:
   DenseSet<Instruction*> analyzedInstructions;
 
   // 拓扑序缓存
-  mutable DenseMap<Instruction*, unsigned> topoOrderCache;
+  mutable std::unordered_map<Instruction*, unsigned> topoOrderCache;
   mutable bool topoOrderCached = false;
 
   // 构建拓扑序缓存

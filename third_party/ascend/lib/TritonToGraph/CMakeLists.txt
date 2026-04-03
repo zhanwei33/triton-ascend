@@ -4,6 +4,8 @@ add_triton_library(TritonToGraph
   ControlFlowGraphBuilder.cpp
   DataflowGraph.cpp
   MemorySsaBuilder.cpp
+  GraphAnalysis.cpp
+  TensorAnalyzer.cpp
   Passes.cpp
 
   DEPENDS

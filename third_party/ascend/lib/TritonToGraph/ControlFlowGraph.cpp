@@ -24,6 +24,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -618,10 +619,6 @@ ControlFlowGraph::computeInstructionTopoOrder() const {
       }
     }
   }
-
-  LLVM_DEBUG(llvm::dbgs()
-                 << "[CFG] Computed topo order for " << topoOrder.size()
-                 << " instructions\n");
 
   return topoOrder;
 }

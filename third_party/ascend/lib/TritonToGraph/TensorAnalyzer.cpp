@@ -4,7 +4,7 @@
 
 #include "TritonToGraph/TensorAnalyzer.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/Triton/IR/Ops.h"
+#include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "tensor-analyzer"

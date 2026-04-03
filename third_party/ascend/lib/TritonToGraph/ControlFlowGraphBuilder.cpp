@@ -175,7 +175,7 @@ ControlFlowGraphBuilder::buildForRegion(Region &region, cfg::ControlFlowGraph &c
       currentBB = processBlock(block, cfg, blockBB, parentStructure);
     }
 
-    if (currentBB) {
+    if (currentBB && currentBB->getNumInstructions() > 0) {
       lastBlock = currentBB;
       if(lastBlock->endsWithReturnOp())
       {

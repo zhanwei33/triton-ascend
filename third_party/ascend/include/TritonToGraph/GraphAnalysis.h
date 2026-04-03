@@ -105,13 +105,19 @@ private:
 /// DFGTraversalBase - DFG 遍历基类
 class DFGTraversalBase {
 public:
-  virtual ~DFGTTraversalBase() = default;
+  virtual ~DFGTraversalBase() = default;
 
   // 访问定义前调用（反向遍历 value -> def）
-  virtual bool VisitDef(Value value, Operation* defOp, int depth);
+  virtual bool VisitDef(Value value, Operation* defOp, int depth) 
+  {
+    return true;
+  }
 
   // 访问使用前调用（正向遍历 value -> use）
-  virtual bool VisitUse(Value value, OpOperand* use, int depth);
+  virtual bool VisitUse(Value value, OpOperand* use, int depth)
+  {
+    return true;
+  }
 
   // 遇到 phi/iter_arg 时调用
   virtual void onPhi(Value phiValue, const PhiInfo& phiInfo, int depth) {}
@@ -125,6 +131,17 @@ public:
     bool followPhi = true;          // 是否跨越 phi/iter_arg
     int maxDepth = -1;              // -1 = 无限制
     DenseSet<Operation*> stopOps;   // 遇到停止的操作
+
+    // 显式默认构造，解决聚合初始化限制
+    Options() 
+    {
+      useMemorySSA = false;
+      followPhi = true;
+      maxDepth = -1;
+    }
+    
+    // 如果需要带参数的构造，可以添加
+    explicit Options(bool memSSA) : useMemorySSA(memSSA) {}
   };
 
   explicit DFGTraverser(DataFlowGraph& dfg) : dfg(dfg) {}
@@ -185,9 +202,9 @@ private:
 //===----------------------------------------------------------------------===//
 
 /// Region - 指令集合（替代原始代码中的 SmallVector<Operation*>）
-class Region {
+class OpsRegion {
 public:
-  explicit Region(StringRef name = "") : name_(name.str()) {}
+  explicit OpsRegion(StringRef name = "") : name_(name.str()) {}
 
   void add(Instruction* inst);
   void add(Operation* op, ControlFlowGraph& cfg);
@@ -252,17 +269,17 @@ public:
       : dfg(dfg), cfg(cfg) {}
 
   // 检查 region 之间是否有依赖
-  bool hasDependency(const Region& from, const Region& to) const;
+  bool hasDependency(const OpsRegion& from, const OpsRegion& to) const;
 
   // 获取两个 region 间的所有依赖
-  SmallVector<Dependency> getDependencies(const Region& from,
-                                          const Region& to) const;
+  SmallVector<Dependency> getDependencies(const OpsRegion& from,
+                                          const OpsRegion& to) const;
 
   // 分析 region 的外部依赖
-  ExternalDeps analyzeExternalDeps(const Region& region) const;
+  ExternalDeps analyzeExternalDeps(const OpsRegion& region) const;
 
   // 检查依赖是否为循环依赖（region A 依赖 B，B 又依赖 A）
-  bool isCyclicDependency(const Region& a, const Region& b) const;
+  bool isCyclicDependency(const OpsRegion& a, const OpsRegion& b) const;
 
 private:
   DataFlowGraph& dfg;
@@ -285,7 +302,7 @@ struct SliceCriterion {
 class ProgramSlice {
 public:
   void add(Instruction* inst) { instructions_.insert(inst); }
-  void addAll(const Region& region);
+  void addAll(const OpsRegion& region);
 
   bool contains(Instruction* inst) const {
     return instructions_.contains(inst);
@@ -306,7 +323,7 @@ public:
   void subtract(const ProgramSlice& other);
 
   // 转换为 Region
-  Region toRegion(StringRef name = "") const;
+  OpsRegion toRegion(StringRef name = "") const;
 
   // 迭代器
   auto begin() const { return instructions_.begin(); }
@@ -368,25 +385,25 @@ public:
       : dfg(dfg), cfg(cfg) {}
 
   // 从种子指令开始吸收
-  void absorb(Region& region, ArrayRef<Instruction*> seeds,
+  void absorb(OpsRegion& region, ArrayRef<Instruction*> seeds,
               const AbsorptionPolicy& policy);
 
   // 从 value 的 def/use 链吸收
-  void absorbFromValue(Region& region, Value value,
+  void absorbFromValue(OpsRegion& region, Value value,
                        const AbsorptionPolicy& policy);
 
   // 吸收直到遇到边界
-  void absorbUntilBoundary(Region& region, ArrayRef<Instruction*> seeds,
+  void absorbUntilBoundary(OpsRegion& region, ArrayRef<Instruction*> seeds,
                            std::function<bool(Instruction*)> isBoundary);
 
 private:
   DataFlowGraph& dfg;
   ControlFlowGraph& cfg;
 
-  void absorbUpstream(Region& region, Instruction* inst,
+  void absorbUpstream(OpsRegion& region, Instruction* inst,
                       const AbsorptionPolicy& policy,
                       DenseSet<Instruction*>& visited, int depth);
-  void absorbDownstream(Region& region, Instruction* inst,
+  void absorbDownstream(OpsRegion& region, Instruction* inst,
                         const AbsorptionPolicy& policy,
                         DenseSet<Instruction*>& visited, int depth);
 };

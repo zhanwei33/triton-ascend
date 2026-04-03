@@ -123,7 +123,7 @@ void CFGTraverser::bfsForward(BasicBlock* start, CFGTraversalBase& visitor) {
   while (!worklist.empty()) {
     auto [block, ctx] = worklist.pop_back_val();
 
-    preVisitBlock(block, const_cast<TraversalContext&>(ctx));
+    visitor.preVisitBlock(block, const_cast<TraversalContext&>(ctx));
 
     for (auto& instPtr : block->getInstructions()) {
       Instruction* inst = instPtr.get();
@@ -151,9 +151,9 @@ void CFGTraverser::bfsBackward(BasicBlock* start, CFGTraversalBase& visitor) {
   while (!worklist.empty()) {
     auto [block, ctx] = worklist.pop_back_val();
 
-    visitor.preVisitBlock(block, const_cast<TraversalContext&>(ctx))
+    visitor.preVisitBlock(block, const_cast<TraversalContext&>(ctx));
 
-    for (auto it = insts.rbegin(); it != insts.rend(); ++it) {
+    for (auto it = block->getInstructions().rbegin(); it != block->getInstructions().rend(); ++it) {
       Instruction* inst = it->get();
       visitor.VisitInstruction(inst, ctx);
     }
@@ -176,7 +176,7 @@ void CFGTraverser::bfsBackward(BasicBlock* start, CFGTraversalBase& visitor) {
 void DFGTraverser::dfsBackward(Value seed, DFGTraversalBase& visitor,
                                 const Options& opts) {
   DenseSet<Operation*> visited;
-  dfsBackwardImpl(seed, visitor, visited, pts, 0);
+  dfsBackwardImpl(seed, visitor, visited, opts, 0);
 }
 
 void DFGTraverser::dfsBackward(ArrayRef<Value> seeds, DFGTraversalBase& visitor,
@@ -235,7 +235,7 @@ void DFGTraverser::dfsBackwardImpl(Value value, DFGTraversalBase& visitor,
 void DFGTraverser::dfsForward(Value seed, DFGTraversalBase& visitor,
                                const Options& opts) {
   DenseSet<Operation*> visited;
-  dfsForwardImpl(seed, visitor, visited, ctx, opts, 0);
+  dfsForwardImpl(seed, visitor, visited, opts, 0);
 }
 
 void DFGTraverser::dfsForwardImpl(Value value, DFGTraversalBase& visitor,
@@ -277,41 +277,41 @@ void DFGTraverser::dfsForwardImpl(Value value, DFGTraversalBase& visitor,
 // Region Implementation
 //===----------------------------------------------------------------------===//
 
-void Region::add(Instruction* inst) {
+void OpsRegion::add(Instruction* inst) {
   instSet_.insert(inst);
 }
 
-void Region::add(Operation* op, ControlFlowGraph& cfg) {
+void OpsRegion::add(Operation* op, ControlFlowGraph& cfg) {
   if (Instruction* inst = cfg.getInstruction(op)) {
     add(inst);
   }
 }
 
-void Region::addAll(ArrayRef<Instruction*> insts) {
+void OpsRegion::addAll(ArrayRef<Instruction*> insts) {
   for (Instruction* inst : insts) {
     add(inst);
   }
 }
 
-bool Region::contains(Instruction* inst) const {
+bool OpsRegion::contains(Instruction* inst) const {
   return instSet_.contains(inst);
 }
 
-bool Region::contains(Operation* op) const {
+bool OpsRegion::contains(Operation* op) const {
   // note: requires cfg to be available - caller must ensure this
   // use the version that takes cfg as parameter for proper lookup
   return false;
 }
 
-void Region::remove(Instruction* inst) {
+void OpsRegion::remove(Instruction* inst) {
   instSet_.erase(inst);
 }
 
-void Region::clear() {
+void OpsRegion::clear() {
   instSet_.clear();
 }
 
-SmallVector<Instruction*> Region::orderedInstructions() const {
+SmallVector<Instruction*> OpsRegion::orderedInstructions() const {
   SmallVector<Instruction*> result(instSet_.begin(), instSet_.end());
   // sort by block id then instruction index
   llvm::sort(result, [](Instruction* a, Instruction* b) {
@@ -326,7 +326,7 @@ SmallVector<Instruction*> Region::orderedInstructions() const {
   return result;
 }
 
-SmallVector<Operation*> Region::operations() const {
+SmallVector<Operation*> OpsRegion::operations() const {
   SmallVector<Operation*> result;
   for (Instruction* inst : instSet_) {
     if (Operation* op = inst->getOperation()) {
@@ -340,13 +340,13 @@ SmallVector<Operation*> Region::operations() const {
 // RegionAnalyzer Implementation
 //===----------------------------------------------------------------------===//
 
-bool RegionAnalyzer::hasDependency(const Region& from, const Region& to) const {
+bool RegionAnalyzer::hasDependency(const OpsRegion& from, const OpsRegion& to) const {
   auto deps = getDependencies(from, to);
   return !deps.empty();
 }
 
 SmallVector<RegionAnalyzer::Dependency>
-RegionAnalyzer::getDependencies(const Region& from, const Region& to) const {
+RegionAnalyzer::getDependencies(const OpsRegion& from, const OpsRegion& to) const {
   SmallVector<Dependency> deps;
 
   // check for data dependencies: from defines, to uses
@@ -367,7 +367,7 @@ RegionAnalyzer::getDependencies(const Region& from, const Region& to) const {
 }
 
 RegionAnalyzer::ExternalDeps
-RegionAnalyzer::analyzeExternalDeps(const Region& region) const {
+RegionAnalyzer::analyzeExternalDeps(const OpsRegion& region) const {
   ExternalDeps result;
 
   // find inputs: external definitions used inside region
@@ -408,9 +408,9 @@ RegionAnalyzer::analyzeExternalDeps(const Region& region) const {
 
   // find outputs: internal definitions used outside region
   for (Instruction* inst : region) {
-    for (Value result : inst->getOperation()->getResults()) {
+    for (Value val : inst->getOperation()->getResults()) {
       SmallVector<Instruction*> externalUses;
-      for (OpOperand& use : result.getUses()) {
+      for (OpOperand& use : val.getUses()) {
         Operation* userOp = use.getOwner();
         if (Instruction* userInst = cfg.getInstruction(userOp)) {
           if (!region.contains(userInst)) {
@@ -419,7 +419,7 @@ RegionAnalyzer::analyzeExternalDeps(const Region& region) const {
         }
       }
       if (!externalUses.empty()) {
-        result.outputs.push_back({result, inst, externalUses});
+        result.outputs.push_back({val, inst, externalUses});
       }
     }
   }
@@ -513,8 +513,8 @@ void ProgramSlice::subtract(const ProgramSlice& other) {
   }
 }
 
-Region ProgramSlice::toRegion(StringRef name) const {
-  Region region(name);
+OpsRegion ProgramSlice::toRegion(StringRef name) const {
+  OpsRegion region(name);
   for (Instruction* inst : instructions_) {
     region.add(inst);
   }
@@ -525,7 +525,7 @@ Region ProgramSlice::toRegion(StringRef name) const {
 // RegionAbsorber Implementation
 //===----------------------------------------------------------------------===//
 
-void RegionAbsorber::absorb(Region& region, ArrayRef<Instruction*> seeds,
+void RegionAbsorber::absorb(OpsRegion& region, ArrayRef<Instruction*> seeds,
                               const AbsorptionPolicy& policy) {
   DenseSet<Instruction*> visited;
 
@@ -544,7 +544,7 @@ void RegionAbsorber::absorb(Region& region, ArrayRef<Instruction*> seeds,
   }
 }
 
-void RegionAbsorber::absorbUpstream(Region& region, Instruction* inst,
+void RegionAbsorber::absorbUpstream(OpsRegion& region, Instruction* inst,
                                     const AbsorptionPolicy& policy,
                                     DenseSet<Instruction*>& visited,
                                     int depth) {
@@ -577,7 +577,7 @@ void RegionAbsorber::absorbUpstream(Region& region, Instruction* inst,
   }
 }
 
-void RegionAbsorber::absorbDownstream(Region& region, Instruction* inst,
+void RegionAbsorber::absorbDownstream(OpsRegion& region, Instruction* inst,
                                       const AbsorptionPolicy& policy,
                                       DenseSet<Instruction*>& visited,
                                       int depth) {
@@ -611,7 +611,7 @@ void RegionAbsorber::absorbDownstream(Region& region, Instruction* inst,
   }
 }
 
-void RegionAbsorber::absorbFromValue(Region& region, Value value,
+void RegionAbsorber::absorbFromValue(OpsRegion& region, Value value,
                                      const AbsorptionPolicy& policy) {
   Operation* defOp = value.getDefiningOp();
   if (!defOp)
@@ -624,7 +624,7 @@ void RegionAbsorber::absorbFromValue(Region& region, Value value,
   absorb(region, {inst}, policy);
 }
 
-void RegionAbsorber::absorbUntilBoundary(Region& region,
+void RegionAbsorber::absorbUntilBoundary(OpsRegion& region,
                                          ArrayRef<Instruction*> seeds,
                                          std::function<bool(Instruction*)>
                                          isBoundary) {
