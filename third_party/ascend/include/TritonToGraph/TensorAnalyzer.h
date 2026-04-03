@@ -8,6 +8,9 @@
 #include "TritonToGraph/ControlFlowGraph.h"
 #include "TritonToGraph/DataflowGraph.h"
 #include "TritonToGraph/GraphAnalysis.h"
+#include "TritonToGraph/SymValue.h"
+#include "TritonToGraph/SymbolicExecution.h"
+#include "TritonToGraph/LoadPatternAnalyzer.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseSet.h"
@@ -138,6 +141,32 @@ private:
 
   // 判断是否为 dot 操作
   static bool isDotOp(Operation* op);
+
+  //===----------------------------------------------------------------------===
+  // 符号执行分析 API（T14 新增）
+  //===----------------------------------------------------------------------===
+
+  /// 使用符号执行分析 load 指令
+  /// 这是 T14 的核心功能，结合程序切片和符号执行
+  ascend::TensorAccessInfo analyzeLoadWithSymbolicExecution(
+      triton::LoadOp loadOp);
+
+  /// 批量分析所有 load 指令
+  SmallVector<ascend::TensorAccessInfo> analyzeAllLoadsWithSymbolicExecution();
+
+  /// 获取符号执行状态（用于调试和扩展分析）
+  ascend::SymbolicExecutionState* getSymbolicExecutionState() const {
+    return symExecState.get();
+  }
+
+  // 符号执行状态（懒加载）
+  mutable std::unique_ptr<ascend::SymbolicExecutionState> symExecState;
+
+  // 符号执行引擎
+  mutable std::unique_ptr<ascend::SymbolicExecutionEngine> symExecEngine;
+
+  // 确保符号执行引擎已初始化
+  void ensureSymbolicExecutionInitialized() const;
 };
 
 } // namespace cfg

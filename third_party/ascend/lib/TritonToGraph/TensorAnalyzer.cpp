@@ -6,6 +6,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "llvm/Support/Debug.h"
+#include <memory>
 
 #define DEBUG_TYPE "tensor-analyzer"
 
@@ -216,4 +217,91 @@ void TensorAnalyzer::markSliceAnalyzed(const ProgramSlice& slice) {
   for (Instruction* inst : slice) {
     analyzedInstructions.insert(inst);
   }
+}
+
+//===----------------------------------------------------------------------===//
+// 符号执行分析实现（T14 新增）
+//===----------------------------------------------------------------------===//
+
+void TensorAnalyzer::ensureSymbolicExecutionInitialized() const {
+  if (!symExecState) {
+    symExecState = std::make_unique<ascend::SymbolicExecutionState>();
+  }
+  if (!symExecEngine) {
+    symExecEngine = std::make_unique<ascend::SymbolicExecutionEngine>();
+  }
+}
+
+ascend::TensorAccessInfo TensorAnalyzer::analyzeLoadWithSymbolicExecution(
+    triton::LoadOp loadOp) {
+  using namespace ascend;
+
+  // 确保符号执行引擎已初始化
+  ensureSymbolicExecutionInitialized();
+
+  LLVM_DEBUG(llvm::dbgs()
+                 << "[TensorAnalyzer] Starting symbolic execution analysis for load\n");
+
+  // Step 1: 对 load 的 ptr 进行程序切片
+  Value ptr = loadOp.getPtr();
+  ProgramSlice slice = computeBackwardSlice(ptr, /*useMemorySSA=*/false);
+
+  LLVM_DEBUG(llvm::dbgs()
+                 << "[TensorAnalyzer] Computed backward slice with "
+                 << slice.size() << " instructions\n");
+
+  // Step 2: 获取拓扑序排列的切片指令
+  SmallVector<Instruction*> orderedInsts = getOrderedSliceInstructions(slice);
+
+  // Step 3: 符号执行切片中的指令
+  // 重置符号执行状态（为每个load创建新的状态）
+  symExecState = std::make_unique<SymbolicExecutionState>();
+
+  for (Instruction* inst : orderedInsts) {
+    Operation* op = inst->getOperation();
+    if (op) {
+      symExecEngine->executeOperation(op, *symExecState);
+    }
+  }
+
+  LLVM_DEBUG(llvm::dbgs()
+                 << "[TensorAnalyzer] Symbolic execution completed\n");
+
+  // Step 4: 使用 LoadPatternAnalyzer 分析访问模式
+  LoadPatternAnalyzer patternAnalyzer;
+  TensorAccessInfo info = patternAnalyzer.analyzeLoad(loadOp, *symExecState);
+
+  LLVM_DEBUG(llvm::dbgs()
+                 << "[TensorAnalyzer] Load pattern analysis completed\n");
+
+  return info;
+}
+
+SmallVector<ascend::TensorAccessInfo>
+TensorAnalyzer::analyzeAllLoadsWithSymbolicExecution() {
+  using namespace ascend;
+
+  SmallVector<TensorAccessInfo> results;
+
+  // 收集所有 load 指令
+  SmallVector<Instruction*> loads = collectLoadInstructions();
+
+  LLVM_DEBUG(llvm::dbgs()
+                 << "[TensorAnalyzer] Analyzing " << loads.size()
+                 << " load instructions with symbolic execution\n");
+
+  for (Instruction* inst : loads) {
+    if (auto loadOp = dyn_cast<triton::LoadOp>(inst->getOperation())) {
+      TensorAccessInfo info = analyzeLoadWithSymbolicExecution(loadOp);
+      results.push_back(info);
+
+      // 打印分析结果（调试模式）
+      LLVM_DEBUG({
+        llvm::dbgs() << "=== Load Analysis Result ===\n";
+        info.print(llvm::dbgs());
+      });
+    }
+  }
+
+  return results;
 }
