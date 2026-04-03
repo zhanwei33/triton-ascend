@@ -188,16 +188,15 @@ SmallVector<Instruction*> TensorAnalyzer::getOrderedSliceInstructions(
   SmallVector<Instruction*> result;
   result.reserve(slice.size());
 
-  // 将切片中的指令按拓扑序排序
-  // 方法：遍历 CFG 的拓扑序，选择在切片中的指令
-  buildTopoOrderCache();
-
-  for (const auto& entry : topoOrderCache) {
-    Instruction* inst = entry.first;
-    if (slice.contains(inst)) {
-      result.push_back(inst);
-    }
+  // 1. 收集切片中的所有指令
+  for (Instruction* inst : slice) {
+    result.push_back(inst);
   }
+
+  // 2. 按拓扑序（从小到大）显式排序
+  llvm::sort(result, [this](Instruction* a, Instruction* b) {
+    return getTopoOrder(a) < getTopoOrder(b);
+  });
 
   return result;
 }

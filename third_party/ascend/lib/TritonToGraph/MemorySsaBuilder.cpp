@@ -146,9 +146,9 @@ void MemorySSABuilder::processBasicBlock(BasicBlock* bb) {
     inst->print(llvm::outs());
     llvm::outs() << "\n";
     processInstruction(inst);
-    MemorySSAInfo& ssaInfo = inst->getMemorySSAInfo();
-    ssaInfo.print(llvm::outs());
-    llvm::outs() << "\n";
+    //MemorySSAInfo& ssaInfo = inst->getMemorySSAInfo();
+    //ssaInfo.print(llvm::outs());
+    //llvm::outs() << "\n";
   }
 }
 

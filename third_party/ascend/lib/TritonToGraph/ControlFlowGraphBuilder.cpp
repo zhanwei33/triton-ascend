@@ -22,6 +22,7 @@
 
 #include "TritonToGraph/ControlFlowGraphBuilder.h"
 #include "TritonToGraph/DataflowGraph.h"
+#include "TritonToGraph/TensorAnalyzer.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -72,33 +73,6 @@ void BuildCFGPass::runOnOperation() {
     // 导出到文件
     std::string baseName = func.getName().str();
 
-    // 导出文本格式
-    llvm::SmallString<128> textPath(outputPath);
-    llvm::sys::path::append(textPath, baseName + "_cfg.txt");
-    if (auto err = cfg->exportToFile(textPath)) {
-      llvm::errs() << "Failed to export CFG to " << textPath << "\n";
-    } else {
-      llvm::errs() << "Exported CFG to " << textPath << "\n";
-    }
-
-    // 导出 DOT 格式
-    llvm::SmallString<128> dotPath(outputPath);
-    llvm::sys::path::append(dotPath, baseName + "_cfg.dot");
-    if (auto err = cfg->exportToFile(dotPath)) {
-      llvm::errs() << "Failed to export CFG to " << dotPath << "\n";
-    } else {
-      llvm::errs() << "Exported CFG to " << dotPath << "\n";
-    }
-
-    // 导出 JSON 格式
-    llvm::SmallString<128> jsonPath(outputPath);
-    llvm::sys::path::append(jsonPath, baseName + "_cfg.json");
-    if (auto err = cfg->exportToFile(jsonPath)) {
-      llvm::errs() << "Failed to export CFG to " << jsonPath << "\n";
-    } else {
-      llvm::errs() << "Exported CFG to " << jsonPath << "\n";
-    }
-
     // 导出 HTML 格式（网页可视化）
     llvm::SmallString<128> htmlPath(outputPath);
     llvm::sys::path::append(htmlPath, baseName + "_cfg.html");
@@ -113,15 +87,44 @@ void BuildCFGPass::runOnOperation() {
     DataFlowGraph dataFlowGraph(*cfg);
     dataFlowGraph.build();
 
-    // 导出 DataFlowGraph
-    std::error_code ec;
-    llvm::SmallString<128> dataflowPath(outputPath);
-    llvm::sys::path::append(dataflowPath, baseName + "_dataflow.json");
-    llvm::raw_fd_ostream dfOs(dataflowPath, ec);
-    if (!ec) {
-      dataFlowGraph.exportToJSON(dfOs);
-      llvm::errs() << "  Exported DataFlowGraph to " << dataflowPath << "\n";
+    // === TensorAnalyzer 测试代码开始 ===
+    llvm::errs() << "  Testing TensorAnalyzer on load instructions...\n";
+    
+    // 创建 TensorAnalyzer（复用已有的 CFG，内部会创建 ProgramSlicer）
+    TensorAnalyzer analyzer(*cfg, dataFlowGraph);
+    
+    // 收集所有 load 指令
+    auto loadInsts = analyzer.collectLoadInstructions();
+    llvm::errs() << "  Found " << loadInsts.size() << " load instructions\n";
+    
+    // 遍历每条 load 指令
+    for (Instruction* loadInst : loadInsts) {
+      auto loadOp = dyn_cast<triton::LoadOp>(loadInst->getOperation());
+      if (!loadOp) continue;
+      
+      Value ptr = loadOp.getPtr();  // 获取 ptr 参数
+      llvm::errs() << "\n  [Load] " << *loadOp << "\n";
+      llvm::errs() << "  [Ptr Operand] " << ptr << "\n";
+      
+      // 对 ptr 做 backward slice（不启用 Memory SSA，传统 SSA 路径）
+      ProgramSlice slice = analyzer.computeBackwardSlice(ptr, /*useMemorySSA=*/false);
+      
+      // 获取按拓扑序排序的切片指令
+      auto orderedSlice = analyzer.getOrderedSliceInstructions(slice);
+      
+      // 打印结果
+      llvm::errs() << "  === Program Slice (Topological Order) ===\n";
+      if (orderedSlice.empty()) {
+        llvm::errs() << "    (empty slice)\n";
+      } else {
+        for (Instruction* inst : orderedSlice) {
+          unsigned topoOrder = analyzer.getTopoOrder(inst);
+          llvm::errs() << "    [" << topoOrder << "] " << *inst->getOperation() << "\n";
+        }
+      }
+      llvm::errs() << "  Total " << orderedSlice.size() << " instructions in slice\n";
     }
+    llvm::errs() << "\n  TensorAnalyzer test complete\n";
   }
 }
 
