@@ -1143,3 +1143,48 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
   os.close();
   return llvm::Error::success();
 }
+
+// 根据 iter arg Value 和 forCondBB 查找对应的 init instruction 和 yield instruction
+std::optional<std::pair<Instruction*, Instruction*>>
+ControlFlowGraph::getIterArgPair(BasicBlock* forCondBB, Value iterArg) const {
+  // 获取指定 forCondBB 的 mapping
+  auto it = forYieldIterArgMap.find(forCondBB);
+  if (it == forYieldIterArgMap.end()) {
+    return std::nullopt;
+  }
+
+  const ForYieldIterArgMapping &mapping = it->second;
+
+  // 在 iterArgValues 中查找 iterArg 的索引
+  for (size_t i = 0; i < mapping.iterArgValues.size(); ++i) {
+    if (mapping.iterArgValues[i] == iterArg) {
+      // 找到对应的索引
+      Value initValue = (i < mapping.initValues.size())
+                            ? mapping.initValues[i]
+                            : Value();
+      Value yieldValue = (i < mapping.yieldValues.size())
+                             ? mapping.yieldValues[i]
+                             : Value();
+
+      // 查找 initValue 和 yieldValue 对应的 Instruction
+      Instruction* initInst = nullptr;
+      Instruction* yieldInst = nullptr;
+
+      if (initValue) {
+        if (auto* defOp = initValue.getDefiningOp()) {
+          initInst = getInstruction(defOp);
+        }
+      }
+
+      if (yieldValue) {
+        if (auto* defOp = yieldValue.getDefiningOp()) {
+          yieldInst = getInstruction(defOp);
+        }
+      }
+
+      return std::make_pair(initInst, yieldInst);
+    }
+  }
+
+  return std::nullopt;
+}

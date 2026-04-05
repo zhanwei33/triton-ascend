@@ -105,6 +105,8 @@ private:
 /// DFGTraversalBase - DFG 遍历基类
 class DFGTraversalBase {
 public:
+  ProgramSlice slice;
+
   virtual ~DFGTraversalBase() = default;
 
   // 访问定义前调用（反向遍历 value -> def）
@@ -152,10 +154,6 @@ public:
 
   /// 从 value 开始反向追踪所有定义
   void dfsBackward(Value seed, DFGTraversalBase& visitor,
-                   const Options& opts = {});
-
-  /// 多起点反向 DFS
-  void dfsBackward(ArrayRef<Value> seeds, DFGTraversalBase& visitor,
                    const Options& opts = {});
 
   /// BFS 反向追踪
@@ -329,6 +327,12 @@ public:
   auto begin() const { return instructions_.begin(); }
   auto end() const { return instructions_.end(); }
 
+  /// 记录 defOp 到 value 的映射（用于 for/if results, iter_args 等）
+  DenseMap<Operation*, Value*> definedValues_;
+
+  /// 获取 defOp 对应的 value（用于 for/if results, iter_args 等）
+  Value* getDefinedValue(Operation* defOp) const;
+
 private:
   DenseSet<Instruction*> instructions_;
 };
@@ -339,8 +343,11 @@ public:
   ProgramSlicer(DataFlowGraph& dfg, ControlFlowGraph& cfg)
       : dfg(dfg), cfg(cfg) {}
 
-  // 计算切片
-  ProgramSlice compute(const SliceCriterion& criterion);
+  // 计算切片（传入自定义遍历器）
+  void compute(const SliceCriterion& criterion, DFGTraversalBase& visitor);
+
+  // 计算切片（使用默认遍历器）
+  void compute(const SliceCriterion& criterion);
 
   // 从 yield values 计算切片（常用场景）
   ProgramSlice sliceFromYields(ArrayRef<Value> yields,

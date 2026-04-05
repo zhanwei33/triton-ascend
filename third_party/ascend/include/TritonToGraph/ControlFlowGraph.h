@@ -163,6 +163,34 @@ private:
   SmallVector<BasicBlock *> predecessors;             // 前驱块指针列表
 };
 
+// IF_COND 的 yield value 和 result value 的对应关系
+struct IfYieldResultMapping {
+  // then 分支的 yield values（来自 scf.yield 操作的操作数）
+  SmallVector<Value> thenYieldValues;
+  // else 分支的 yield values（如果有 else 分支）
+  SmallVector<Value> elseYieldValues;
+  // if 操作的 result values
+  SmallVector<Value> resultValues;
+  // 对应关系: resultValues[i] 对应 thenYieldValues[i] 或 elseYieldValues[i]
+};
+
+// FOR_COND 的 yield value 和 iter args value 的对应关系
+struct ForYieldIterArgMapping {
+  // yield 操作的 values（来自循环体末尾的 scf.yield）
+  SmallVector<Value> yieldValues;
+  // iter_args（循环体内使用的参数，对应 for 操作的 region iter_args）
+  SmallVector<Value> iterArgValues;
+  // init values（scf.for 的初始 operand）
+  SmallVector<Value> initValues;
+  // for 操作的 result values
+  SmallVector<Value> resultValues;
+  // 对应关系:
+  // - iterArgValues[i] 在循环体内部被使用
+  // - initValues[i] 是 iterArgValues[i] 的初始值
+  // - yieldValues[i] 是迭代后更新的值
+  // - resultValues[i] 对应最后一次迭代的 yieldValues[i]
+};
+
 // 控制流图
 class ControlFlowGraph {
 public:
@@ -215,6 +243,55 @@ public:
 
   bool isBackEdge(BasicBlock *from, BasicBlock *to) const;
 
+  //===--------------------------------------------------------------------===//
+  // IF_COND/FOR_COND yield 映射查询
+  //===--------------------------------------------------------------------===//
+
+  // 获取指定 IF_COND BasicBlock 的 IfYieldResultMapping
+  std::optional<IfYieldResultMapping> getIfYieldResultMapping(BasicBlock *ifCondBB) const {
+    auto it = ifYieldResultMap.find(ifCondBB);
+    if (it != ifYieldResultMap.end()) {
+      return it->second;
+    }
+    return std::nullopt;
+  }
+
+  // 获取指定 FOR_COND BasicBlock 的 ForYieldIterArgMapping
+  std::optional<ForYieldIterArgMapping> getForYieldIterArgMapping(BasicBlock *forCondBB) const {
+    auto it = forYieldIterArgMap.find(forCondBB);
+    if (it != forYieldIterArgMap.end()) {
+      return it->second;
+    }
+    return std::nullopt;
+  }
+
+  // 注册 IfYieldResultMapping（由 ControlFlowGraphBuilder 调用）
+  void registerIfYieldResultMapping(BasicBlock *ifCondBB,
+                                     const IfYieldResultMapping &mapping) {
+    ifYieldResultMap[ifCondBB] = mapping;
+  }
+
+  // 注册 ForYieldIterArgMapping（由 ControlFlowGraphBuilder 调用）
+  void registerForYieldIterArgMapping(BasicBlock *forCondBB,
+                                       const ForYieldIterArgMapping &mapping) {
+    forYieldIterArgMap[forCondBB] = mapping;
+  }
+
+  // 获取所有 IF_COND 块的映射
+  const DenseMap<BasicBlock *, IfYieldResultMapping> &getAllIfYieldResultMappings() const {
+    return ifYieldResultMap;
+  }
+
+  // 获取所有 FOR_COND 块的映射
+  const DenseMap<BasicBlock *, ForYieldIterArgMapping> &getAllForYieldIterArgMappings() const {
+    return forYieldIterArgMap;
+  }
+
+  // 根据 iter arg Value 和 forCondBB 查找对应的 init instruction 和 yield instruction
+  // 返回值: {initInst, yieldInst}，如果找不到则返回 std::nullopt
+  std::optional<std::pair<Instruction*, Instruction*>> getIterArgPair(
+      BasicBlock* forCondBB, Value iterArg) const;
+
   // 结构化搜索 API
   // 从起始块开始，沿着 successor 顺序向下结构化搜索
   // NORMAL 块：遍历每个 Instruction，调用 callback 传入 Operation*
@@ -259,6 +336,10 @@ private:
 
   // Operation 到 Instruction 的映射（支持快速查询）
   std::unordered_map<Operation*, Instruction*> opToInstructionMap;
+
+  // IF_COND/FOR_COND 的 yield 映射
+  DenseMap<BasicBlock*, IfYieldResultMapping> ifYieldResultMap;
+  DenseMap<BasicBlock*, ForYieldIterArgMapping> forYieldIterArgMap;
 };
 
 } // namespace cfg

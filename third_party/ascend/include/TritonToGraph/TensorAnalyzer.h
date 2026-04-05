@@ -63,19 +63,14 @@ public:
   // 复用 GraphAnalysis::ProgramSlicer 进行切片计算
   //===----------------------------------------------------------------------===
 
-  /// 对指定 value 进行向上的基于 DFG 的数据切片
-  /// 使用 SSA 关系追踪数据的定义链
+  /// 对指定 value 进行向上的基于 DFG 的数据切片（传入自定义遍历器）
   ///
   /// @param value 起始分析的 value
-  /// @param useMemorySSA 是否使用 Memory SSA（true=追踪tensor/pointer，false=追踪标量）
-  /// @return ProgramSlice（使用 GraphAnalysis 中的类）
-  ProgramSlice computeBackwardSlice(Value value, bool useMemorySSA = false);
-
-  /// 批量对多个 values 进行切片
-  /// 在同一个切片内自动去重（避免同一切片中重复包含同一指令）
-  /// 注意：不同切片之间可以重复使用同一指令
-  ProgramSlice computeBackwardSliceForValues(ArrayRef<Value> values,
-                                              bool useMemorySSA = false);
+  /// @param visitor 自定义 DFG 遍历器
+  /// @param useMemorySSA 是否使用 Memory SSA
+  /// @return ProgramSlice
+  ProgramSlice& computeBackwardSlice(Value value, DFGTraversalBase& visitor,
+                                     bool useMemorySSA = false);
 
   /// 获取按拓扑序排列的切片指令
   /// 由于 ProgramSlice 内部使用 DenseSet 存储，不保证顺序，
@@ -143,11 +138,10 @@ private:
   static bool isDotOp(Operation* op);
 
   //===----------------------------------------------------------------------===
-  // 符号执行分析 API（T14 新增）
+  // 符号执行分析 API
   //===----------------------------------------------------------------------===
 
   /// 使用符号执行分析 load 指令
-  /// 这是 T14 的核心功能，结合程序切片和符号执行
   ascend::TensorAccessInfo analyzeLoadWithSymbolicExecution(
       triton::LoadOp loadOp);
 

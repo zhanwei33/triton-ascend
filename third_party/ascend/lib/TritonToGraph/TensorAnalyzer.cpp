@@ -5,6 +5,7 @@
 #include "TritonToGraph/TensorAnalyzer.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/Support/Debug.h"
 #include <memory>
 
@@ -137,8 +138,9 @@ unsigned TensorAnalyzer::getTopoOrder(Instruction* inst) const {
 // 程序切片实现
 // 复用 GraphAnalysis::ProgramSlicer
 //===----------------------------------------------------------------------===//
-
-ProgramSlice TensorAnalyzer::computeBackwardSlice(Value value, bool useMemorySSA) {
+ProgramSlice& TensorAnalyzer::computeBackwardSlice(Value value,
+                                                   DFGTraversalBase& visitor,
+                                                   bool useMemorySSA) {
   SliceCriterion criterion;
   criterion.seeds.push_back(value);
   criterion.dir = SliceCriterion::BACKWARD;
@@ -146,9 +148,14 @@ ProgramSlice TensorAnalyzer::computeBackwardSlice(Value value, bool useMemorySSA
   criterion.dfgOpts.followPhi = true;
 
   LLVM_DEBUG(llvm::dbgs()
-                 << "[TensorAnalyzer] Computing backward slice for value\n");
+                 << "[TensorAnalyzer] Computing backward slice with custom visitor\n");
 
-  ProgramSlice slice = slicer.compute(criterion);
+  // 使用自定义 visitor 进行切片计算
+  // visitor 通过 DFGTraversalBase::slice 引用收集指令
+  slicer.compute(criterion, visitor);
+
+  // 从 visitor 的 slice 成员获取结果
+  ProgramSlice& slice = visitor.slice;
 
   // 记录切片中的指令为已分析
   markSliceAnalyzed(slice);
@@ -156,30 +163,6 @@ ProgramSlice TensorAnalyzer::computeBackwardSlice(Value value, bool useMemorySSA
   LLVM_DEBUG(llvm::dbgs()
                  << "[TensorAnalyzer] Slice complete: " << slice.size()
                  << " instructions\n");
-
-  return slice;
-}
-
-ProgramSlice TensorAnalyzer::computeBackwardSliceForValues(
-    ArrayRef<Value> values, bool useMemorySSA) {
-  SliceCriterion criterion;
-  criterion.seeds = SmallVector<Value>(values);
-  criterion.dir = SliceCriterion::BACKWARD;
-  criterion.dfgOpts.useMemorySSA = useMemorySSA;
-  criterion.dfgOpts.followPhi = true;
-
-  LLVM_DEBUG(llvm::dbgs()
-                 << "[TensorAnalyzer] Computing backward slice for "
-                 << values.size() << " values\n");
-
-  ProgramSlice slice = slicer.compute(criterion);
-
-  // 记录切片中的指令为已分析
-  markSliceAnalyzed(slice);
-
-  LLVM_DEBUG(llvm::dbgs()
-                 << "[TensorAnalyzer] Multi-value slice complete: "
-                 << slice.size() << " instructions\n");
 
   return slice;
 }
@@ -242,16 +225,46 @@ ascend::TensorAccessInfo TensorAnalyzer::analyzeLoadWithSymbolicExecution(
   LLVM_DEBUG(llvm::dbgs()
                  << "[TensorAnalyzer] Starting symbolic execution analysis for load\n");
 
-  // Step 1: 对 load 的 ptr 进行程序切片
+  // Step 1: 对 load 的 ptr 进行程序切片（使用定制的遍历器）
   Value ptr = loadOp.getPtr();
-  ProgramSlice slice = computeBackwardSlice(ptr, /*useMemorySSA=*/false);
+
+  // 定制的 DFGTraversal：遇到 Load 停止追踪，记录 for/if 的 definedValues
+  class LoadSliceBuilder : public DFGTraversalBase {
+  public:
+    LoadSliceBuilder(ControlFlowGraph& c) : cfg(c) {}
+
+    bool VisitDef(Value value, Operation* defOp, int depth) override {
+      // 将指令加入 slice
+      if (Instruction* inst = cfg.getInstruction(defOp)) {
+        slice.add(inst);
+      }
+
+      // 如果是 Load 操作，停止追踪其 operand
+      if (isa<triton::LoadOp>(defOp)) {
+        return false;
+      }
+
+      // 如果是 for/if 操作，记录其定义的 values
+      if (isa<scf::ForOp>(defOp) || isa<scf::IfOp>(defOp)) {
+          slice.definedValues_[defOp] = &value;
+      }
+
+      return true;
+    }
+
+  private:
+    ControlFlowGraph& cfg;
+  };
+
+  LoadSliceBuilder builder(cfg);
+  computeBackwardSlice(ptr, builder, /*useMemorySSA=*/false);
 
   LLVM_DEBUG(llvm::dbgs()
                  << "[TensorAnalyzer] Computed backward slice with "
-                 << slice.size() << " instructions\n");
+                 << builder.slice.size() << " instructions\n");
 
   // Step 2: 获取拓扑序排列的切片指令
-  SmallVector<Instruction*> orderedInsts = getOrderedSliceInstructions(slice);
+  SmallVector<Instruction*> orderedInsts = getOrderedSliceInstructions(builder.slice);
 
   // Step 3: 符号执行切片中的指令
   // 重置符号执行状态（为每个load创建新的状态）

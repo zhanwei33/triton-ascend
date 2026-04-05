@@ -20,76 +20,27 @@ namespace triton {
 namespace ascend {
 
 //===----------------------------------------------------------------------===//
-// 循环上下文
-//===----------------------------------------------------------------------===//
-
-struct LoopContext {
-  scf::ForOp loopOp;
-  SymValue* inductionVar;  // 迭代变量的符号表示
-  SymValue* lowerBound;
-  SymValue* upperBound;
-  SymValue* step;
-
-  LoopContext(scf::ForOp loop, SymValue* iv, SymValue* lb,
-              SymValue* ub, SymValue* s)
-      : loopOp(loop), inductionVar(iv), lowerBound(lb),
-        upperBound(ub), step(s) {}
-};
-
-//===----------------------------------------------------------------------===//
-// 条件分支上下文
-//===----------------------------------------------------------------------===//
-
-struct ConditionContext {
-  Value condition;      // 条件值
-  bool isTrueBranch;    // 是否为true分支
-  SmallVector<std::pair<Value, SymValue*>> branchValues;  // 分支内定义的value
-
-  ConditionContext(Value cond, bool isTrue)
-      : condition(cond), isTrueBranch(isTrue) {}
-};
-
-//===----------------------------------------------------------------------===//
 // 符号执行状态
 //===----------------------------------------------------------------------===//
 
 class SymbolicExecutionState {
 public:
   // Value -> SymValue 映射
-  DenseMap<Value, SymValue*> valueMap;
-
-  // 循环上下文栈（支持嵌套循环）
-  SmallVector<LoopContext> loopStack;
-
-  // 条件分支上下文栈
-  SmallVector<ConditionContext> conditionStack;
+  DenseMap<Value, std::shared_ptr<SymValue>> valueMap;
 
 public:
   SymbolicExecutionState() = default;
 
-  // 获取/设置 SymValue
+  // 获取 SymValue
   SymValue* getSymValue(Value v) const;
-  void setSymValue(Value v, SymValue* sv);
+  ScalarSV* getScalarValue(Value v) const;
+  TensorSV* getTensorValue(Value v) const;
+
+  // 设置 SymValue
+  void setSymValue(Value v, std::shared_ptr<SymValue> sv);
+
+  // 检查是否存在
   bool hasSymValue(Value v) const;
-
-  // 循环上下文管理
-  void enterLoop(scf::ForOp loop, SymValue* iv, SymValue* lb,
-                 SymValue* ub, SymValue* step);
-  void exitLoop();
-  bool inLoop() const { return !loopStack.empty(); }
-  const LoopContext& getCurrentLoop() const;
-
-  // 条件上下文管理
-  void enterCondition(Value cond, bool isTrueBranch);
-  void exitCondition();
-  bool inCondition() const { return !conditionStack.empty(); }
-
-  // 合并两个状态（用于if-else分支合并）
-  // 使用Select操作符合并两个分支的values
-  static void mergeStates(SymbolicExecutionState& result,
-                          const SymbolicExecutionState& trueState,
-                          const SymbolicExecutionState& falseState,
-                          Value condition);
 
   // 打印当前状态（调试用）
   void print(llvm::raw_ostream& os) const;
@@ -103,9 +54,9 @@ class SymbolicExecutionEngine {
 public:
   SymbolicExecutionEngine() = default;
 
-  //===----------------------------------------------------------------------===
+  //===----------------------------------------------------------------------===//
   // 主要执行接口
-  //===----------------------------------------------------------------------===
+  //===----------------------------------------------------------------------===//
 
   // 执行基本块中的所有指令
   void executeBlock(Block* block, SymbolicExecutionState& state);
@@ -117,15 +68,15 @@ public:
   void executeOperations(ArrayRef<Operation*> ops,
                          SymbolicExecutionState& state);
 
-  //===----------------------------------------------------------------------===
+  //===----------------------------------------------------------------------===//
   // Arith 指令执行器
-  //===----------------------------------------------------------------------===
+  //===----------------------------------------------------------------------===//
 
   // arith.constant
   void executeArithConstant(arith::ConstantOp op,
                             SymbolicExecutionState& state);
 
-  // arith.binary arithmetic (addi, subi, muli, divi, etc.)
+  // arith.binary arithmetic (addi, subi, muli, divi, remi, etc.)
   void executeArithBinary(ArithmeticOpInterface op,
                           SymbolicExecutionState& state);
 
@@ -137,16 +88,12 @@ public:
   void executeArithCmpI(arith::CmpIOp op,
                         SymbolicExecutionState& state);
 
-  // arith.cmpf
-  void executeArithCmpF(arith::CmpFOp op,
-                        SymbolicExecutionState& state);
-
   // arith.index_cast / arith.sitofp / etc.
   void executeArithCast(Operation* op, SymbolicExecutionState& state);
 
-  //===----------------------------------------------------------------------===
+  //===----------------------------------------------------------------------===//
   // Triton 指令执行器
-  //===----------------------------------------------------------------------===
+  //===----------------------------------------------------------------------===//
 
   // tt.get_program_id
   void executeGetProgramID(tt::GetProgramIdOp op,
@@ -176,43 +123,44 @@ public:
   void executeMakeTensorPtr(tt::MakeTensorPtrOp op,
                             SymbolicExecutionState& state);
 
-  // tt.advance
-  void executeAdvance(tt::AdvanceOp op,
-                      SymbolicExecutionState& state);
+  // tt.load
+  void executeLoad(tt::LoadOp op,
+                   SymbolicExecutionState& state);
 
-  //===----------------------------------------------------------------------===
-  // 控制流指令执行器
-  //===----------------------------------------------------------------------===
+  //===----------------------------------------------------------------------===//
+  // 控制流指令执行器（简化版）
+  //===----------------------------------------------------------------------===//
 
-  // scf.for
+  // scf.for - 简化为创建 InductionSV 和 IterArgSV
   void executeForLoop(scf::ForOp loop,
                       SymbolicExecutionState& state);
 
-  // scf.if
+  // scf.if - 简化为创建 UnknownSV for results
   void executeIfOp(scf::IfOp op,
                    SymbolicExecutionState& state);
 
-  // scf.yield
+  // scf.yield - 简化处理
   void executeYield(scf::YieldOp op,
                     SymbolicExecutionState& state);
 
+  //===----------------------------------------------------------------------===//
+  // 辅助方法
+  //===----------------------------------------------------------------------===//
+
+  // 为入参创建 SymValue（指针类型创建 GmPtrSV，其他创建 UnknownSV）
+  void createSymValueForArgument(Value arg, SymbolicExecutionState& state);
+
+  // 创建 UnknownSV（根据类型区分 Scalar 或 Tensor）
+  std::shared_ptr<SymValue> createUnknownSV(Type type);
+
 private:
-  // 辅助方法：根据arith操作符创建对应的ScalarExprSV::OpKind
-  llvm::Optional<ScalarExprSV::OpKind> getArithOpKind(
-      ArithmeticOpInterface op);
+  // 辅助方法：根据arith操作符创建对应的表达式
+  std::shared_ptr<ScalarSV> createArithExpr(
+      StringRef opName, std::shared_ptr<ScalarSV> lhs,
+      std::shared_ptr<ScalarSV> rhs, Type resultType);
 
-  // 辅助方法：根据arith.cmpi谓词创建对应的OpKind
-  ScalarExprSV::OpKind getCmpIOpKind(arith::CmpIPredicate pred);
-
-  // 辅助方法：根据arith.cmpf谓词创建对应的OpKind
-  ScalarExprSV::OpKind getCmpFOpKind(arith::CmpFPredicate pred);
-
-  // 辅助方法：处理循环迭代参数（iter_args）
-  void handleIterArgs(scf::ForOp loop, SymbolicExecutionState& state);
-
-  // 辅助方法：处理循环yield
-  void handleLoopYield(scf::ForOp loop, scf::YieldOp yield,
-                       SymbolicExecutionState& state);
+  // 辅助方法：根据arith.cmpi谓词创建对应的CmpExprSV
+  CmpExprSV::Pred getCmpIPred(arith::CmpIPredicate pred);
 };
 
 } // namespace ascend

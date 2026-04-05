@@ -352,6 +352,37 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleIfOp(scf::IfOp ifOp, cfg::Contro
   // 设置 ifCondBB 的出口块为 mergeBB
   ifCondBB->setExitBlock(mergeBB);
 
+  // 注册 IfYieldResultMapping
+  IfYieldResultMapping ifMapping;
+  for (Value result : ifOp.getResults()) {
+    ifMapping.resultValues.push_back(result);
+  }
+  // 处理 then 分支的 yield values
+  if (!ifOp.getThenRegion().empty()) {
+    Block &thenBlock = ifOp.getThenRegion().back();
+    for (Operation &thenOp : thenBlock) {
+      if (auto yieldOp = dyn_cast<scf::YieldOp>(thenOp)) {
+        for (Value operand : yieldOp.getOperands()) {
+          ifMapping.thenYieldValues.push_back(operand);
+        }
+        break;
+      }
+    }
+  }
+  // 处理 else 分支的 yield values
+  if (!ifOp.getElseRegion().empty()) {
+    Block &elseBlock = ifOp.getElseRegion().back();
+    for (Operation &elseOp : elseBlock) {
+      if (auto yieldOp = dyn_cast<scf::YieldOp>(elseOp)) {
+        for (Value operand : yieldOp.getOperands()) {
+          ifMapping.elseYieldValues.push_back(operand);
+        }
+        break;
+      }
+    }
+  }
+  cfg.registerIfYieldResultMapping(ifCondBB, ifMapping);
+
   // 处理 then 分支
   cfg::BasicBlock *thenExitBB = nullptr;
   if (!ifOp.getThenRegion().empty()) {
@@ -414,6 +445,32 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleForOp(scf::ForOp forOp, cfg::Con
 
   // 设置 forCondBB 的出口块为 loopExitBB
   forCondBB->setExitBlock(loopExitBB);
+
+  // 注册 ForYieldIterArgMapping
+  ForYieldIterArgMapping forMapping;
+  // iterArgValues: 循环体内使用的 region iter args
+  for (Value iterArg : forOp.getRegionIterArgs()) {
+    forMapping.iterArgValues.push_back(iterArg);
+  }
+  // initValues: scf.for 的初始 operand (initVals)
+  for (Value initVal : forOp.getInitVals()) {
+    forMapping.initValues.push_back(initVal);
+  }
+  for (Value result : forOp.getResults()) {
+    forMapping.resultValues.push_back(result);
+  }
+  if (!forOp.getRegion().empty()) {
+    Block &loopBlock = forOp.getRegion().back();
+    for (Operation &loopOp : loopBlock) {
+      if (auto yieldOp = dyn_cast<scf::YieldOp>(loopOp)) {
+        for (Value operand : yieldOp.getOperands()) {
+          forMapping.yieldValues.push_back(operand);
+        }
+        break;
+      }
+    }
+  }
+  cfg.registerForYieldIterArgMapping(forCondBB, forMapping);
 
   // 构建循环体的 CFG
   auto result = buildForRegion(forOp.getRegion(), cfg, loopBodyEntryBB, forCondBB);
@@ -779,111 +836,3 @@ ControlFlowGraphBuilder::collectForCondBlocks(cfg::ControlFlowGraph &cfg) {
   return forCondBlocks;
 }
 
-std::optional<IfYieldResultMapping>
-ControlFlowGraphBuilder::getIfYieldResultMapping(cfg::BasicBlock *ifCondBB) {
-  // 验证输入基本块类型
-  if (!ifCondBB || ifCondBB->getType() != BlockType::IF_COND) {
-    return std::nullopt;
-  }
-
-  // 获取 IF_COND 块中的指令（应该包含 scf.if 操作）
-  if (ifCondBB->getNumInstructions() == 0) {
-    return std::nullopt;
-  }
-
-  cfg::Instruction *inst = ifCondBB->getInstruction(0);
-  Operation *op = inst->getOperation();
-
-  // 确保是 scf.if 操作
-  auto ifOp = dyn_cast<scf::IfOp>(op);
-  if (!ifOp) {
-    return std::nullopt;
-  }
-
-  IfYieldResultMapping mapping;
-
-  // 收集 result values
-  for (Value result : ifOp.getResults()) {
-    mapping.resultValues.push_back(result);
-  }
-
-  // 处理 then 分支的 yield values
-  if (!ifOp.getThenRegion().empty()) {
-    Block &thenBlock = ifOp.getThenRegion().back();
-    // 查找 then 区域末尾的 scf.yield 操作
-    for (Operation &thenOp : thenBlock) {
-      if (auto yieldOp = dyn_cast<scf::YieldOp>(thenOp)) {
-        for (Value operand : yieldOp.getOperands()) {
-          mapping.thenYieldValues.push_back(operand);
-        }
-        break;
-      }
-    }
-  }
-
-  // 处理 else 分支的 yield values（如果有）
-  if (!ifOp.getElseRegion().empty()) {
-    Block &elseBlock = ifOp.getElseRegion().back();
-    // 查找 else 区域末尾的 scf.yield 操作
-    for (Operation &elseOp : elseBlock) {
-      if (auto yieldOp = dyn_cast<scf::YieldOp>(elseOp)) {
-        for (Value operand : yieldOp.getOperands()) {
-          mapping.elseYieldValues.push_back(operand);
-        }
-        break;
-      }
-    }
-  }
-
-  return mapping;
-}
-
-std::optional<ForYieldIterArgMapping>
-ControlFlowGraphBuilder::getForYieldIterArgMapping(cfg::BasicBlock *forCondBB) {
-  // 验证输入基本块类型
-  if (!forCondBB || forCondBB->getType() != BlockType::FOR_COND) {
-    return std::nullopt;
-  }
-
-  // 获取 FOR_COND 块中的指令（应该包含 scf.for 操作）
-  if (forCondBB->getNumInstructions() == 0) {
-    return std::nullopt;
-  }
-
-  cfg::Instruction *inst = forCondBB->getInstruction(0);
-  Operation *op = inst->getOperation();
-
-  // 确保是 scf.for 操作
-  auto forOp = dyn_cast<scf::ForOp>(op);
-  if (!forOp) {
-    return std::nullopt;
-  }
-
-  ForYieldIterArgMapping mapping;
-
-  // 收集 iter_args（循环初始参数）
-  for (Value iterArg : forOp.getRegionIterArgs()) {
-    mapping.iterArgValues.push_back(iterArg);
-  }
-
-  // 收集 result values
-  for (Value result : forOp.getResults()) {
-    mapping.resultValues.push_back(result);
-  }
-
-  // 处理循环体的 yield values
-  if (!forOp.getRegion().empty()) {
-    Block &loopBlock = forOp.getRegion().back();
-    // 查找循环体末尾的 scf.yield 操作
-    for (Operation &loopOp : loopBlock) {
-      if (auto yieldOp = dyn_cast<scf::YieldOp>(loopOp)) {
-        for (Value operand : yieldOp.getOperands()) {
-          mapping.yieldValues.push_back(operand);
-        }
-        break;
-      }
-    }
-  }
-
-  return mapping;
-}

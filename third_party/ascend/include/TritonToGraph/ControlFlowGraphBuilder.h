@@ -66,30 +66,6 @@ protected:
   std::unique_ptr<cfg::ControlFlowGraph> buildForFunction(triton::FuncOp func);
 };
 
-// 添加数据结构定义
-// IF_COND 的 yield value 和 result value 的对应关系
-struct IfYieldResultMapping {
-  // then 分支的 yield values（来自 scf.yield 操作的操作数）
-  SmallVector<Value> thenYieldValues;
-  // else 分支的 yield values（如果有 else 分支）
-  SmallVector<Value> elseYieldValues;
-  // if 操作的 result values
-  SmallVector<Value> resultValues;
-  // 对应关系: resultValues[i] 对应 thenYieldValues[i] 或 elseYieldValues[i]
-};
-
-// FOR_COND 的 yield value 和 iter args value 的对应关系
-struct ForYieldIterArgMapping {
-  // yield 操作的 values（来自循环体末尾的 scf.yield）
-  SmallVector<Value> yieldValues;
-  // iter_args（循环初始参数，对应 for 操作的 iter_args）
-  SmallVector<Value> iterArgValues;
-  // for 操作的 result values
-  SmallVector<Value> resultValues;
-  // 对应关系: iterArgValues[i] 在循环体中使用时被更新，yieldValues[i] 是新的值
-  // resultValues[i] 对应最后一次迭代的 yieldValues[i]
-};
-
 // COND_BR 的 true/false 分支信息
 struct CondBranchMapping {
   // true 分支的目标块参数值（来自 cf.cond_br 的 trueOperands）
@@ -172,17 +148,7 @@ public:
   // 遍历 CFG 中所有基本块，返回类型为 FOR_COND 的基本块列表
   SmallVector<cfg::BasicBlock *> collectForCondBlocks(cfg::ControlFlowGraph &cfg);
 
-  // 3. 获取 IF_COND 对应的 yield value 和 result value 的对应关系
-  // 参数: IF_COND 类型的基本块
-  // 返回: IfYieldResultMapping 结构体，包含 then/else 的 yield values 和 result values
-  std::optional<IfYieldResultMapping> getIfYieldResultMapping(cfg::BasicBlock *ifCondBB);
-
-  // 4. 获取 FOR_COND 对应的 yield value 和 iter args value 的对应关系
-  // 参数: FOR_COND 类型的基本块
-  // 返回: ForYieldIterArgMapping 结构体，包含 yield values、iter_args 和 result values
-  std::optional<ForYieldIterArgMapping> getForYieldIterArgMapping(cfg::BasicBlock *forCondBB);
-
-  // 5. 快速收集所有的 COND_BR 基本块
+  // 3. 快速收集所有的 COND_BR 基本块
   // 遍历 CFG 中所有基本块，返回类型为 COND_BR 的基本块列表
   SmallVector<cfg::BasicBlock *> collectCondBrBlocks(cfg::ControlFlowGraph &cfg);
 

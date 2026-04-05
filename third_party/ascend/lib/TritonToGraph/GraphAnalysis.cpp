@@ -179,14 +179,6 @@ void DFGTraverser::dfsBackward(Value seed, DFGTraversalBase& visitor,
   dfsBackwardImpl(seed, visitor, visited, opts, 0);
 }
 
-void DFGTraverser::dfsBackward(ArrayRef<Value> seeds, DFGTraversalBase& visitor,
-                                const Options& opts) {
-  DenseSet<Operation*> visited;
-  for (Value seed : seeds) {
-    dfsBackwardImpl(seed, visitor, visited, opts, 0);
-  }
-}
-
 void DFGTraverser::dfsBackwardImpl(Value value, DFGTraversalBase& visitor,
                                     DenseSet<Operation*>& visited,
                                     const Options& opts, int depth) {
@@ -215,7 +207,8 @@ void DFGTraverser::dfsBackwardImpl(Value value, DFGTraversalBase& visitor,
 
   visited.insert(defOp);
 
-  visitor.VisitDef(value, defOp, depth);
+  if(!visitor.VisitDef(value, defOp, depth))
+    return;
 
   // recursively visit operands
   for (Value operand : defOp->getOperands()) {
@@ -428,57 +421,62 @@ RegionAnalyzer::analyzeExternalDeps(const OpsRegion& region) const {
 }
 
 //===----------------------------------------------------------------------===//
+// SliceBuilder - 默认的切片构建遍历器
+//===----------------------------------------------------------------------===//
+
+namespace {
+class SliceBuilder : public DFGTraversalBase {
+public:
+  SliceBuilder(ControlFlowGraph& cfg)
+      : cfg(cfg) {}
+
+  bool VisitDef(Value value, Operation* defOp, int depth) override {
+    if (Instruction* inst = cfg.getInstruction(defOp)) {
+      slice.add(inst);
+    }
+    return true;
+  }
+
+  bool VisitUse(Value value, OpOperand* use, int depth) override {
+    Operation* userOp = use->getOwner();
+    if (Instruction* inst = cfg.getInstruction(userOp)) {
+      slice.add(inst);
+    }
+    return true;
+  }
+
+private:
+  ControlFlowGraph& cfg;
+};
+} // namespace
+
+//===----------------------------------------------------------------------===//
 // ProgramSlicer Implementation
 //===----------------------------------------------------------------------===//
 
-ProgramSlice ProgramSlicer::compute(const SliceCriterion& criterion) {
-  ProgramSlice slice;
-
+void ProgramSlicer::compute(const SliceCriterion& criterion,
+                                    DFGTraversalBase& visitor) {
   DFGTraverser dfgTraverser(dfg);
 
   for (Value seed : criterion.seeds) {
-    class SliceBuilder : public DFGTraversalBase {
-    public:
-      SliceBuilder(ProgramSlice& slice, ControlFlowGraph& cfg)
-          : slice(slice), cfg(cfg) {}
-
-      bool VisitDef(Value value, Operation* defOp, int depth) override {
-        if (Instruction* inst = cfg.getInstruction(defOp)) {
-          slice.add(inst);
-        }
-        return true;
-      }
-
-      bool VisitUse(Value value, OpOperand* use, int depth) override {
-        Operation* userOp = use->getOwner();
-        if (Instruction* inst = cfg.getInstruction(userOp)) {
-          slice.add(inst);
-        }
-        return true;
-      }
-
-    private:
-      ProgramSlice& slice;
-      ControlFlowGraph& cfg;
-    };
-
-    SliceBuilder builder(slice, cfg);
-
     switch (criterion.dir) {
       case SliceCriterion::BACKWARD:
-        dfgTraverser.dfsBackward(seed, builder, criterion.dfgOpts);
+        dfgTraverser.dfsBackward(seed, visitor, criterion.dfgOpts);
         break;
       case SliceCriterion::FORWARD:
-        dfgTraverser.dfsForward(seed, builder, criterion.dfgOpts);
+        dfgTraverser.dfsForward(seed, visitor, criterion.dfgOpts);
         break;
       case SliceCriterion::BIDIRECTIONAL:
-        dfgTraverser.dfsBackward(seed, builder, criterion.dfgOpts);
-        dfgTraverser.dfsForward(seed, builder, criterion.dfgOpts);
+        dfgTraverser.dfsBackward(seed, visitor, criterion.dfgOpts);
+        dfgTraverser.dfsForward(seed, visitor, criterion.dfgOpts);
         break;
     }
   }
+}
 
-  return slice;
+void ProgramSlicer::compute(const SliceCriterion& criterion) {
+  SliceBuilder builder(cfg);
+  compute(criterion, builder);
 }
 
 ProgramSlice ProgramSlicer::sliceFromYields(ArrayRef<Value> yields,
@@ -521,9 +519,17 @@ OpsRegion ProgramSlice::toRegion(StringRef name) const {
   return region;
 }
 
+Value* ProgramSlice::getDefinedValue(Operation* defOp) const {
+  auto it = definedValues_.find(defOp);
+  if (it != definedValues_.end()) {
+    return it->second;
+  }
+  return nullptr;
+}
+
 //===----------------------------------------------------------------------===//
 // RegionAbsorber Implementation
-//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------=====
 
 void RegionAbsorber::absorb(OpsRegion& region, ArrayRef<Instruction*> seeds,
                               const AbsorptionPolicy& policy) {

@@ -10,66 +10,117 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Casting.h"
+#include <memory>
 
 namespace mlir {
 namespace triton {
+namespace cfg {
+class Instruction;  // Forward declaration
+}
 namespace ascend {
+
+using cfg::Instruction;  // Bring Instruction into ascend namespace
 
 //===----------------------------------------------------------------------===//
 // SymValue - 符号执行值基类
-// 使用MLIR风格的dyn_cast进行类型转换
 //===----------------------------------------------------------------------===//
 
-class SymValue {
+class SymValue : public std::enable_shared_from_this<SymValue> {
 public:
   enum class Kind {
-    // 标量类型
-    ScalarConstantInt,   // 整数常量
-    ScalarConstantFloat, // 浮点常量
-    ScalarExpr,          // 代数表达式
-    ProgramID,           // get_program_id
+    // Scalar
+    ScalarConstantInt,
+    ScalarConstantFloat,
+    AddExpr,
+    SubExpr,
+    MulExpr,
+    DivExpr,
+    RangeExpr,
+    CmpExpr,
+    SelectExpr,
+    PtrExpr,
+    TensorPtr,      // make_tensor_ptr 结果
+    ProgramID,
+    GmPtr,          // kernel 指针类型入参
+    RemExpr,        // rem 操作产生的值
+    Unknown,        // 未知值（如 load 结果）
+    Induction,      // for 循环迭代变量
+    IterArg,        // for 的 iter_arg
 
-    // Tensor类型
-    TensorRange,         // make_range结果 (1D)
-    TensorSplat,         // splat结果
-    TensorExpr,          // tensor级算术运算
-
-    // 指针类型
-    PtrBase,             // addptr scalar
-    PtrTensor,           // addptr tensor
-
-    // 特殊
-    Unknown,
+    // Tensor
+    Tensor,
   };
 
-  SymValue(Kind k) : kind(k), elementType(nullptr) {}
+  SymValue(Kind k) : kind(k) {}
   virtual ~SymValue() = default;
 
   Kind getKind() const { return kind; }
-  Type getElementType() const { return elementType; }
-  void setElementType(Type t) { elementType = t; }
 
-  // 是否为常量
-  bool isConstant() const {
-    return kind == Kind::ScalarConstantInt ||
-           kind == Kind::ScalarConstantFloat;
-  }
+  bool isScalar() const;
+  bool isTensor() const;
 
-  // 打印调试用
   virtual void print(llvm::raw_ostream& os) const = 0;
 
 protected:
   Kind kind;
-  Type elementType;  // 所有SymValue都记住元素类型
 };
 
 //===----------------------------------------------------------------------===//
-// 标量常量基类（抽象）
+// ScalarSV - 标量基类（含维度信息）
+//
+// 维度信息语义：
+// - [-1]                : 未关联 Tensor
+// - [0]                 : 关联 make_range 结果 (1D)
+// - [0,1,2]             : 关联 splat 的 nD Tensor
+// - [1] 或 [0]          : 关联 expand_dims 结果（被保持的维度）
+// - [0,1]               : 关联 broadcast/代数运算的 2D Tensor
+// - [0,1,2]             : 关联 3D Tensor 的元素
 //===----------------------------------------------------------------------===//
 
-class ScalarConstantSV : public SymValue {
+class ScalarSV : public SymValue {
+public:
+  // 维度信息：该 Scalar 在哪些维度上存在
+  SmallVector<int> dims;
+
+  ScalarSV(Kind k) : SymValue(k) {
+    dims.push_back(-1);  // 默认未关联
+  }
+
+  explicit ScalarSV(Kind k, ArrayRef<int> d) : SymValue(k) {
+    dims.append(d.begin(), d.end());
+  }
+
+  // 获取数据类型
+  virtual Type getDataType() const = 0;
+
+  // 是否关联 Tensor
+  bool isAssociated() const {
+    return !(dims.size() == 1 && dims[0] == -1);
+  }
+
+  // 获取维度数
+  int getRank() const {
+    if (dims.size() == 1 && dims[0] == -1) return 0;
+    return dims.size();
+  }
+
+  // 设置维度（用于 splat/expand_dims/broadcast 后更新）
+  void setDims(ArrayRef<int> d) {
+    dims.clear();
+    dims.append(d.begin(), d.end());
+  }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() != Kind::Tensor;
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// ScalarConstantSV - 常量基类
+//===----------------------------------------------------------------------===//
+
+class ScalarConstantSV : public ScalarSV {
 public:
   static bool classof(const SymValue* v) {
     return v->getKind() == Kind::ScalarConstantInt ||
@@ -77,460 +128,533 @@ public:
   }
 
 protected:
-  ScalarConstantSV(Kind k) : SymValue(k) {}
+  ScalarConstantSV(Kind k) : ScalarSV(k) {}
+  ScalarConstantSV(Kind k, ArrayRef<int> d) : ScalarSV(k, d) {}
 };
 
 //===----------------------------------------------------------------------===//
-// 整数常量
+// ScalarConstantIntSV - 整数常量
 //===----------------------------------------------------------------------===//
 
 class ScalarConstantIntSV : public ScalarConstantSV {
   llvm::APInt value;
+  Type dataType;
 
 public:
-  explicit ScalarConstantIntSV(int64_t val)
+  explicit ScalarConstantIntSV(int64_t val, Type type)
       : ScalarConstantSV(Kind::ScalarConstantInt),
-        value(64, val, true) {}  // 64位有符号整数
+        value(64, val, true), dataType(type) {}
 
-  explicit ScalarConstantIntSV(const llvm::APInt& v)
-      : ScalarConstantSV(Kind::ScalarConstantInt),
-        value(v) {}
+  explicit ScalarConstantIntSV(int64_t val, Type type, ArrayRef<int> d)
+      : ScalarConstantSV(Kind::ScalarConstantInt, d),
+        value(64, val, true), dataType(type) {}
 
-  int64_t getInt() const {
-    // 确保value能被安全转换为int64_t
-    if (value.getBitWidth() <= 64) {
-      return value.getSExtValue();
-    }
-    // 如果位宽超过64，截取低64位
-    return value.trunc(64).getSExtValue();
-  }
-
+  int64_t getInt() const;
   const llvm::APInt& getAPInt() const { return value; }
+  Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
     return v->getKind() == Kind::ScalarConstantInt;
   }
-
-  void print(llvm::raw_ostream& os) const override {
-    os << "const.i" << value.getBitWidth() << "(" << getInt() << ")";
-  }
+  void print(llvm::raw_ostream& os) const override;
 };
 
 //===----------------------------------------------------------------------===//
-// 浮点常量
+// ScalarConstantFloatSV - 浮点常量
 //===----------------------------------------------------------------------===//
 
 class ScalarConstantFloatSV : public ScalarConstantSV {
   llvm::APFloat value;
+  Type dataType;
 
 public:
-  explicit ScalarConstantFloatSV(double val)
+  explicit ScalarConstantFloatSV(double val, Type type)
       : ScalarConstantSV(Kind::ScalarConstantFloat),
-        value(val) {}
+        value(val), dataType(type) {}
 
-  explicit ScalarConstantFloatSV(const llvm::APFloat& v)
-      : ScalarConstantSV(Kind::ScalarConstantFloat),
-        value(v) {}
+  explicit ScalarConstantFloatSV(double val, Type type, ArrayRef<int> d)
+      : ScalarConstantSV(Kind::ScalarConstantFloat, d),
+        value(val), dataType(type) {}
 
-  double getFloat() const { return value.convertToDouble(); }
-
+  double getFloat() const;
   const llvm::APFloat& getAPFloat() const { return value; }
+  Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
     return v->getKind() == Kind::ScalarConstantFloat;
   }
-
-  void print(llvm::raw_ostream& os) const override {
-    os << "const.f(" << getFloat() << ")";
-  }
+  void print(llvm::raw_ostream& os) const override;
 };
 
 //===----------------------------------------------------------------------===//
-// 代数表达式（支持代数变换）
+// 四则运算表达式 (Add/Sub/Mul/Div)
+//
+// 注意：构造时 dims 默认为 [-1]，应在 symbolic execution 时设置
 //===----------------------------------------------------------------------===//
 
-class ScalarExprSV : public SymValue {
-public:
-  enum class OpKind {
-    Add, Sub, Mul, Div,
-    CmpEQ, CmpNE, CmpLT, CmpLE, CmpGT, CmpGE,  // 比较运算
-    Select,  // 选择运算（用于识别min截断）
-  };
-
-private:
-  OpKind op;
-  SymValue* lhs;  // 左操作数
-  SymValue* rhs;  // 右操作数（Select时有特殊含义）
-  // 对于Select，condition单独存储
-  SymValue* condition;  // 仅用于Select
+class AddExprSV : public ScalarSV {
+  std::shared_ptr<ScalarSV> lhs;
+  std::shared_ptr<ScalarSV> rhs;
+  Type dataType;
 
 public:
-  // 二元运算构造函数
-  ScalarExprSV(OpKind o, SymValue* l, SymValue* r)
-      : SymValue(Kind::ScalarExpr),
-        op(o), lhs(l), rhs(r), condition(nullptr) {}
+  AddExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type);
 
-  // Select构造函数
-  ScalarExprSV(SymValue* cond, SymValue* trueVal, SymValue* falseVal)
-      : SymValue(Kind::ScalarExpr),
-        op(OpKind::Select), lhs(trueVal), rhs(falseVal), condition(cond) {}
-
-  OpKind getOp() const { return op; }
-  SymValue* getLHS() const { return lhs; }
-  SymValue* getRHS() const { return rhs; }
-  SymValue* getCondition() const { return condition; }
-
-  // 是否为比较操作
-  bool isComparison() const {
-    return op == OpKind::CmpEQ || op == OpKind::CmpNE ||
-           op == OpKind::CmpLT || op == OpKind::CmpLE ||
-           op == OpKind::CmpGT || op == OpKind::CmpGE;
-  }
-
-  // 是否为Select操作
-  bool isSelect() const { return op == OpKind::Select; }
-
-  // 代数变换方法
-  // 1. 操作符前后是常量，可计算结果
-  bool canFoldConstants() const;
-
-  // 2. 合并常量
-  ScalarConstantSV* foldConstants();
-
-  // 3. 应用结合律: (a + b) + c = a + (b + c)
-  ScalarExprSV* applyAssociative();
-
-  // 4. 应用分配率: a * (b + c) = a * b + a * c
-  ScalarExprSV* applyDistributive();
-
-  // 5. 规范化（交换律调整位置，常量放右边）
-  ScalarExprSV* canonicalize();
-
-  // 6. 合并同类项: x + 2*x = 3*x
-  ScalarExprSV* combineLikeTerms();
-
-  // 7. 完整简化（应用所有变换）
-  SymValue* simplify();
+  ScalarSV* getLHS() const { return lhs.get(); }
+  ScalarSV* getRHS() const { return rhs.get(); }
+  Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
-    return v->getKind() == Kind::ScalarExpr;
+    return v->getKind() == Kind::AddExpr;
   }
-
   void print(llvm::raw_ostream& os) const override;
+};
 
-  // 辅助方法：获取操作符字符串
-  static const char* getOpStr(OpKind k);
+class SubExprSV : public ScalarSV {
+  std::shared_ptr<ScalarSV> lhs;
+  std::shared_ptr<ScalarSV> rhs;
+  Type dataType;
+
+public:
+  SubExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type);
+
+  ScalarSV* getLHS() const { return lhs.get(); }
+  ScalarSV* getRHS() const { return rhs.get(); }
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::SubExpr;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+class MulExprSV : public ScalarSV {
+  std::shared_ptr<ScalarSV> lhs;
+  std::shared_ptr<ScalarSV> rhs;
+  Type dataType;
+
+public:
+  MulExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type);
+
+  ScalarSV* getLHS() const { return lhs.get(); }
+  ScalarSV* getRHS() const { return rhs.get(); }
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::MulExpr;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+class DivExprSV : public ScalarSV {
+  std::shared_ptr<ScalarSV> lhs;
+  std::shared_ptr<ScalarSV> rhs;
+  Type dataType;
+
+public:
+  DivExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type);
+
+  ScalarSV* getLHS() const { return lhs.get(); }
+  ScalarSV* getRHS() const { return rhs.get(); }
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::DivExpr;
+  }
+  void print(llvm::raw_ostream& os) const override;
 };
 
 //===----------------------------------------------------------------------===//
-// Program ID
+// RangeExprSV - make_range 产生的表达式 [start, end)
 //===----------------------------------------------------------------------===//
 
-class ProgramIDSV : public SymValue {
-  int axis;  // x=0, y=1, z=2
+class RangeExprSV : public ScalarSV {
+  int64_t start;
+  int64_t end;
+  Type dataType;
 
 public:
-  explicit ProgramIDSV(int a)
-      : SymValue(Kind::ProgramID), axis(a) {}
+  RangeExprSV(int64_t s, int64_t e, Type type);
+
+  int64_t getStart() const { return start; }
+  int64_t getEnd() const { return end; }
+  int64_t getSize() const { return end - start; }
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::RangeExpr;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// CmpExprSV - 比较表达式
+//
+// 注意：构造时 dims 默认为 [-1]，应在 symbolic execution 时设置
+//===----------------------------------------------------------------------===//
+
+class CmpExprSV : public ScalarSV {
+public:
+  enum class Pred { EQ, NE, LT, LE, GT, GE };
+
+private:
+  Pred pred;
+  std::shared_ptr<ScalarSV> lhs;
+  std::shared_ptr<ScalarSV> rhs;
+  Type dataType;
+
+public:
+  CmpExprSV(Pred p, std::shared_ptr<ScalarSV> l,
+            std::shared_ptr<ScalarSV> r, Type type);
+
+  Pred getPred() const { return pred; }
+  ScalarSV* getLHS() const { return lhs.get(); }
+  ScalarSV* getRHS() const { return rhs.get(); }
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::CmpExpr;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// SelectExprSV - 选择表达式
+//
+// 注意：构造时 dims 默认为 [-1]，应在 symbolic execution 时设置
+//===----------------------------------------------------------------------===//
+
+class SelectExprSV : public ScalarSV {
+  std::shared_ptr<CmpExprSV> condition;
+  std::shared_ptr<ScalarSV> trueVal;
+  std::shared_ptr<ScalarSV> falseVal;
+  Type dataType;
+
+public:
+  SelectExprSV(std::shared_ptr<CmpExprSV> cond,
+               std::shared_ptr<ScalarSV> t,
+               std::shared_ptr<ScalarSV> f, Type type);
+
+  CmpExprSV* getCondition() const { return condition.get(); }
+  ScalarSV* getTrueVal() const { return trueVal.get(); }
+  ScalarSV* getFalseVal() const { return falseVal.get(); }
+  Type getDataType() const override { return dataType; }
+
+  bool isMinPattern() const;
+  bool isMaxPattern() const;
+  bool isLengthCheck() const;
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::SelectExpr;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// PtrExprSV - 指针表达式 (addptr)
+//
+// 注意：构造时 dims 默认为 [-1]，应在 symbolic execution 时设置
+//===----------------------------------------------------------------------===//
+
+class PtrExprSV : public ScalarSV {
+  std::shared_ptr<ScalarSV> basePtr;  // 基指针
+  std::shared_ptr<ScalarSV> offset;   // 偏移量
+  Type pointeeType;
+
+public:
+  PtrExprSV(std::shared_ptr<ScalarSV> base,
+            std::shared_ptr<ScalarSV> off,
+            Type pt);
+
+  ScalarSV* getBasePtr() const { return basePtr.get(); }
+  ScalarSV* getOffset() const { return offset.get(); }
+  Type getPointeeType() const { return pointeeType; }
+  Type getDataType() const override {
+    return mlir::triton::PointerType::get(pointeeType, 1);
+  }
+
+  // 计算完整偏移 (base + offset)
+  std::shared_ptr<AddExprSV> computeTotalOffset() const;
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::PtrExpr;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// TensorPtrSV - make_tensor_ptr 产生的块指针
+// 保存 shape, strides, offsets, block shape 信息（使用 ScalarSV 支持符号表达式）
+//===----------------------------------------------------------------------===//
+
+class TensorPtrSV : public ScalarSV {
+  SmallVector<std::shared_ptr<ScalarSV>> shape;      // 总形状
+  SmallVector<std::shared_ptr<ScalarSV>> strides;    // 步长
+  SmallVector<std::shared_ptr<ScalarSV>> offsets;    // 偏移量
+  SmallVector<int64_t> blockShape;                   // 块形状
+  Type pointeeType;                                  // 指向的元素类型
+
+public:
+  TensorPtrSV(ArrayRef<std::shared_ptr<ScalarSV>> s,
+              ArrayRef<std::shared_ptr<ScalarSV>> st,
+              ArrayRef<std::shared_ptr<ScalarSV>> off,
+              ArrayRef<int64_t> bs,
+              Type pt)
+      : ScalarSV(Kind::TensorPtr),
+        pointeeType(pt) {
+    shape.append(s.begin(), s.end());
+    strides.append(st.begin(), st.end());
+    offsets.append(off.begin(), off.end());
+    blockShape.append(bs.begin(), bs.end());
+  }
+
+  ArrayRef<std::shared_ptr<ScalarSV>> getShape() const { return shape; }
+  ArrayRef<std::shared_ptr<ScalarSV>> getStrides() const { return strides; }
+  ArrayRef<std::shared_ptr<ScalarSV>> getOffsets() const { return offsets; }
+  ArrayRef<int64_t> getBlockShape() const { return blockShape; }
+  Type getPointeeType() const { return pointeeType; }
+  Type getDataType() const override {
+    return mlir::triton::PointerType::get(pointeeType, 1);
+  }
+
+  // 获取维度数（rank）
+  int getRank() const { return shape.size(); }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::TensorPtr;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// ProgramIDSV - get_program_id
+//===----------------------------------------------------------------------===//
+
+class ProgramIDSV : public ScalarSV {
+  int axis;  // 0=x, 1=y, 2=z
+  Type dataType;
+
+public:
+  ProgramIDSV(int a, Type type)
+      : ScalarSV(Kind::ProgramID), axis(a), dataType(type) {}
 
   int getAxis() const { return axis; }
-  const char* getAxisName() const {
-    return axis == 0 ? "x" : (axis == 1 ? "y" : "z");
-  }
+  Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
     return v->getKind() == Kind::ProgramID;
   }
-
-  void print(llvm::raw_ostream& os) const override {
-    os << "pid." << getAxisName();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// make_range 结果: tensor<len x element_type>
-//===----------------------------------------------------------------------===//
-
-class TensorRangeSV : public SymValue {
-  int64_t start, end;  // end是exclusive
-
-public:
-  TensorRangeSV(int64_t s, int64_t e)
-      : SymValue(Kind::TensorRange), start(s), end(e) {
-    assert(end > start && "make_range requires end > start");
-  }
-
-  int64_t getStart() const { return start; }
-  int64_t getEnd() const { return end; }
-  int64_t getLen() const { return end - start; }  // 隐含的shape
-
-  // 获取shape（1D）
-  SmallVector<int64_t> getShape() const {
-    return {getLen()};
-  }
-
-  // 获取第i个元素的SymValue（这是一个表达式，不是存储的值）
-  // 注意：这个返回的SymValue需要外部管理生命周期
-  ScalarExprSV* getElementExpr(int64_t index) const;
-
-  // 获取指定位置的常量值（如果可计算）
-  int64_t getElementValue(int64_t index) const {
-    return start + index;
-  }
-
-  static bool classof(const SymValue* v) {
-    return v->getKind() == Kind::TensorRange;
-  }
-
-  void print(llvm::raw_ostream& os) const override {
-    os << "range[" << start << ", " << end << ")";
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// splat 结果
-//===----------------------------------------------------------------------===//
-
-class TensorSplatSV : public SymValue {
-  SmallVector<int64_t> shape;
-  SymValue* elementValue;  // 广播的源值
-
-public:
-  TensorSplatSV(ArrayRef<int64_t> s, SymValue* ev)
-      : SymValue(Kind::TensorSplat),
-        shape(s), elementValue(ev) {}
-
-  ArrayRef<int64_t> getShape() const { return shape; }
-  SymValue* getElementValue() const { return elementValue; }
-
-  // 获取线性索引对应的元素（都指向同一个elementValue）
-  SymValue* getElement(int64_t linearIndex) const {
-    // splat的所有元素都相同，忽略索引
-    (void)linearIndex;
-    return elementValue;
-  }
-
-  // 多维索引转线性索引
-  int64_t getLinearIndex(ArrayRef<int64_t> indices) const;
-
-  // 线性索引转多维坐标
-  SmallVector<int64_t> getMultiDimIndex(int64_t linearIdx) const;
-
-  static bool classof(const SymValue* v) {
-    return v->getKind() == Kind::TensorSplat;
-  }
-
-  void print(llvm::raw_ostream& os) const override {
-    os << "splat(";
-    elementValue->print(os);
-    os << ") -> [";
-    for (size_t i = 0; i < shape.size(); ++i) {
-      if (i > 0) os << "x";
-      os << shape[i];
-    }
-    os << "]";
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Tensor级算术运算
-//===----------------------------------------------------------------------===//
-
-class TensorExprSV : public SymValue {
-public:
-  enum class OpKind {
-    Add, Sub, Mul, Div,
-    CmpEQ, CmpNE, CmpLT, CmpLE, CmpGT, CmpGE,  // 比较运算
-    Select,        // 选择运算
-    ExpandDims,    // expand_dims
-    Broadcast,     // broadcast
-  };
-
-private:
-  OpKind op;
-  SmallVector<int64_t> shape;
-  SmallVector<SymValue*> operands;  // 操作数
-  SmallVector<int64_t> broadcastDims;  // 用于Broadcast记录广播维度
-  int64_t expandAxis;  // 用于ExpandDims
-
-public:
-  // 普通二元运算构造函数
-  TensorExprSV(OpKind o, ArrayRef<int64_t> s,
-               SymValue* lhs, SymValue* rhs)
-      : SymValue(Kind::TensorExpr),
-        op(o), shape(s), expandAxis(-1) {
-    operands.push_back(lhs);
-    operands.push_back(rhs);
-  }
-
-  // Select构造函数
-  TensorExprSV(SymValue* cond, SymValue* trueVal, SymValue* falseVal,
-               ArrayRef<int64_t> s)
-      : SymValue(Kind::TensorExpr),
-        op(OpKind::Select), shape(s), expandAxis(-1) {
-    operands.push_back(cond);
-    operands.push_back(trueVal);
-    operands.push_back(falseVal);
-  }
-
-  // ExpandDims构造函数
-  TensorExprSV(SymValue* input, int64_t axis, ArrayRef<int64_t> s)
-      : SymValue(Kind::TensorExpr),
-        op(OpKind::ExpandDims), shape(s), expandAxis(axis) {
-    operands.push_back(input);
-  }
-
-  // Broadcast构造函数
-  TensorExprSV(SymValue* input, ArrayRef<int64_t> s,
-               ArrayRef<int64_t> bcastDims)
-      : SymValue(Kind::TensorExpr),
-        op(OpKind::Broadcast), shape(s),
-        broadcastDims(bcastDims), expandAxis(-1) {
-    operands.push_back(input);
-  }
-
-  OpKind getOp() const { return op; }
-  ArrayRef<int64_t> getShape() const { return shape; }
-  ArrayRef<SymValue*> getOperands() const { return operands; }
-
-  // 获取指定位置的元素表达式
-  // 这会递归地构建每个元素的SymValue
-  SymValue* getElement(ArrayRef<int64_t> indices) const;
-
-  // 识别是否为长度检测模式（用于生成min截断）
-  // 返回true如果这是类似 select(cmp_lt(idx, bound), idx, 0) 的模式
-  bool isLengthCheckPattern(SymValue*& range, int64_t& bound) const;
-
-  // 识别是否为min模式
-  bool isMinPattern() const;
-
-  // 识别是否为max模式
-  bool isMaxPattern() const;
-
-  int64_t getExpandAxis() const { return expandAxis; }
-  ArrayRef<int64_t> getBroadcastDims() const { return broadcastDims; }
-
-  static bool classof(const SymValue* v) {
-    return v->getKind() == Kind::TensorExpr;
-  }
-
   void print(llvm::raw_ostream& os) const override;
 };
 
 //===----------------------------------------------------------------------===//
-// 指针类型 - 标量指针（addptr scalar）
+// GmPtrSV - kernel 指针类型入参 (Global Memory Pointer)
 //===----------------------------------------------------------------------===//
 
-class PtrBaseSV : public SymValue {
-  Value basePtr;        // 原始base指针（MLIR Value）
-  SymValue* offset;     // offset对应的SymValue
-  Type pointeeType;     // 指向的元素类型
+class GmPtrSV : public ScalarSV {
+  Value param;           // 关联的入参 Value
+  Type pointeeType;
 
 public:
-  PtrBaseSV(Value bp, SymValue* off, Type pt)
-      : SymValue(Kind::PtrBase),
-        basePtr(bp), offset(off), pointeeType(pt) {}
+  explicit GmPtrSV(Value p, Type pt)
+      : ScalarSV(Kind::GmPtr), param(p), pointeeType(pt) {}
 
-  Value getBasePtr() const { return basePtr; }
-  SymValue* getOffset() const { return offset; }
+  Value getParam() const { return param; }
   Type getPointeeType() const { return pointeeType; }
-
-  // 计算完整偏移量（简化后的表达式）
-  SymValue* computeFullOffset() const { return offset; }
+  Type getDataType() const override {
+    return mlir::triton::PointerType::get(pointeeType, 1);
+  }
 
   static bool classof(const SymValue* v) {
-    return v->getKind() == Kind::PtrBase;
+    return v->getKind() == Kind::GmPtr;
   }
-
-  void print(llvm::raw_ostream& os) const override {
-    os << "ptr.base(";
-    offset->print(os);
-    os << ")";
-  }
+  void print(llvm::raw_ostream& os) const override;
 };
 
 //===----------------------------------------------------------------------===//
-// 指针类型 - Tensor指针（addptr tensor）
+// RemExprSV - rem (取模) 操作产生的表达式
 //===----------------------------------------------------------------------===//
 
-class PtrTensorSV : public SymValue {
-  Value basePtr;        // 原始base指针
-  SmallVector<int64_t> shape;  // tensor形状
-  // 每个元素的offset（linear index -> offset SymValue）
-  DenseMap<uint64_t, SymValue*> elementOffsets;
-  Type pointeeType;     // 指向的元素类型
+class RemExprSV : public ScalarSV {
+  std::shared_ptr<ScalarSV> lhs;
+  std::shared_ptr<ScalarSV> rhs;
+  Type dataType;
 
 public:
-  PtrTensorSV(Value bp, ArrayRef<int64_t> s, Type pt)
-      : SymValue(Kind::PtrTensor),
-        basePtr(bp), shape(s), pointeeType(pt) {}
+  RemExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type);
 
-  Value getBasePtr() const { return basePtr; }
-  ArrayRef<int64_t> getShape() const { return shape; }
-  Type getPointeeType() const { return pointeeType; }
-
-  // 获取元素数量
-  int64_t getNumElements() const {
-    int64_t n = 1;
-    for (auto s : shape) n *= s;
-    return n;
-  }
-
-  // 多维索引转线性索引
-  int64_t getLinearIndex(ArrayRef<int64_t> indices) const;
-
-  // 设置指定位置的offset
-  void setElementOffset(ArrayRef<int64_t> indices, SymValue* offset);
-
-  // 获取指定位置的offset
-  SymValue* getElementOffset(ArrayRef<int64_t> indices) const;
-
-  // 获取指定线性索引的offset
-  SymValue* getElementOffset(int64_t linearIdx) const;
-
-  // 获取所有offsets（用于分析）
-  const DenseMap<uint64_t, SymValue*>& getAllOffsets() const {
-    return elementOffsets;
-  }
-
-  // 计算stride信息（基于offsets推导）
-  SmallVector<int64_t> inferStrides() const;
+  ScalarSV* getLHS() const { return lhs.get(); }
+  ScalarSV* getRHS() const { return rhs.get(); }
+  Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
-    return v->getKind() == Kind::PtrTensor;
+    return v->getKind() == Kind::RemExpr;
   }
+  void print(llvm::raw_ostream& os) const override;
+};
 
-  void print(llvm::raw_ostream& os) const override {
-    os << "ptr.tensor[shape=";
-    for (size_t i = 0; i < shape.size(); ++i) {
-      if (i > 0) os << "x";
-      os << shape[i];
-    }
-    os << ", offsets=" << elementOffsets.size() << "]";
+//===----------------------------------------------------------------------===//
+// UnknownSV - 未知 SymValue（如 load 产生的结果）
+//===----------------------------------------------------------------------===//
+
+class UnknownSV : public ScalarSV {
+  Type dataType;
+
+public:
+  explicit UnknownSV(Type type)
+      : ScalarSV(Kind::Unknown), dataType(type) {}
+
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::Unknown;
   }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// InductionSV - for 循环迭代变量
+//===----------------------------------------------------------------------===//
+
+class InductionSV : public ScalarSV {
+  Instruction* forInst;
+  std::shared_ptr<ScalarSV> init;
+  std::shared_ptr<ScalarSV> end;
+  std::shared_ptr<ScalarSV> step;
+  Type dataType;
+
+public:
+  InductionSV(Instruction* inst,
+              std::shared_ptr<ScalarSV> i,
+              std::shared_ptr<ScalarSV> e,
+              std::shared_ptr<ScalarSV> s,
+              Type type)
+      : ScalarSV(Kind::Induction),
+        forInst(inst), init(i), end(e), step(s), dataType(type) {}
+
+  Instruction* getForInst() const { return forInst; }
+  ScalarSV* getInit() const { return init.get(); }
+  ScalarSV* getEnd() const { return end.get(); }
+  ScalarSV* getStep() const { return step.get(); }
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::Induction;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// IterArgSV - for 的 iter_arg
+//===----------------------------------------------------------------------===//
+
+class IterArgSV : public ScalarSV {
+  Instruction* forInst;
+  Instruction* initInst;
+  Instruction* yieldDefInst;
+  Type dataType;
+
+public:
+  IterArgSV(Instruction* forI, Instruction* initI, Instruction* yieldI, Type type)
+      : ScalarSV(Kind::IterArg),
+        forInst(forI), initInst(initI), yieldDefInst(yieldI), dataType(type) {}
+
+  Instruction* getForInst() const { return forInst; }
+  Instruction* getInitInst() const { return initInst; }
+  Instruction* getYieldDefInst() const { return yieldDefInst; }
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::IterArg;
+  }
+  void print(llvm::raw_ostream& os) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// TensorSV - 张量 (含 Element ScalarSV)
+//===----------------------------------------------------------------------===//
+
+class TensorSV : public SymValue {
+public:
+  enum class SourceKind {
+    MakeRange,
+    Splat,
+    ExpandDims,
+    Broadcast,
+    // 元素级运算类型
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    CmpEQ, CmpNE, CmpLT, CmpLE, CmpGT, CmpGE,
+    Select,
+    Load,
+    // 通用标记（向后兼容）
+    Computed,
+  };
+
+  // 构造函数（用于 make_shared）
+  TensorSV(SourceKind src, ArrayRef<int64_t> s, Type elemType);
+
+private:
+  SourceKind source;
+  SmallVector<int64_t> shape;
+  Type elementType;
+  std::shared_ptr<ScalarSV> elementExpr;  // Element ScalarSV
+
+public:
+  // 工厂方法
+  static std::shared_ptr<TensorSV> createMakeRange(
+      int64_t start, int64_t end, Type elemType);
+
+  static std::shared_ptr<TensorSV> createSplat(
+      std::shared_ptr<ScalarSV> val,
+      ArrayRef<int64_t> shape, Type elemType);
+
+  static std::shared_ptr<TensorSV> createExpandDims(
+      const TensorSV* input, int axis);
+
+  static std::shared_ptr<TensorSV> createBroadcast(
+      const TensorSV* input, ArrayRef<int64_t> shape);
+
+  static std::shared_ptr<TensorSV> createComputed(
+      SourceKind op, const TensorSV* lhs, const TensorSV* rhs);
+
+  /// 创建 Load Tensor（elementExpr 为 UnknownSV）
+  static std::shared_ptr<TensorSV> createLoad(
+      ArrayRef<int64_t> shape, Type elemType);
+
+  SourceKind getSource() const { return source; }
+  ArrayRef<int64_t> getShape() const { return shape; }
+  Type getElementType() const { return elementType; }
+  ScalarSV* getElementExpr() const { return elementExpr.get(); }
+
+  // 更新 elementExpr 的 dims
+  void updateElementDims();
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::Tensor;
+  }
+  void print(llvm::raw_ostream& os) const override;
 };
 
 //===----------------------------------------------------------------------===//
 // 辅助函数
 //===----------------------------------------------------------------------===//
 
-// 创建二元运算（自动处理常量合并）
-ScalarExprSV* createBinaryExpr(ScalarExprSV::OpKind op,
-                               SymValue* lhs, SymValue* rhs);
+// 类型检查
+inline bool isScalar(const SymValue* v) { return v && v->isScalar(); }
+inline bool isTensor(const SymValue* v) { return v && v->isTensor(); }
 
-// 判断是否为常量
-inline bool isConstant(SymValue* sv) {
-  return sv && sv->isConstant();
-}
-
-// 获取整数常量值（如果不是整数常量返回nullopt）
-llvm::Optional<int64_t> getConstantInt(SymValue* sv);
+// 获取整数常量值
+llvm::Optional<int64_t> getConstantInt(const SymValue* sv);
 
 // 获取浮点常量值
-llvm::Optional<double> getConstantFloat(SymValue* sv);
+llvm::Optional<double> getConstantFloat(const SymValue* sv);
 
 } // namespace ascend
 } // namespace triton
 } // namespace mlir
 
-#endif // TRITON_TO_GRAPH_SYM_VALUE_H
+#endif
