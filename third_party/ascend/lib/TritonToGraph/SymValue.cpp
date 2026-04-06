@@ -4,7 +4,9 @@
 
 #include "TritonToGraph/SymValue.h"
 #include "mlir/IR/Types.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 
 namespace mlir {
 namespace triton {
@@ -48,6 +50,10 @@ void ScalarConstantIntSV::print(llvm::raw_ostream& os) const {
 //===----------------------------------------------------------------------===//
 // ScalarConstantFloatSV
 //===----------------------------------------------------------------------===//
+
+double ScalarConstantFloatSV::getFloat() const {
+  return value.convertToDouble();
+}
 
 void ScalarConstantFloatSV::print(llvm::raw_ostream& os) const {
   os << "const.f(" << getFloat() << ")";
@@ -581,7 +587,6 @@ std::shared_ptr<TensorSV> TensorSV::createComputed(
     switch (op) {
       // 四则运算
       case SourceKind::Add:
-      case SourceKind::Computed:  // 默认使用 Add 保持向后兼容
         elemExpr = std::make_shared<AddExprSV>(
             lhs->elementExpr, rhs->elementExpr, elemType);
         break;
@@ -646,6 +651,35 @@ std::shared_ptr<TensorSV> TensorSV::createComputed(
   return tensor;
 }
 
+std::shared_ptr<TensorSV> TensorSV::createSelect(
+    const TensorSV* trueTensor,
+    const TensorSV* falseTensor,
+    std::shared_ptr<CmpExprSV> condition) {
+  if (!trueTensor || !falseTensor) return nullptr;
+
+  // 创建新的 TensorSV（Select 类型）
+  auto tensor = std::make_shared<TensorSV>(
+      SourceKind::Select, trueTensor->shape, trueTensor->elementType);
+
+  // 创建元素的 Select 表达式
+  if (trueTensor->elementExpr && falseTensor->elementExpr) {
+    tensor->elementExpr = std::make_shared<SelectExprSV>(
+        condition,
+        trueTensor->elementExpr,
+        falseTensor->elementExpr,
+        trueTensor->elementType);
+
+    // 设置 dims 为完整维度
+    SmallVector<int> elemDims;
+    for (size_t i = 0; i < trueTensor->shape.size(); ++i) {
+      elemDims.push_back(i);
+    }
+    tensor->elementExpr->setDims(elemDims);
+  }
+
+  return tensor;
+}
+
 std::shared_ptr<TensorSV> TensorSV::createLoad(
     ArrayRef<int64_t> shape, Type elemType) {
   auto tensor = std::make_shared<TensorSV>(
@@ -704,7 +738,6 @@ void TensorSV::print(llvm::raw_ostream& os) const {
     case SourceKind::Select: os << ":select"; break;
     // Load 运算
     case SourceKind::Load: os << ":load"; break;
-    // 通用/向后兼容
     case SourceKind::Computed: os << ":computed"; break;
   }
 
@@ -724,21 +757,19 @@ TensorSV::TensorSV(SourceKind src, ArrayRef<int64_t> s, Type elemType)
 // 辅助函数
 //===----------------------------------------------------------------------===//
 
-bool isScalar(const SymValue* v) { return v && v->isScalar(); }
-bool isTensor(const SymValue* v) { return v && v->isTensor(); }
 
-llvm::Optional<int64_t> getConstantInt(const SymValue* sv) {
+std::optional<int64_t> getConstantInt(const SymValue* sv) {
   if (auto* ci = dyn_cast<ScalarConstantIntSV>(sv)) {
     return ci->getInt();
   }
-  return llvm::None;
+  return std::nullopt;
 }
 
-llvm::Optional<double> getConstantFloat(const SymValue* sv) {
+std::optional<double> getConstantFloat(const SymValue* sv) {
   if (auto* cf = dyn_cast<ScalarConstantFloatSV>(sv)) {
     return cf->getFloat();
   }
-  return llvm::None;
+  return std::nullopt;
 }
 
 } // namespace ascend

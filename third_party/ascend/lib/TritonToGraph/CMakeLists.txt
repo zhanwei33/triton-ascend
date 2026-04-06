@@ -6,8 +6,8 @@ add_triton_library(TritonToGraph
   MemorySsaBuilder.cpp
   GraphAnalysis.cpp
   TensorAnalyzer.cpp
+  SymValue.cpp
   SymbolicExecution.cpp
-  LoadPatternAnalyzer.cpp
   Passes.cpp
 
   DEPENDS

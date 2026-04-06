@@ -479,14 +479,6 @@ void ProgramSlicer::compute(const SliceCriterion& criterion) {
   compute(criterion, builder);
 }
 
-ProgramSlice ProgramSlicer::sliceFromYields(ArrayRef<Value> yields,
-                                            SliceCriterion::Direction dir) {
-  SliceCriterion criterion;
-  criterion.seeds = SmallVector<Value>(yields);
-  criterion.dir = dir;
-  return compute(criterion);
-}
-
 void ProgramSlice::merge(const ProgramSlice& other) {
   for (Instruction* inst : other) {
     instructions_.insert(inst);

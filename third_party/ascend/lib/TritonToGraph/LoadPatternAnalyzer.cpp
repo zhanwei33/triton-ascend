@@ -4,6 +4,7 @@
 
 #include "TritonToGraph/LoadPatternAnalyzer.h"
 #include "llvm/Support/Debug.h"
+#include <optional>
 #include "llvm/Support/Format.h"
 
 #define DEBUG_TYPE "load-pattern-analyzer"
@@ -300,14 +301,14 @@ SmallVector<int64_t> LoadPatternAnalyzer::inferStridesFromOffsets(
   return strides;
 }
 
-llvm::Optional<int64_t> LoadPatternAnalyzer::extractStrideFromOffset(
+std::optional<int64_t> LoadPatternAnalyzer::extractStrideFromOffset(
     SymValue* offset) {
   // 尝试从offset表达式中提取stride
   // 例如：offset = pid * stride + arange(0, len)
   // stride可能是乘法中的一个因子
 
   auto expr = dyn_cast<ScalarExprSV>(offset);
-  if (!expr) return llvm::None;
+  if (!expr) return std::nullopt;
 
   // 检查是否为乘法表达式
   if (expr->getOp() == ScalarExprSV::OpKind::Mul) {
@@ -320,7 +321,7 @@ llvm::Optional<int64_t> LoadPatternAnalyzer::extractStrideFromOffset(
     }
   }
 
-  return llvm::None;
+  return std::nullopt;
 }
 
 //===----------------------------------------------------------------------===//

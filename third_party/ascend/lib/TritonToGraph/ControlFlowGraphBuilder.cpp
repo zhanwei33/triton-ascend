@@ -88,42 +88,14 @@ void BuildCFGPass::runOnOperation() {
     dataFlowGraph.build();
 
     // === TensorAnalyzer 测试代码开始 ===
-    llvm::errs() << "  Testing TensorAnalyzer on load instructions...\n";
-    
+    llvm::errs() << "  Testing TensorAnalyzer with symbolic execution...\n";
+
     // 创建 TensorAnalyzer（复用已有的 CFG，内部会创建 ProgramSlicer）
     TensorAnalyzer analyzer(*cfg, dataFlowGraph);
-    
-    // 收集所有 load 指令
-    auto loadInsts = analyzer.collectLoadInstructions();
-    llvm::errs() << "  Found " << loadInsts.size() << " load instructions\n";
-    
-    // 遍历每条 load 指令
-    for (Instruction* loadInst : loadInsts) {
-      auto loadOp = dyn_cast<triton::LoadOp>(loadInst->getOperation());
-      if (!loadOp) continue;
-      
-      Value ptr = loadOp.getPtr();  // 获取 ptr 参数
-      llvm::errs() << "\n  [Load] " << *loadOp << "\n";
-      llvm::errs() << "  [Ptr Operand] " << ptr << "\n";
-      
-      // 对 ptr 做 backward slice（不启用 Memory SSA，传统 SSA 路径）
-      ProgramSlice slice = analyzer.computeBackwardSlice(ptr, /*useMemorySSA=*/false);
-      
-      // 获取按拓扑序排序的切片指令
-      auto orderedSlice = analyzer.getOrderedSliceInstructions(slice);
-      
-      // 打印结果
-      llvm::errs() << "  === Program Slice (Topological Order) ===\n";
-      if (orderedSlice.empty()) {
-        llvm::errs() << "    (empty slice)\n";
-      } else {
-        for (Instruction* inst : orderedSlice) {
-          unsigned topoOrder = analyzer.getTopoOrder(inst);
-          llvm::errs() << "    [" << topoOrder << "] " << *inst->getOperation() << "\n";
-        }
-      }
-      llvm::errs() << "  Total " << orderedSlice.size() << " instructions in slice\n";
-    }
+
+    // 使用符号执行分析所有 load 指令
+    analyzer.analyzeAllLoadsWithSymbolicExecution();
+
     llvm::errs() << "\n  TensorAnalyzer test complete\n";
   }
 }
@@ -453,7 +425,7 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleForOp(scf::ForOp forOp, cfg::Con
     forMapping.iterArgValues.push_back(iterArg);
   }
   // initValues: scf.for 的初始 operand (initVals)
-  for (Value initVal : forOp.getInitVals()) {
+  for (Value initVal : forOp.getInitArgs()) {
     forMapping.initValues.push_back(initVal);
   }
   for (Value result : forOp.getResults()) {

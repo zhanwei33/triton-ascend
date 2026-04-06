@@ -6,18 +6,26 @@
 #define TRITON_TO_GRAPH_SYMBOLIC_EXECUTION_H
 
 #include "TritonToGraph/SymValue.h"
+#include "TritonToGraph/ControlFlowGraph.h"
+#include "TritonToGraph/GraphAnalysis.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Block.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
+namespace cfg = mlir::triton::cfg;
+namespace tt = mlir::triton;
+
 namespace mlir {
 namespace triton {
 namespace ascend {
+
+using namespace cfg;
 
 //===----------------------------------------------------------------------===//
 // 符号执行状态
@@ -31,10 +39,13 @@ public:
 public:
   SymbolicExecutionState() = default;
 
-  // 获取 SymValue
-  SymValue* getSymValue(Value v) const;
-  ScalarSV* getScalarValue(Value v) const;
-  TensorSV* getTensorValue(Value v) const;
+  // 获取 SymValue (返回 shared_ptr，避免 shared_from_this 的潜在风险)
+  std::shared_ptr<SymValue> getSymValue(Value v) const;
+  std::shared_ptr<ScalarSV> getScalarValue(Value v) const;
+  std::shared_ptr<TensorSV> getTensorValue(Value v) const;
+
+  // 便捷方法：直接获取 Tensor 的 elementExpr
+  std::shared_ptr<ScalarSV> getTensorElementExpr(Value v) const;
 
   // 设置 SymValue
   void setSymValue(Value v, std::shared_ptr<SymValue> sv);
@@ -53,6 +64,10 @@ public:
 class SymbolicExecutionEngine {
 public:
   SymbolicExecutionEngine() = default;
+
+  // CFG 和 ProgramSlice 设置
+  void setCFG(cfg::ControlFlowGraph* cfg) { cfg_ = cfg; }
+  void setProgramSlice(ProgramSlice* slice) { slice_ = slice; }
 
   //===----------------------------------------------------------------------===//
   // 主要执行接口
@@ -77,7 +92,7 @@ public:
                             SymbolicExecutionState& state);
 
   // arith.binary arithmetic (addi, subi, muli, divi, remi, etc.)
-  void executeArithBinary(ArithmeticOpInterface op,
+  void executeArithBinary(Operation* op,
                           SymbolicExecutionState& state);
 
   // arith.select
@@ -87,9 +102,6 @@ public:
   // arith.cmpi
   void executeArithCmpI(arith::CmpIOp op,
                         SymbolicExecutionState& state);
-
-  // arith.index_cast / arith.sitofp / etc.
-  void executeArithCast(Operation* op, SymbolicExecutionState& state);
 
   //===----------------------------------------------------------------------===//
   // Triton 指令执行器
@@ -154,6 +166,10 @@ public:
   std::shared_ptr<SymValue> createUnknownSV(Type type);
 
 private:
+  // CFG 和 ProgramSlice（用于获取 ForOp/IfOp 的上下文信息）
+  cfg::ControlFlowGraph* cfg_ = nullptr;
+  ProgramSlice* slice_ = nullptr;
+
   // 辅助方法：根据arith操作符创建对应的表达式
   std::shared_ptr<ScalarSV> createArithExpr(
       StringRef opName, std::shared_ptr<ScalarSV> lhs,

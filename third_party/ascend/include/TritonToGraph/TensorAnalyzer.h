@@ -10,7 +10,6 @@
 #include "TritonToGraph/GraphAnalysis.h"
 #include "TritonToGraph/SymValue.h"
 #include "TritonToGraph/SymbolicExecution.h"
-#include "TritonToGraph/LoadPatternAnalyzer.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseSet.h"
@@ -112,6 +111,12 @@ public:
   /// 获取指定 instruction 的拓扑序（缓存）
   unsigned getTopoOrder(Instruction* inst) const;
 
+  /// 使用符号执行分析 load 指令
+  void analyzeLoadWithSymbolicExecution(triton::LoadOp loadOp);
+
+  /// 批量分析所有 load 指令
+  void analyzeAllLoadsWithSymbolicExecution();
+
 private:
   ControlFlowGraph& cfg;
   DataFlowGraph& dfg;
@@ -140,13 +145,6 @@ private:
   //===----------------------------------------------------------------------===
   // 符号执行分析 API
   //===----------------------------------------------------------------------===
-
-  /// 使用符号执行分析 load 指令
-  ascend::TensorAccessInfo analyzeLoadWithSymbolicExecution(
-      triton::LoadOp loadOp);
-
-  /// 批量分析所有 load 指令
-  SmallVector<ascend::TensorAccessInfo> analyzeAllLoadsWithSymbolicExecution();
 
   /// 获取符号执行状态（用于调试和扩展分析）
   ascend::SymbolicExecutionState* getSymbolicExecutionState() const {

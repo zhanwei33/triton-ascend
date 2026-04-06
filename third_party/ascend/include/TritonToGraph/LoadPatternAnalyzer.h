@@ -172,7 +172,7 @@ private:
       PtrTensorSV* ptrTensor, ArrayRef<int64_t> shape);
 
   /// 分析offset表达式推导stride
-  llvm::Optional<int64_t> extractStrideFromOffset(SymValue* offset);
+  std::optional<int64_t> extractStrideFromOffset(SymValue* offset);
 
   //===---------------------------------------------------------------------===
   // 连续性分析

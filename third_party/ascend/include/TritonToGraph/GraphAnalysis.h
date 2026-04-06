@@ -98,6 +98,83 @@ private:
                        TraversalContext& ctx, CFGTraversalBase& visitor);
 };
 
+/// Region - 指令集合（替代原始代码中的 SmallVector<Operation*>）
+class OpsRegion {
+public:
+  explicit OpsRegion(StringRef name = "") : name_(name.str()) {}
+
+  void add(Instruction* inst);
+  void add(Operation* op, ControlFlowGraph& cfg);
+  void addAll(ArrayRef<Instruction*> insts);
+
+  bool contains(Instruction* inst) const;
+  bool contains(Operation* op) const;
+
+  void remove(Instruction* inst);
+  void clear();
+
+  size_t size() const { return instSet_.size(); }
+  bool empty() const { return instSet_.empty(); }
+
+  // 获取按块内顺序排序的指令列表
+  SmallVector<Instruction*> orderedInstructions() const;
+
+  // 获取所有操作
+  SmallVector<Operation*> operations() const;
+
+  StringRef name() const { return name_; }
+  void setName(StringRef name) { name_ = name.str(); }
+
+  // 迭代器支持
+  auto begin() const { return instSet_.begin(); }
+  auto end() const { return instSet_.end(); }
+
+private:
+  std::string name_;
+  DenseSet<Instruction*> instSet_;
+};
+
+/// ProgramSlice - 程序切片
+class ProgramSlice {
+public:
+  void add(Instruction* inst) { instructions_.insert(inst); }
+  void addAll(const OpsRegion& region);
+
+  bool contains(Instruction* inst) const {
+    return instructions_.contains(inst);
+  }
+
+  size_t size() const { return instructions_.size(); }
+  bool empty() const { return instructions_.empty(); }
+
+  // 获取入口点（没有前驱在切片中）
+  SmallVector<Instruction*> entryPoints(DataFlowGraph& dfg) const;
+
+  // 获取出口点（没有后继在切片中）
+  SmallVector<Instruction*> exitPoints(DataFlowGraph& dfg) const;
+
+  // 集合操作
+  void merge(const ProgramSlice& other);
+  void intersect(const ProgramSlice& other);
+  void subtract(const ProgramSlice& other);
+
+  // 转换为 Region
+  OpsRegion toRegion(StringRef name = "") const;
+
+  // 迭代器
+  auto begin() const { return instructions_.begin(); }
+  auto end() const { return instructions_.end(); }
+
+  /// 记录 defOp 到 value 的映射（用于 for/if results, iter_args 等）
+  DenseMap<Operation*, Value*> definedValues_;
+
+  /// 获取 defOp 对应的 value（用于 for/if results, iter_args 等）
+  Value* getDefinedValue(Operation* defOp) const;
+
+private:
+  DenseSet<Instruction*> instructions_;
+};
+
 //===----------------------------------------------------------------------===//
 // Curly Recursive Template Pattern for DFG Traversal
 //===----------------------------------------------------------------------===//
@@ -199,42 +276,6 @@ private:
 // Region Abstraction and Analysis
 //===----------------------------------------------------------------------===//
 
-/// Region - 指令集合（替代原始代码中的 SmallVector<Operation*>）
-class OpsRegion {
-public:
-  explicit OpsRegion(StringRef name = "") : name_(name.str()) {}
-
-  void add(Instruction* inst);
-  void add(Operation* op, ControlFlowGraph& cfg);
-  void addAll(ArrayRef<Instruction*> insts);
-
-  bool contains(Instruction* inst) const;
-  bool contains(Operation* op) const;
-
-  void remove(Instruction* inst);
-  void clear();
-
-  size_t size() const { return instSet_.size(); }
-  bool empty() const { return instSet_.empty(); }
-
-  // 获取按块内顺序排序的指令列表
-  SmallVector<Instruction*> orderedInstructions() const;
-
-  // 获取所有操作
-  SmallVector<Operation*> operations() const;
-
-  StringRef name() const { return name_; }
-  void setName(StringRef name) { name_ = name.str(); }
-
-  // 迭代器支持
-  auto begin() const { return instSet_.begin(); }
-  auto end() const { return instSet_.end(); }
-
-private:
-  std::string name_;
-  DenseSet<Instruction*> instSet_;
-};
-
 /// RegionAnalyzer - Region 分析器
 class RegionAnalyzer {
 public:
@@ -296,47 +337,6 @@ struct SliceCriterion {
   DFGTraverser::Options dfgOpts;
 };
 
-/// ProgramSlice - 程序切片
-class ProgramSlice {
-public:
-  void add(Instruction* inst) { instructions_.insert(inst); }
-  void addAll(const OpsRegion& region);
-
-  bool contains(Instruction* inst) const {
-    return instructions_.contains(inst);
-  }
-
-  size_t size() const { return instructions_.size(); }
-  bool empty() const { return instructions_.empty(); }
-
-  // 获取入口点（没有前驱在切片中）
-  SmallVector<Instruction*> entryPoints(DataFlowGraph& dfg) const;
-
-  // 获取出口点（没有后继在切片中）
-  SmallVector<Instruction*> exitPoints(DataFlowGraph& dfg) const;
-
-  // 集合操作
-  void merge(const ProgramSlice& other);
-  void intersect(const ProgramSlice& other);
-  void subtract(const ProgramSlice& other);
-
-  // 转换为 Region
-  OpsRegion toRegion(StringRef name = "") const;
-
-  // 迭代器
-  auto begin() const { return instructions_.begin(); }
-  auto end() const { return instructions_.end(); }
-
-  /// 记录 defOp 到 value 的映射（用于 for/if results, iter_args 等）
-  DenseMap<Operation*, Value*> definedValues_;
-
-  /// 获取 defOp 对应的 value（用于 for/if results, iter_args 等）
-  Value* getDefinedValue(Operation* defOp) const;
-
-private:
-  DenseSet<Instruction*> instructions_;
-};
-
 /// ProgramSlicer - 程序切片器
 class ProgramSlicer {
 public:
@@ -348,10 +348,6 @@ public:
 
   // 计算切片（使用默认遍历器）
   void compute(const SliceCriterion& criterion);
-
-  // 从 yield values 计算切片（常用场景）
-  ProgramSlice sliceFromYields(ArrayRef<Value> yields,
-                                SliceCriterion::Direction dir);
 
   // 多切片操作
   static ProgramSlice merge(ArrayRef<ProgramSlice> slices);

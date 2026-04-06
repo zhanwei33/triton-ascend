@@ -12,7 +12,12 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include <memory>
+#include <optional>
 
+#include "triton/Dialect/Triton/IR/Types.h"
+#include "mlir/IR/BuiltinTypes.h"
+
+namespace tt = mlir::triton;
 namespace mlir {
 namespace triton {
 namespace cfg {
@@ -26,7 +31,7 @@ using cfg::Instruction;  // Bring Instruction into ascend namespace
 // SymValue - 符号执行值基类
 //===----------------------------------------------------------------------===//
 
-class SymValue : public std::enable_shared_from_this<SymValue> {
+class SymValue {
 public:
   enum class Kind {
     // Scalar
@@ -370,7 +375,7 @@ public:
   ScalarSV* getOffset() const { return offset.get(); }
   Type getPointeeType() const { return pointeeType; }
   Type getDataType() const override {
-    return mlir::triton::PointerType::get(pointeeType, 1);
+    return tt::PointerType::get(pointeeType, 1);
   }
 
   // 计算完整偏移 (base + offset)
@@ -414,7 +419,7 @@ public:
   ArrayRef<int64_t> getBlockShape() const { return blockShape; }
   Type getPointeeType() const { return pointeeType; }
   Type getDataType() const override {
-    return mlir::triton::PointerType::get(pointeeType, 1);
+    return tt::PointerType::get(pointeeType, 1);
   }
 
   // 获取维度数（rank）
@@ -462,7 +467,7 @@ public:
   Value getParam() const { return param; }
   Type getPointeeType() const { return pointeeType; }
   Type getDataType() const override {
-    return mlir::triton::PointerType::get(pointeeType, 1);
+    return tt::PointerType::get(pointeeType, 1);
   }
 
   static bool classof(const SymValue* v) {
@@ -590,7 +595,6 @@ public:
     CmpEQ, CmpNE, CmpLT, CmpLE, CmpGT, CmpGE,
     Select,
     Load,
-    // 通用标记（向后兼容）
     Computed,
   };
 
@@ -601,9 +605,9 @@ private:
   SourceKind source;
   SmallVector<int64_t> shape;
   Type elementType;
-  std::shared_ptr<ScalarSV> elementExpr;  // Element ScalarSV
 
 public:
+  std::shared_ptr<ScalarSV> elementExpr;  // Element ScalarSV (public for direct access)
   // 工厂方法
   static std::shared_ptr<TensorSV> createMakeRange(
       int64_t start, int64_t end, Type elemType);
@@ -620,6 +624,12 @@ public:
 
   static std::shared_ptr<TensorSV> createComputed(
       SourceKind op, const TensorSV* lhs, const TensorSV* rhs);
+
+  /// 创建 Select Tensor（arith.select 的 Tensor 版本）
+  static std::shared_ptr<TensorSV> createSelect(
+      const TensorSV* trueTensor,
+      const TensorSV* falseTensor,
+      std::shared_ptr<CmpExprSV> condition);
 
   /// 创建 Load Tensor（elementExpr 为 UnknownSV）
   static std::shared_ptr<TensorSV> createLoad(
@@ -648,10 +658,10 @@ inline bool isScalar(const SymValue* v) { return v && v->isScalar(); }
 inline bool isTensor(const SymValue* v) { return v && v->isTensor(); }
 
 // 获取整数常量值
-llvm::Optional<int64_t> getConstantInt(const SymValue* sv);
+std::optional<int64_t> getConstantInt(const SymValue* sv);
 
 // 获取浮点常量值
-llvm::Optional<double> getConstantFloat(const SymValue* sv);
+std::optional<double> getConstantFloat(const SymValue* sv);
 
 } // namespace ascend
 } // namespace triton
