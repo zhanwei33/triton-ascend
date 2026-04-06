@@ -18,74 +18,117 @@ namespace triton {
 namespace ascend {
 
 //===----------------------------------------------------------------------===//
-// Tensor访问信息 - 分析结果结构体
+// Offset Pattern Recognition
+//===----------------------------------------------------------------------===//
+
+enum class OffsetPatternKind {
+  Unknown,
+  Constant,           // Constant offset
+  ProgramID,          // pid.x/y/z
+  Range,              // arange(start, end)
+  Linear,             // base + stride * idx
+  AddExpr,            // offset1 + offset2
+  MinTruncation,      // select(idx < bound, idx, 0)
+  Broadcast           // splat value
+};
+
+struct OffsetPattern {
+  OffsetPatternKind kind = OffsetPatternKind::Unknown;
+  int64_t constantValue = 0;
+  int axis = 0;                           // For ProgramID (0=x, 1=y, 2=z)
+  int64_t rangeStart = 0, rangeEnd = 0;   // For Range
+  ScalarSV* base = nullptr;              // For Linear
+  int64_t stride = 0;                    // For Linear
+  ScalarSV* idx = nullptr;               // For Linear/Range
+  ScalarSV* rangeExpr = nullptr;         // The range expression itself
+
+  bool isContiguous() const {
+    return kind == OffsetPatternKind::Range ||
+           (kind == OffsetPatternKind::Linear && stride == 1);
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Tensor Access Information
 //===----------------------------------------------------------------------===//
 
 struct TensorAccessInfo {
   //===---------------------------------------------------------------------===
-  // 基础信息
+  // Basic Information
   //===---------------------------------------------------------------------===
-  Value basePtr;           // 原始base指针
-  Type basePtrType;        // base指针类型
-  SymValue* baseOffset;    // base地址的offset（行/列base地址）
+  Value basePtr;                        // Original base pointer
+  Type basePtrType;                     // Base pointer type
+  ScalarSV* baseOffset = nullptr;      // Base address offset
 
   //===---------------------------------------------------------------------===
-  // Shape信息
+  // Shape Information
   //===---------------------------------------------------------------------===
-  SmallVector<int64_t> shape;      // 访问的tensor形状
-  SmallVector<int64_t> strides;    // 各维度stride（元素个数）
-  Type elementType;                // 元素数据类型
+  SmallVector<int64_t> shape;           // Access tensor shape
+  SmallVector<int64_t> strides;         // Dimension strides (element count)
+  SmallVector<int64_t> blockShape;      // Block shape for block pointers
+  Type elementType;                     // Element data type
 
   //===---------------------------------------------------------------------===
-  // 连续性分析
+  // Pointer Information (new)
   //===---------------------------------------------------------------------===
-  bool isRowContiguous;    // 是否行连续
-  bool isColContiguous;    // 是否列连续
-  int contiguousAxis;      // 在哪个轴上连续（-1表示都不连续）
+  std::shared_ptr<TensorPtrSV> tensorPtr;  // make_tensor_ptr result
+  std::shared_ptr<PtrExprSV> ptrExpr;      // addptr result
+  std::shared_ptr<GmPtrSV> gmPtr;          // Kernel parameter pointer
+  bool isBlockPtr = false;                 // Whether using block pointer
+  SmallVector<std::shared_ptr<ScalarSV>> offsetExprs;  // Per-dimension offsets
 
   //===---------------------------------------------------------------------===
-  // 边界信息（用于识别min截断）
+  // Contiguity Analysis
   //===---------------------------------------------------------------------===
-  bool hasLengthCheck;     // 是否有长度检测（min模式）
-  int64_t lengthBound;     // 长度边界值
-  SymValue* rangeValue;    // range值（用于长度检测）
+  bool isRowContiguous = false;         // Row major contiguous
+  bool isColContiguous = false;         // Column major contiguous
+  int contiguousAxis = -1;              // Which axis is contiguous (-1 = none)
 
   //===---------------------------------------------------------------------===
-  // Mask信息
+  // Boundary Information (for min truncation detection)
   //===---------------------------------------------------------------------===
-  bool hasMask;            // 是否有mask
-  Value maskValue;         // mask值
-  SymValue* maskSymValue;  // mask的符号值
+  bool hasLengthCheck = false;          // Has length check (min pattern)
+  int64_t lengthBound = 0;              // Length bound value
+  ScalarSV* rangeValue = nullptr;      // Range value for length check
 
   //===---------------------------------------------------------------------===
-  // Padding信息
+  // Mask Information
   //===---------------------------------------------------------------------===
-  bool hasPadding;         // 是否有padding值
-  SymValue* paddingValue;  // padding的符号值
+  bool hasMask = false;                 // Has mask
+  Value maskValue;                      // Mask value
+  SymValue* maskSymValue = nullptr;    // Mask symbolic value
 
   //===---------------------------------------------------------------------===
-  // 访问模式分类
+  // Padding Information
+  //===---------------------------------------------------------------------===
+  bool hasPadding = false;              // Has padding value
+  SymValue* paddingValue = nullptr;    // Padding symbolic value
+
+  //===---------------------------------------------------------------------===
+  // Loop Dependency
+  //===---------------------------------------------------------------------===
+  bool isLoopDependent = false;         // Depends on loop variable
+
+  //===---------------------------------------------------------------------===
+  // Access Pattern Classification
   //===---------------------------------------------------------------------===
   enum class AccessPattern {
-    Unknown,           // 未知
-    ScalarSequential,  // 标量顺序访问（如varlen序列长度）
-    TensorContiguous,  // Tensor连续访问
-    TensorStrided,     // Tensor strided访问
-    GatherContiguous,  // Gather连续（128元素gather）
+    Unknown,           // Unknown
+    ScalarSequential,  // Scalar sequential access (e.g., varlen sequence length)
+    TensorContiguous,  // Tensor contiguous access
+    TensorStrided,     // Tensor strided access
+    GatherContiguous,  // Gather contiguous (128-element gather)
     GatherStrided,     // Gather strided
-    LoopDependent,     // 循环依赖的访问（如K在for内）
+    LoopDependent,     // Loop-dependent access (e.g., K in for loop)
   };
-  AccessPattern pattern;
+  AccessPattern pattern = AccessPattern::Unknown;
 
   //===---------------------------------------------------------------------===
-  // 构造函数
+  // Constructors
   //===---------------------------------------------------------------------===
   TensorAccessInfo()
-      : baseOffset(nullptr),
-        basePtrType(nullptr),
+      : basePtrType(nullptr),
         elementType(nullptr),
-        isRowContiguous(false),
-        isColContiguous(false),
         contiguousAxis(-1),
         hasLengthCheck(false),
         lengthBound(0),
@@ -94,39 +137,40 @@ struct TensorAccessInfo {
         maskSymValue(nullptr),
         hasPadding(false),
         paddingValue(nullptr),
+        isLoopDependent(false),
         pattern(AccessPattern::Unknown) {}
 
   //===---------------------------------------------------------------------===
-  // 方法
+  // Methods
   //===---------------------------------------------------------------------===
 
-  /// 计算总元素数
+  /// Calculate total element count
   int64_t getNumElements() const;
 
-  /// 计算总字节数
+  /// Calculate total bytes
   int64_t getTotalBytes() const;
 
-  /// 获取维度数
+  /// Get rank (number of dimensions)
   size_t getRank() const { return shape.size(); }
 
-  /// 打印分析结果
+  /// Print analysis result
   void print(llvm::raw_ostream& os) const;
 
-  /// 输出为YAML格式
+  /// Output as YAML format
   void printYAML(llvm::raw_ostream& os) const;
 
-  /// 是否为标量访问
+  /// Check if scalar access
   bool isScalarAccess() const { return shape.empty(); }
 
-  /// 是否为2D访问
+  /// Check if 2D access
   bool is2DAccess() const { return shape.size() == 2; }
 
-  /// 获取内存布局描述
+  /// Get memory layout description
   StringRef getLayoutDescription() const;
 };
 
 //===----------------------------------------------------------------------===//
-// Load模式分析器
+// Load Pattern Analyzer
 //===----------------------------------------------------------------------===//
 
 class LoadPatternAnalyzer {
@@ -134,131 +178,172 @@ public:
   LoadPatternAnalyzer() = default;
 
   //===---------------------------------------------------------------------===
-  // 主要分析接口
+  // Main Analysis Interface
   //===---------------------------------------------------------------------===
 
-  /// 分析load指令的访问模式
-  /// @param loadOp 要分析的load操作
-  /// @param state 符号执行状态（包含所有SymValue）
-  /// @return TensorAccessInfo 完整的访问信息
+  /// Analyze load instruction access pattern
+  /// @param loadOp Load operation to analyze
+  /// @param state Symbolic execution state (contains all SymValues)
+  /// @return TensorAccessInfo Complete access information
   TensorAccessInfo analyzeLoad(tt::LoadOp loadOp,
                                const SymbolicExecutionState& state);
 
-  /// 分析标量load（用于varlen序列长度加载）
-  TensorAccessInfo analyzeScalarLoad(tt::LoadOp loadOp,
-                                     SymValue* ptrSym);
+  //===---------------------------------------------------------------------===
+  // Offset Pattern Analysis (new)
+  //===---------------------------------------------------------------------===
 
-  /// 分析tensor load
-  TensorAccessInfo analyzeTensorLoad(tt::LoadOp loadOp,
-                                     PtrTensorSV* ptrTensor);
+  /// Recursively analyze offset expression structure
+  /// Recognizes patterns like: pid * stride + arange(0, N)
+  OffsetPattern analyzeOffsetPattern(ScalarSV* offset);
+
+  /// Check if offset pattern represents contiguous access
+  bool isContiguousOffsetPattern(const OffsetPattern& pattern);
 
 private:
   //===---------------------------------------------------------------------===
-  // Ptr分析
+  // Pointer Type Dispatch (refactored)
   //===---------------------------------------------------------------------===
 
-  /// 从PtrTensorSV提取结构化信息
-  TensorAccessInfo extractFromPtrTensor(PtrTensorSV* ptrTensor);
+  /// Analyze TensorPtrSV (make_tensor_ptr result)
+  TensorAccessInfo analyzeTensorPtr(
+      std::shared_ptr<TensorPtrSV> tensorPtr,
+      tt::LoadOp loadOp);
 
-  /// 从PtrBaseSV提取标量访问信息
-  TensorAccessInfo extractFromPtrBase(PtrBaseSV* ptrBase);
+  /// Analyze PtrExprSV (addptr result)
+  TensorAccessInfo analyzePtrExpr(
+      std::shared_ptr<PtrExprSV> ptrExpr,
+      tt::LoadOp loadOp);
 
-  //===---------------------------------------------------------------------===
-  // Stride推导
-  //===---------------------------------------------------------------------===
-
-  /// 基于offsets推导stride信息
-  SmallVector<int64_t> inferStridesFromOffsets(
-      PtrTensorSV* ptrTensor, ArrayRef<int64_t> shape);
-
-  /// 分析offset表达式推导stride
-  std::optional<int64_t> extractStrideFromOffset(SymValue* offset);
+  /// Analyze GmPtrSV (kernel parameter)
+  TensorAccessInfo analyzeGmPtr(
+      std::shared_ptr<GmPtrSV> gmPtr,
+      tt::LoadOp loadOp);
 
   //===---------------------------------------------------------------------===
-  // 连续性分析
+  // Offset Analysis (based on new ScalarSV hierarchy)
   //===---------------------------------------------------------------------===
 
-  /// 分析访问的连续性
-  void analyzeContiguity(TensorAccessInfo& info, PtrTensorSV* ptrTensor);
+  /// Analyze offsets from TensorPtrSV
+  void analyzeTensorPtrOffsets(
+      TensorPtrSV* tensorPtr,
+      TensorAccessInfo& info);
 
-  /// 检查是否行连续（最后一个维度连续）
+  /// Analyze offset from PtrExprSV
+  void analyzePtrExprOffset(
+      PtrExprSV* ptrExpr,
+      TensorAccessInfo& info);
+
+  //===---------------------------------------------------------------------===
+  // Pattern Recognition Helpers
+  //===---------------------------------------------------------------------===
+
+  /// Recognize min truncation pattern in offset
+  /// Pattern: select(cmp_lt(idx, bound), idx, const)
+  bool detectMinTruncationInOffset(
+      ScalarSV* offset,
+      int64_t& bound,
+      ScalarSV*& range);
+
+  /// Recognize min truncation pattern in TensorPtrSV offsets
+  void detectMinTruncationInOffset(
+      TensorPtrSV* tensorPtr,
+      TensorAccessInfo& info);
+
+  /// Check if SelectExprSV is min pattern
+  bool isMinSelectPattern(SelectExprSV* select);
+
+  /// Check if SelectExprSV is max pattern
+  bool isMaxSelectPattern(SelectExprSV* select);
+
+  /// Check if SelectExprSV is length check pattern
+  bool isLengthCheckPattern(SelectExprSV* select);
+
+  //===---------------------------------------------------------------------===
+  // Contiguity Analysis
+  //===---------------------------------------------------------------------===
+
+  /// Analyze access contiguity
+  void analyzeContiguity(TensorAccessInfo& info);
+
+  /// Check row-major contiguity (last dimension contiguous)
   bool isRowMajorContiguous(ArrayRef<int64_t> shape,
                             ArrayRef<int64_t> strides);
 
-  /// 检查是否列连续（第一个维度连续）
+  /// Check column-major contiguity (first dimension contiguous)
   bool isColMajorContiguous(ArrayRef<int64_t> shape,
                             ArrayRef<int64_t> strides);
 
   //===---------------------------------------------------------------------===
-  // Min截断识别（关键功能）
+  // Stride Inference
   //===---------------------------------------------------------------------===
 
-  /// 识别min截断模式
-  /// 模式: select(cmp_lt(idx, bound), idx, bound)
-  bool detectMinTruncation(PtrTensorSV* ptrTensor,
-                          TensorAccessInfo& info);
+  /// Infer strides from offset expressions
+  SmallVector<int64_t> inferStridesFromOffsets(
+      ArrayRef<std::shared_ptr<ScalarSV>> offsets,
+      ArrayRef<int64_t> shape);
 
-  /// 在offset表达式中查找min模式
-  bool findMinPatternInOffset(SymValue* offset,
-                              int64_t& bound,
-                              SymValue*& range);
-
-  /// 识别arith.select中的min模式
-  bool isMinSelectPattern(ScalarExprSV* selectExpr,
-                         int64_t& bound,
-                         SymValue*& range);
-
-  /// 识别TensorExpr中的min模式（用于tensor级select）
-  bool isMinTensorPattern(TensorExprSV* tensorExpr,
-                         int64_t& bound,
-                         SymValue*& range);
+  /// Try to extract constant stride from offset expression
+  std::optional<int64_t> extractStrideFromOffset(ScalarSV* offset);
 
   //===---------------------------------------------------------------------===
-  // Mask/Padding分析
+  // Mask/Padding Analysis
   //===---------------------------------------------------------------------===
 
-  /// 分析load的mask
+  /// Analyze load mask operand
   void analyzeMask(tt::LoadOp loadOp,
                    TensorAccessInfo& info,
                    const SymbolicExecutionState& state);
 
-  /// 分析load的padding值
+  /// Analyze load padding value
   void analyzePadding(tt::LoadOp loadOp,
                       TensorAccessInfo& info,
                       const SymbolicExecutionState& state);
 
-  /// 从mask推导边界信息
-  bool extractBoundFromMask(SymValue* maskSym,
-                           int64_t& bound,
-                           SymValue*& range);
+  /// Extract bound from mask (CmpExprSV pattern)
+  bool extractBoundFromMask(
+      SymValue* maskSym,
+      int64_t& bound,
+      ScalarSV*& range);
+
+  /// Extract bound from comparison expression
+  bool extractBoundFromCmp(CmpExprSV* cmp, int64_t& bound, ScalarSV*& idx);
 
   //===---------------------------------------------------------------------===
-  // 循环上下文分析
+  // Loop Dependency Analysis
   //===---------------------------------------------------------------------===
 
-  /// 检查load是否在循环内，且依赖循环变量
+  /// Check if load is in a loop and depends on loop variable
   bool isLoopDependent(tt::LoadOp loadOp,
                        const SymbolicExecutionState& state);
 
-  /// 获取循环依赖信息
+  /// Analyze loop dependency details
   void analyzeLoopDependency(tt::LoadOp loadOp,
                              TensorAccessInfo& info,
                              const SymbolicExecutionState& state);
 
   //===---------------------------------------------------------------------===
-  // 辅助方法
+  // Access Pattern Classification
   //===---------------------------------------------------------------------===
 
-  /// 获取元素的类型大小（字节）
+  /// Classify final access pattern
+  void classifyAccessPattern(TensorAccessInfo& info);
+
+  //===---------------------------------------------------------------------===
+  // Helper Methods
+  //===---------------------------------------------------------------------===
+
+  /// Get element type size in bytes
   int64_t getElementTypeSize(Type type) const;
 
-  /// 计算线性索引
+  /// Compute linear index from indices and strides
   int64_t computeLinearIndex(ArrayRef<int64_t> indices,
                             ArrayRef<int64_t> strides) const;
 
-  /// 解析offset表达式为线性形式: base + sum(dim_i * stride_i)
-  bool decomposeOffset(SymValue* offset,
-                      SmallVector<std::pair<SymValue*, int64_t>>& terms);
+  /// Check if SymValue contains or is a ProgramID
+  bool containsProgramID(ScalarSV* sv);
+
+  /// Check if SymValue contains or is a RangeExpr
+  bool containsRangeExpr(ScalarSV* sv);
 };
 
 } // namespace ascend
