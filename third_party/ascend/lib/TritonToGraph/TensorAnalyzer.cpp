@@ -276,6 +276,15 @@ void TensorAnalyzer::analyzeLoadWithSymbolicExecution(triton::LoadOp loadOp) {
     }
   }
 
+  auto ptrSymValue = symExecState->getSymValue(ptr);
+  if (ptrSymValue) {
+    llvm::raw_ostream& os = llvm::dbgs();
+    os << "[TensorAnalyzer] loadOp = " << loadOp << "\n";
+    os << "[TensorAnalyzer] ptr = ";
+    ptrSymValue->print(os);
+    os << "\n";
+  }
+  
   LLVM_DEBUG(llvm::dbgs()
                  << "[TensorAnalyzer] Symbolic execution completed\n");
 }

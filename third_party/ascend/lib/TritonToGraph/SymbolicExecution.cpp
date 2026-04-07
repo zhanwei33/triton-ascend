@@ -264,8 +264,8 @@ void SymbolicExecutionEngine::executeArithSelect(
     }
 
     // 获取 condition（可能是比较表达式）
-    auto condScalar = state.getScalarValue(cond);
-    auto condSym = (condScalar && CmpExprSV::classof(condScalar.get()) ? std::static_pointer_cast<CmpExprSV>(condScalar) : nullptr);
+    auto condTensor = state.getTensorValue(cond)->elementExpr;
+    auto condSym = (condTensor && CmpExprSV::classof(condTensor.get()) ? std::static_pointer_cast<CmpExprSV>(condTensor) : nullptr);
 
     // 使用专门的 createSelect 方法
     auto sv = TensorSV::createSelect(trueSym.get(), falseSym.get(), condSym);
