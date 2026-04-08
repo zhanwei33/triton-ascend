@@ -5,8 +5,10 @@
 #include "TritonToGraph/SymValue.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Operation.h"
 #include "llvm/Support/raw_ostream.h"
 #include <optional>
+#include <sstream>
 
 namespace mlir {
 namespace triton {
@@ -24,6 +26,78 @@ bool SymValue::isTensor() const {
   return kind == Kind::Tensor;
 }
 
+/// 获取 Operation 的单行字符串表示
+std::string SymValue::getOperationStr(Operation* op) {
+  if (!op) return "";
+
+  std::string str;
+  llvm::raw_string_ostream rss(str);
+  op->print(rss);
+
+  // 只取第一行
+  size_t newlinePos = str.find('\n');
+  if (newlinePos != std::string::npos) {
+    str = str.substr(0, newlinePos);
+  }
+
+  // 截断过长的字符串
+  const size_t maxLen = 80;
+  if (str.length() > maxLen) {
+    str = str.substr(0, maxLen - 3) + "...";
+  }
+
+  return str;
+}
+
+void SymValue::printIndent(llvm::raw_ostream& os, unsigned indent) {
+  for (unsigned i = 0; i < indent; ++i) os << "  ";
+}
+
+/// 打印 operation 信息（右对齐）
+void SymValue::printOperationInfo(llvm::raw_ostream& os, Operation* op,
+                                   unsigned currentIndent) {
+  if (!op) return;
+
+  std::string opStr = getOperationStr(op);
+  if (opStr.empty()) return;
+
+  // 计算当前行长度（假设每级缩进2字符）
+  size_t currentPos = currentIndent * 2 + 40;  // 估算当前内容长度
+
+  // 对齐到右边（假设总宽度 100）
+  const unsigned totalWidth = 100;
+  if (currentPos < totalWidth - opStr.length()) {
+    for (size_t i = currentPos; i < totalWidth - opStr.length(); ++i) {
+      os << " ";
+    }
+  } else {
+    os << "  ";
+  }
+  os << "// " << opStr;
+}
+
+//===----------------------------------------------------------------------===//
+// ScalarSV - 基类辅助方法
+//===----------------------------------------------------------------------===//
+
+void ScalarSV::printDims(llvm::raw_ostream& os) const {
+  if (!isAssociated()) return;
+  os << " @dims[";
+  for (size_t i = 0; i < dims.size(); ++i) {
+    if (i > 0) os << ",";
+    os << dims[i];
+  }
+  os << "]";
+}
+
+void ScalarSV::printWithOp(llvm::raw_ostream& os, unsigned indent,
+                            const std::string& content) const {
+  printIndent(os, indent);
+  os << content;
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+}
+
 //===----------------------------------------------------------------------===//
 // ScalarConstantIntSV
 //===----------------------------------------------------------------------===//
@@ -37,14 +111,14 @@ int64_t ScalarConstantIntSV::getInt() const {
 
 void ScalarConstantIntSV::print(llvm::raw_ostream& os) const {
   os << "const.i" << value.getBitWidth() << "(" << getInt() << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void ScalarConstantIntSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "const.i" + std::to_string(value.getBitWidth()) +
+                        "(" + std::to_string(getInt()) + ")";
+  printWithOp(os, indent, content);
 }
 
 //===----------------------------------------------------------------------===//
@@ -57,137 +131,208 @@ double ScalarConstantFloatSV::getFloat() const {
 
 void ScalarConstantFloatSV::print(llvm::raw_ostream& os) const {
   os << "const.f(" << getFloat() << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void ScalarConstantFloatSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "const.f(" + std::to_string(getFloat()) + ")";
+  printWithOp(os, indent, content);
 }
 
 //===----------------------------------------------------------------------===//
 // AddExprSV
 //===----------------------------------------------------------------------===//
 
-AddExprSV::AddExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type)
-    : ScalarSV(Kind::AddExpr), lhs(l), rhs(r), dataType(type) {
+AddExprSV::AddExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r,
+                     Type type, Operation* op)
+    : ScalarSV(Kind::AddExpr, op), lhs(l), rhs(r), dataType(type) {
   // dims 默认为 [-1] (未关联)
   // 在 symbolic execution 时根据结果 tensor 的 shape 设置 dims
 }
 
 void AddExprSV::print(llvm::raw_ostream& os) const {
-  os << "(";
-  lhs->print(os);
-  os << " + ";
-  rhs->print(os);
-  os << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "Add<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "lhs:\n";
+  lhs->print(os, 2);
+
+  os << "\n";
+  printIndent(os, 1);
+  os << "rhs:\n";
+  rhs->print(os, 2);
+}
+
+void AddExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "Add<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "lhs:\n";
+  lhs->print(os, indent + 2);
+
+  os << "\n";
+  printIndent(os, indent + 1);
+  os << "rhs:\n";
+  rhs->print(os, indent + 2);
 }
 
 //===----------------------------------------------------------------------===//
 // SubExprSV
 //===----------------------------------------------------------------------===//
 
-SubExprSV::SubExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type)
-    : ScalarSV(Kind::SubExpr), lhs(l), rhs(r), dataType(type) {
+SubExprSV::SubExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r,
+                     Type type, Operation* op)
+    : ScalarSV(Kind::SubExpr, op), lhs(l), rhs(r), dataType(type) {
   // dims 默认为 [-1] (未关联)
 }
 
 void SubExprSV::print(llvm::raw_ostream& os) const {
-  os << "(";
-  lhs->print(os);
-  os << " - ";
-  rhs->print(os);
-  os << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "Sub<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "lhs:\n";
+  lhs->print(os, 2);
+
+  os << "\n";
+  printIndent(os, 1);
+  os << "rhs:\n";
+  rhs->print(os, 2);
+}
+
+void SubExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "Sub<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "lhs:\n";
+  lhs->print(os, indent + 2);
+
+  os << "\n";
+  printIndent(os, indent + 1);
+  os << "rhs:\n";
+  rhs->print(os, indent + 2);
 }
 
 //===----------------------------------------------------------------------===//
 // MulExprSV
 //===----------------------------------------------------------------------===//
 
-MulExprSV::MulExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type)
-    : ScalarSV(Kind::MulExpr), lhs(l), rhs(r), dataType(type) {
+MulExprSV::MulExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r,
+                     Type type, Operation* op)
+    : ScalarSV(Kind::MulExpr, op), lhs(l), rhs(r), dataType(type) {
   // dims 默认为 [-1] (未关联)
 }
 
 void MulExprSV::print(llvm::raw_ostream& os) const {
-  os << "(";
-  lhs->print(os);
-  os << " * ";
-  rhs->print(os);
-  os << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "Mul<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "lhs:\n";
+  lhs->print(os, 2);
+
+  os << "\n";
+  printIndent(os, 1);
+  os << "rhs:\n";
+  rhs->print(os, 2);
+}
+
+void MulExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "Mul<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "lhs:\n";
+  lhs->print(os, indent + 2);
+
+  os << "\n";
+  printIndent(os, indent + 1);
+  os << "rhs:\n";
+  rhs->print(os, indent + 2);
 }
 
 //===----------------------------------------------------------------------===//
 // DivExprSV
 //===----------------------------------------------------------------------===//
 
-DivExprSV::DivExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type)
-    : ScalarSV(Kind::DivExpr), lhs(l), rhs(r), dataType(type) {
+DivExprSV::DivExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r,
+                     Type type, Operation* op)
+    : ScalarSV(Kind::DivExpr, op), lhs(l), rhs(r), dataType(type) {
   // dims 默认为 [-1] (未关联)
 }
 
 void DivExprSV::print(llvm::raw_ostream& os) const {
-  os << "(";
-  lhs->print(os);
-  os << " / ";
-  rhs->print(os);
-  os << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "Div<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "lhs:\n";
+  lhs->print(os, 2);
+
+  os << "\n";
+  printIndent(os, 1);
+  os << "rhs:\n";
+  rhs->print(os, 2);
+}
+
+void DivExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "Div<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "lhs:\n";
+  lhs->print(os, indent + 2);
+
+  os << "\n";
+  printIndent(os, indent + 1);
+  os << "rhs:\n";
+  rhs->print(os, indent + 2);
 }
 
 //===----------------------------------------------------------------------===//
 // RangeExprSV
 //===----------------------------------------------------------------------===//
 
-RangeExprSV::RangeExprSV(int64_t s, int64_t e, Type type)
-    : ScalarSV(Kind::RangeExpr), start(s), end(e), dataType(type) {
+RangeExprSV::RangeExprSV(int64_t s, int64_t e, Type type, Operation* op)
+    : ScalarSV(Kind::RangeExpr, op), start(s), end(e), dataType(type) {
   // make_range 产生的 range 默认维度为 0（1D）
   setDims({0});
 }
 
 void RangeExprSV::print(llvm::raw_ostream& os) const {
-  os << "range[" << start << ", " << end << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "Range[" << start << ", " << end << ")<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void RangeExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "Range[" + std::to_string(start) + ", " +
+                        std::to_string(end) + ")<" + dataType + ">";
+  printWithOp(os, indent, content);
 }
 
 //===----------------------------------------------------------------------===//
@@ -195,32 +340,54 @@ void RangeExprSV::print(llvm::raw_ostream& os) const {
 //===----------------------------------------------------------------------===//
 
 CmpExprSV::CmpExprSV(Pred p, std::shared_ptr<ScalarSV> l,
-                     std::shared_ptr<ScalarSV> r, Type type)
-    : ScalarSV(Kind::CmpExpr), pred(p), lhs(l), rhs(r), dataType(type) {
+                     std::shared_ptr<ScalarSV> r, Type type, Operation* op)
+    : ScalarSV(Kind::CmpExpr, op), pred(p), lhs(l), rhs(r), dataType(type) {
   // dims 默认为 [-1] (未关联)
 }
 
-void CmpExprSV::print(llvm::raw_ostream& os) const {
-  os << "(";
-  lhs->print(os);
+const char* CmpExprSV::getPredStr() const {
   switch (pred) {
-    case Pred::EQ: os << " == "; break;
-    case Pred::NE: os << " != "; break;
-    case Pred::LT: os << " < "; break;
-    case Pred::LE: os << " <= "; break;
-    case Pred::GT: os << " > "; break;
-    case Pred::GE: os << " >= "; break;
+    case Pred::EQ: return "EQ";
+    case Pred::NE: return "NE";
+    case Pred::LT: return "LT";
+    case Pred::LE: return "LE";
+    case Pred::GT: return "GT";
+    case Pred::GE: return "GE";
   }
-  rhs->print(os);
-  os << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  return "?";
+}
+
+void CmpExprSV::print(llvm::raw_ostream& os) const {
+  os << "Cmp" << getPredStr() << "<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "lhs:\n";
+  lhs->print(os, 2);
+
+  os << "\n";
+  printIndent(os, 1);
+  os << "rhs:\n";
+  rhs->print(os, 2);
+}
+
+void CmpExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "Cmp" << getPredStr() << "<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "lhs:\n";
+  lhs->print(os, indent + 2);
+
+  os << "\n";
+  printIndent(os, indent + 1);
+  os << "rhs:\n";
+  rhs->print(os, indent + 2);
 }
 
 //===----------------------------------------------------------------------===//
@@ -229,8 +396,9 @@ void CmpExprSV::print(llvm::raw_ostream& os) const {
 
 SelectExprSV::SelectExprSV(std::shared_ptr<CmpExprSV> cond,
                            std::shared_ptr<ScalarSV> t,
-                           std::shared_ptr<ScalarSV> f, Type type)
-    : ScalarSV(Kind::SelectExpr), condition(cond),
+                           std::shared_ptr<ScalarSV> f, Type type,
+                           Operation* op)
+    : ScalarSV(Kind::SelectExpr, op), condition(cond),
       trueVal(t), falseVal(f), dataType(type) {
   // dims 默认为 [-1] (未关联)
 }
@@ -277,23 +445,93 @@ bool SelectExprSV::isLengthCheck() const {
 }
 
 void SelectExprSV::print(llvm::raw_ostream& os) const {
-  os << "select(";
-  condition->print(os);
-  os << " ? ";
-  trueVal->print(os);
-  os << " : ";
-  falseVal->print(os);
-  os << ")";
-  if (isMinPattern()) os << "[min]";
-  if (isMaxPattern()) os << "[max]";
-  if (isLengthCheck()) os << "[len-check]";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
+  // Min/Max 模式打印为函数调用格式
+  if (isMinPattern()) {
+    os << "Min(";
+    trueVal->print(os);
+    os << ", ";
+    falseVal->print(os);
+    os << ")";
+    printDims(os);
+    printOperationInfo(os, sourceOp, 0);
+  } else if (isMaxPattern()) {
+    os << "Max(";
+    trueVal->print(os);
+    os << ", ";
+    falseVal->print(os);
+    os << ")";
+    printDims(os);
+    printOperationInfo(os, sourceOp, 0);
+  } else if (isLengthCheck()) {
+    os << "ClampToZero(";
+    trueVal->print(os);
+    os << ", ";
+    if (condition) {
+      condition->getRHS()->print(os);
     }
-    os << "]";
+    os << ")";
+    printDims(os);
+    printOperationInfo(os, sourceOp, 0);
+  } else {
+    // 默认格式: select(cond) ? trueVal : falseVal
+    os << "select(";
+    if (condition) {
+      condition->print(os);
+    } else {
+      os << "null";
+    }
+    os << ") ? ";
+    trueVal->print(os);
+    os << " : ";
+    falseVal->print(os);
+    printDims(os);
+    printOperationInfo(os, sourceOp, 0);
+  }
+}
+
+void SelectExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  // Min/Max 模式打印为函数调用格式
+  if (isMinPattern()) {
+    os << "Min(";
+    trueVal->print(os);
+    os << ", ";
+    falseVal->print(os);
+    os << ")";
+    printDims(os);
+    printOperationInfo(os, sourceOp, indent);
+  } else if (isMaxPattern()) {
+    os << "Max(";
+    trueVal->print(os);
+    os << ", ";
+    falseVal->print(os);
+    os << ")";
+    printDims(os);
+    printOperationInfo(os, sourceOp, indent);
+  } else if (isLengthCheck()) {
+    os << "ClampToZero(";
+    trueVal->print(os);
+    os << ", ";
+    if (condition) {
+      condition->getRHS()->print(os);
+    }
+    os << ")";
+    printDims(os);
+    printOperationInfo(os, sourceOp, indent);
+  } else {
+    // 默认格式: select(cond) ? trueVal : falseVal
+    os << "select(";
+    if (condition) {
+      condition->print(os);
+    } else {
+      os << "null";
+    }
+    os << ") ? ";
+    trueVal->print(os);
+    os << " : ";
+    falseVal->print(os);
+    printDims(os);
+    printOperationInfo(os, sourceOp, indent);
   }
 }
 
@@ -303,8 +541,8 @@ void SelectExprSV::print(llvm::raw_ostream& os) const {
 
 PtrExprSV::PtrExprSV(std::shared_ptr<ScalarSV> base,
                      std::shared_ptr<ScalarSV> off,
-                     Type pt)
-    : ScalarSV(Kind::PtrExpr), basePtr(base),
+                     Type pt, Operation* op)
+    : ScalarSV(Kind::PtrExpr, op), basePtr(base),
       offset(off), pointeeType(pt) {
   // dims 默认为 [-1] (未关联)
 }
@@ -316,19 +554,36 @@ std::shared_ptr<AddExprSV> PtrExprSV::computeTotalOffset() const {
 }
 
 void PtrExprSV::print(llvm::raw_ostream& os) const {
-  os << "ptr(";
-  basePtr->print(os);
-  os << " + ";
-  offset->print(os);
-  os << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "PtrExpr<" << pointeeType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "base:\n";
+  basePtr->print(os, 2);
+
+  os << "\n";
+  printIndent(os, 1);
+  os << "offset:\n";
+  offset->print(os, 2);
+}
+
+void PtrExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "PtrExpr<" << pointeeType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "base:\n";
+  basePtr->print(os, indent + 2);
+
+  os << "\n";
+  printIndent(os, indent + 1);
+  os << "offset:\n";
+  offset->print(os, indent + 2);
 }
 
 //===----------------------------------------------------------------------===//
@@ -336,39 +591,88 @@ void PtrExprSV::print(llvm::raw_ostream& os) const {
 //===----------------------------------------------------------------------===//
 
 void TensorPtrSV::print(llvm::raw_ostream& os) const {
-  os << "tensorptr<" << pointeeType << ">";
-  os << "[shape=";
+  os << "TensorPtr<" << pointeeType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "shape=[";
   for (size_t i = 0; i < shape.size(); ++i) {
     if (i > 0) os << "x";
     if (shape[i]) shape[i]->print(os);
     else os << "?";
   }
-  os << ",strides=";
+  os << "]\n";
+
+  printIndent(os, 1);
+  os << "strides=[";
   for (size_t i = 0; i < strides.size(); ++i) {
     if (i > 0) os << "x";
     if (strides[i]) strides[i]->print(os);
     else os << "?";
   }
-  os << ",offsets=";
+  os << "]\n";
+
+  printIndent(os, 1);
+  os << "offsets=[";
   for (size_t i = 0; i < offsets.size(); ++i) {
     if (i > 0) os << "x";
     if (offsets[i]) offsets[i]->print(os);
     else os << "?";
   }
-  os << ",block=";
+  os << "]\n";
+
+  printIndent(os, 1);
+  os << "block=[";
   for (size_t i = 0; i < blockShape.size(); ++i) {
     if (i > 0) os << "x";
     os << blockShape[i];
   }
   os << "]";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
+}
+
+void TensorPtrSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "TensorPtr<" << pointeeType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "shape=[";
+  for (size_t i = 0; i < shape.size(); ++i) {
+    if (i > 0) os << "x";
+    if (shape[i]) shape[i]->print(os);
+    else os << "?";
   }
+  os << "]\n";
+
+  printIndent(os, indent + 1);
+  os << "strides=[";
+  for (size_t i = 0; i < strides.size(); ++i) {
+    if (i > 0) os << "x";
+    if (strides[i]) strides[i]->print(os);
+    else os << "?";
+  }
+  os << "]\n";
+
+  printIndent(os, indent + 1);
+  os << "offsets=[";
+  for (size_t i = 0; i < offsets.size(); ++i) {
+    if (i > 0) os << "x";
+    if (offsets[i]) offsets[i]->print(os);
+    else os << "?";
+  }
+  os << "]\n";
+
+  printIndent(os, indent + 1);
+  os << "block=[";
+  for (size_t i = 0; i < blockShape.size(); ++i) {
+    if (i > 0) os << "x";
+    os << blockShape[i];
+  }
+  os << "]";
 }
 
 //===----------------------------------------------------------------------===//
@@ -377,14 +681,13 @@ void TensorPtrSV::print(llvm::raw_ostream& os) const {
 
 void ProgramIDSV::print(llvm::raw_ostream& os) const {
   os << "pid." << (axis == 0 ? "x" : (axis == 1 ? "y" : "z"));
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void ProgramIDSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "pid." + std::string(axis == 0 ? "x" : (axis == 1 ? "y" : "z"));
+  printWithOp(os, indent, content);
 }
 
 //===----------------------------------------------------------------------===//
@@ -392,43 +695,63 @@ void ProgramIDSV::print(llvm::raw_ostream& os) const {
 //===----------------------------------------------------------------------===//
 
 void GmPtrSV::print(llvm::raw_ostream& os) const {
-  os << "gmptr<" << pointeeType << ">";
+  os << "GmPtr<" << pointeeType << ">";
   if (param) {
-    os << "(" << param << ")";
+    os << "(arg" << param.getArgNumber() << ")";
   }
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void GmPtrSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "GmPtr<" + pointeeType.str() + ">";
+  if (param) {
+    content += "(arg" + std::to_string(param.getArgNumber()) + ")";
   }
+  printWithOp(os, indent, content);
 }
 
 //===----------------------------------------------------------------------===//
 // RemExprSV
 //===----------------------------------------------------------------------===//
 
-RemExprSV::RemExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r, Type type)
-    : ScalarSV(Kind::RemExpr), lhs(l), rhs(r), dataType(type) {
+RemExprSV::RemExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r,
+                     Type type, Operation* op)
+    : ScalarSV(Kind::RemExpr, op), lhs(l), rhs(r), dataType(type) {
   // dims 默认为 [-1] (未关联)
 }
 
 void RemExprSV::print(llvm::raw_ostream& os) const {
-  os << "(";
-  lhs->print(os);
-  os << " % ";
-  rhs->print(os);
-  os << ")";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "Rem<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "lhs:\n";
+  lhs->print(os, 2);
+
+  os << "\n";
+  printIndent(os, 1);
+  os << "rhs:\n";
+  rhs->print(os, 2);
+}
+
+void RemExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "Rem<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "lhs:\n";
+  lhs->print(os, indent + 2);
+
+  os << "\n";
+  printIndent(os, indent + 1);
+  os << "rhs:\n";
+  rhs->print(os, indent + 2);
 }
 
 //===----------------------------------------------------------------------===//
@@ -436,15 +759,14 @@ void RemExprSV::print(llvm::raw_ostream& os) const {
 //===----------------------------------------------------------------------===//
 
 void UnknownSV::print(llvm::raw_ostream& os) const {
-  os << "unknown<" << dataType << ">";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "Unknown<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void UnknownSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "Unknown<" + dataType.str() + ">";
+  printWithOp(os, indent, content);
 }
 
 //===----------------------------------------------------------------------===//
@@ -452,7 +774,7 @@ void UnknownSV::print(llvm::raw_ostream& os) const {
 //===----------------------------------------------------------------------===//
 
 void InductionSV::print(llvm::raw_ostream& os) const {
-  os << "induction[";
+  os << "Induction[";
   if (init) init->print(os);
   else os << "?";
   os << "..";
@@ -462,14 +784,20 @@ void InductionSV::print(llvm::raw_ostream& os) const {
   if (step) step->print(os);
   else os << "?";
   os << "]";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void InductionSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "Induction[";
+  // 简化：不递归打印，只显示结构
+  content += init ? "init" : "?";
+  content += "..";
+  content += end ? "end" : "?";
+  content += " step ";
+  content += step ? "step" : "?";
+  content += "]";
+  printWithOp(os, indent, content);
 }
 
 //===----------------------------------------------------------------------===//
@@ -477,15 +805,33 @@ void InductionSV::print(llvm::raw_ostream& os) const {
 //===----------------------------------------------------------------------===//
 
 void IterArgSV::print(llvm::raw_ostream& os) const {
-  os << "iterarg<" << dataType << ">";
-  if (isAssociated()) {
-    os << "@[";
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i > 0) os << ",";
-      os << dims[i];
-    }
-    os << "]";
-  }
+  os << "IterArg<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void IterArgSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "IterArg<" + dataType.str() + ">";
+  printWithOp(os, indent, content);
+}
+
+//===----------------------------------------------------------------------===//
+// ArgSV
+//===----------------------------------------------------------------------===//
+
+void ArgSV::print(llvm::raw_ostream& os) const {
+  os << "Arg<" << dataType << ">(arg" << argIndex;
+  if (hasName()) os << ": " << name;
+  os << ")";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+}
+
+void ArgSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  std::string content = "Arg<" + dataType.str() + ">(arg" + std::to_string(argIndex);
+  if (hasName()) content += ": " + name;
+  content += ")";
+  printWithOp(os, indent, content);
 }
 
 //===----------------------------------------------------------------------===//
@@ -493,31 +839,31 @@ void IterArgSV::print(llvm::raw_ostream& os) const {
 //===----------------------------------------------------------------------===//
 
 std::shared_ptr<TensorSV> TensorSV::createMakeRange(
-    int64_t start, int64_t end, Type elemType) {
+    int64_t start, int64_t end, Type elemType, Operation* op) {
   auto tensor = std::make_shared<TensorSV>(
-      SourceKind::MakeRange, SmallVector<int64_t>{end - start}, elemType);
-  tensor->elementExpr = std::make_shared<RangeExprSV>(start, end, elemType);
+      SourceKind::MakeRange, SmallVector<int64_t>{end - start}, elemType, op);
+  tensor->elementExpr = std::make_shared<RangeExprSV>(start, end, elemType, op);
   // RangeExprSV 的 dims 已经是 {0}
   return tensor;
 }
 
 std::shared_ptr<TensorSV> TensorSV::createSplat(
     std::shared_ptr<ScalarSV> val,
-    ArrayRef<int64_t> shape, Type elemType) {
+    ArrayRef<int64_t> shape, Type elemType, Operation* op) {
   auto tensor = std::make_shared<TensorSV>(
-      SourceKind::Splat, shape, elemType);
+      SourceKind::Splat, shape, elemType, op);
   // 设置 elementExpr 的 dims 为所有维度
   SmallVector<int> elemDims;
   for (size_t i = 0; i < shape.size(); ++i) {
     elemDims.push_back(i);
   }
-  val->setDims(elemDims);
+  //val->setDims(elemDims);
   tensor->elementExpr = std::move(val);
   return tensor;
 }
 
 std::shared_ptr<TensorSV> TensorSV::createExpandDims(
-    const TensorSV* input, int axis) {
+    const TensorSV* input, int axis, Operation* op) {
   if (!input) return nullptr;
 
   SmallVector<int64_t> newShape;
@@ -533,7 +879,7 @@ std::shared_ptr<TensorSV> TensorSV::createExpandDims(
   }
 
   auto tensor = std::make_shared<TensorSV>(
-      SourceKind::ExpandDims, newShape, input->elementType);
+      SourceKind::ExpandDims, newShape, input->elementType, op);
 
   // 复制 elementExpr 并调整 dims
   // expand_dims(axis)：被扩展的维度不保持原值，其他维度保持
@@ -557,11 +903,11 @@ std::shared_ptr<TensorSV> TensorSV::createExpandDims(
 }
 
 std::shared_ptr<TensorSV> TensorSV::createBroadcast(
-    const TensorSV* input, ArrayRef<int64_t> newShape) {
+    const TensorSV* input, ArrayRef<int64_t> newShape, Operation* op) {
   if (!input) return nullptr;
 
   auto tensor = std::make_shared<TensorSV>(
-      SourceKind::Broadcast, newShape, input->elementType);
+      SourceKind::Broadcast, newShape, input->elementType, op);
 
   // broadcast 保持 dims 不变
   if (input->elementExpr) {
@@ -572,12 +918,13 @@ std::shared_ptr<TensorSV> TensorSV::createBroadcast(
 }
 
 std::shared_ptr<TensorSV> TensorSV::createComputed(
-    SourceKind op, const TensorSV* lhs, const TensorSV* rhs) {
+    SourceKind op, const TensorSV* lhs, const TensorSV* rhs,
+    Operation* mlirOp) {
   if (!lhs || !rhs) return nullptr;
 
   // 简化：假设形状相同
   auto tensor = std::make_shared<TensorSV>(
-      op, lhs->shape, lhs->elementType);
+      op, lhs->shape, lhs->elementType, mlirOp);
 
   // 创建元素级运算表达式
   if (lhs->elementExpr && rhs->elementExpr) {
@@ -588,48 +935,48 @@ std::shared_ptr<TensorSV> TensorSV::createComputed(
       // 四则运算
       case SourceKind::Add:
         elemExpr = std::make_shared<AddExprSV>(
-            lhs->elementExpr, rhs->elementExpr, elemType);
+            lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::Sub:
         elemExpr = std::make_shared<SubExprSV>(
-            lhs->elementExpr, rhs->elementExpr, elemType);
+            lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::Mul:
         elemExpr = std::make_shared<MulExprSV>(
-            lhs->elementExpr, rhs->elementExpr, elemType);
+            lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::Div:
         elemExpr = std::make_shared<DivExprSV>(
-            lhs->elementExpr, rhs->elementExpr, elemType);
+            lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::Rem:
         elemExpr = std::make_shared<RemExprSV>(
-            lhs->elementExpr, rhs->elementExpr, elemType);
+            lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       // 比较运算
       case SourceKind::CmpEQ:
         elemExpr = std::make_shared<CmpExprSV>(
-            CmpExprSV::Pred::EQ, lhs->elementExpr, rhs->elementExpr, elemType);
+            CmpExprSV::Pred::EQ, lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::CmpNE:
         elemExpr = std::make_shared<CmpExprSV>(
-            CmpExprSV::Pred::NE, lhs->elementExpr, rhs->elementExpr, elemType);
+            CmpExprSV::Pred::NE, lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::CmpLT:
         elemExpr = std::make_shared<CmpExprSV>(
-            CmpExprSV::Pred::LT, lhs->elementExpr, rhs->elementExpr, elemType);
+            CmpExprSV::Pred::LT, lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::CmpLE:
         elemExpr = std::make_shared<CmpExprSV>(
-            CmpExprSV::Pred::LE, lhs->elementExpr, rhs->elementExpr, elemType);
+            CmpExprSV::Pred::LE, lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::CmpGT:
         elemExpr = std::make_shared<CmpExprSV>(
-            CmpExprSV::Pred::GT, lhs->elementExpr, rhs->elementExpr, elemType);
+            CmpExprSV::Pred::GT, lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       case SourceKind::CmpGE:
         elemExpr = std::make_shared<CmpExprSV>(
-            CmpExprSV::Pred::GE, lhs->elementExpr, rhs->elementExpr, elemType);
+            CmpExprSV::Pred::GE, lhs->elementExpr, rhs->elementExpr, elemType, mlirOp);
         break;
       default:
         // 不支持的运算类型，保持 elementExpr 为空
@@ -644,7 +991,7 @@ std::shared_ptr<TensorSV> TensorSV::createComputed(
       for (size_t i = 0; i < lhs->shape.size(); ++i) {
         elemDims.push_back(i);
       }
-      tensor->elementExpr->setDims(elemDims);
+      //tensor->elementExpr->setDims(elemDims);
     }
   }
 
@@ -654,12 +1001,12 @@ std::shared_ptr<TensorSV> TensorSV::createComputed(
 std::shared_ptr<TensorSV> TensorSV::createSelect(
     const TensorSV* trueTensor,
     const TensorSV* falseTensor,
-    std::shared_ptr<CmpExprSV> condition) {
+    std::shared_ptr<CmpExprSV> condition, Operation* op) {
   if (!trueTensor || !falseTensor) return nullptr;
 
   // 创建新的 TensorSV（Select 类型）
   auto tensor = std::make_shared<TensorSV>(
-      SourceKind::Select, trueTensor->shape, trueTensor->elementType);
+      SourceKind::Select, trueTensor->shape, trueTensor->elementType, op);
 
   // 创建元素的 Select 表达式
   if (trueTensor->elementExpr && falseTensor->elementExpr) {
@@ -667,33 +1014,34 @@ std::shared_ptr<TensorSV> TensorSV::createSelect(
         condition,
         trueTensor->elementExpr,
         falseTensor->elementExpr,
-        trueTensor->elementType);
+        trueTensor->elementType,
+        op);
 
     // 设置 dims 为完整维度
     SmallVector<int> elemDims;
     for (size_t i = 0; i < trueTensor->shape.size(); ++i) {
       elemDims.push_back(i);
     }
-    tensor->elementExpr->setDims(elemDims);
+    //ensor->elementExpr->setDims(elemDims);
   }
 
   return tensor;
 }
 
 std::shared_ptr<TensorSV> TensorSV::createLoad(
-    ArrayRef<int64_t> shape, Type elemType) {
+    ArrayRef<int64_t> shape, Type elemType, Operation* op) {
   auto tensor = std::make_shared<TensorSV>(
-      SourceKind::Load, shape, elemType);
+      SourceKind::Load, shape, elemType, op);
 
   // elementExpr 为 UnknownSV（load 产生的结果是未知的）
-  tensor->elementExpr = std::make_shared<UnknownSV>(elemType);
+  tensor->elementExpr = std::make_shared<UnknownSV>(elemType, op);
 
   // 设置 dims 为完整维度
   SmallVector<int> elemDims;
   for (size_t i = 0; i < shape.size(); ++i) {
     elemDims.push_back(i);
   }
-  tensor->elementExpr->setDims(elemDims);
+  //tensor->elementExpr->setDims(elemDims);
 
   return tensor;
 }
@@ -717,39 +1065,83 @@ void TensorSV::print(llvm::raw_ostream& os) const {
   os << "]";
 
   switch (source) {
-    case SourceKind::MakeRange: os << ":make_range"; break;
-    case SourceKind::Splat: os << ":splat"; break;
-    case SourceKind::ExpandDims: os << ":expand_dims"; break;
-    case SourceKind::Broadcast: os << ":broadcast"; break;
+    case SourceKind::MakeRange: os << " <- make_range"; break;
+    case SourceKind::Splat: os << " <- splat"; break;
+    case SourceKind::ExpandDims: os << " <- expand_dims"; break;
+    case SourceKind::Broadcast: os << " <- broadcast"; break;
     // 四则运算
-    case SourceKind::Add: os << ":add"; break;
-    case SourceKind::Sub: os << ":sub"; break;
-    case SourceKind::Mul: os << ":mul"; break;
-    case SourceKind::Div: os << ":div"; break;
-    case SourceKind::Rem: os << ":rem"; break;
+    case SourceKind::Add: os << " <- add"; break;
+    case SourceKind::Sub: os << " <- sub"; break;
+    case SourceKind::Mul: os << " <- mul"; break;
+    case SourceKind::Div: os << " <- div"; break;
+    case SourceKind::Rem: os << " <- rem"; break;
     // 比较运算
-    case SourceKind::CmpEQ: os << ":cmp_eq"; break;
-    case SourceKind::CmpNE: os << ":cmp_ne"; break;
-    case SourceKind::CmpLT: os << ":cmp_lt"; break;
-    case SourceKind::CmpLE: os << ":cmp_le"; break;
-    case SourceKind::CmpGT: os << ":cmp_gt"; break;
-    case SourceKind::CmpGE: os << ":cmp_ge"; break;
+    case SourceKind::CmpEQ: os << " <- cmp_eq"; break;
+    case SourceKind::CmpNE: os << " <- cmp_ne"; break;
+    case SourceKind::CmpLT: os << " <- cmp_lt"; break;
+    case SourceKind::CmpLE: os << " <- cmp_le"; break;
+    case SourceKind::CmpGT: os << " <- cmp_gt"; break;
+    case SourceKind::CmpGE: os << " <- cmp_ge"; break;
     // 选择运算
-    case SourceKind::Select: os << ":select"; break;
+    case SourceKind::Select: os << " <- select"; break;
     // Load 运算
-    case SourceKind::Load: os << ":load"; break;
-    case SourceKind::Computed: os << ":computed"; break;
+    case SourceKind::Load: os << " <- load"; break;
+    case SourceKind::Computed: os << " <- computed"; break;
   }
 
+  printOperationInfo(os, sourceOp, 0);
+
   if (elementExpr) {
-    os << "{elem=";
-    elementExpr->print(os);
-    os << "}";
+    os << "\n";
+    printIndent(os, 1);
+    os << "element:\n";
+    elementExpr->print(os, 2);
   }
 }
 
-TensorSV::TensorSV(SourceKind src, ArrayRef<int64_t> s, Type elemType)
-    : SymValue(Kind::Tensor), source(src), elementType(elemType) {
+void TensorSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "Tensor[";
+  for (size_t i = 0; i < shape.size(); ++i) {
+    if (i > 0) os << "x";
+    os << shape[i];
+  }
+  os << "]";
+
+  switch (source) {
+    case SourceKind::MakeRange: os << " <- make_range"; break;
+    case SourceKind::Splat: os << " <- splat"; break;
+    case SourceKind::ExpandDims: os << " <- expand_dims"; break;
+    case SourceKind::Broadcast: os << " <- broadcast"; break;
+    case SourceKind::Add: os << " <- add"; break;
+    case SourceKind::Sub: os << " <- sub"; break;
+    case SourceKind::Mul: os << " <- mul"; break;
+    case SourceKind::Div: os << " <- div"; break;
+    case SourceKind::Rem: os << " <- rem"; break;
+    case SourceKind::CmpEQ: os << " <- cmp_eq"; break;
+    case SourceKind::CmpNE: os << " <- cmp_ne"; break;
+    case SourceKind::CmpLT: os << " <- cmp_lt"; break;
+    case SourceKind::CmpLE: os << " <- cmp_le"; break;
+    case SourceKind::CmpGT: os << " <- cmp_gt"; break;
+    case SourceKind::CmpGE: os << " <- cmp_ge"; break;
+    case SourceKind::Select: os << " <- select"; break;
+    case SourceKind::Load: os << " <- load"; break;
+    case SourceKind::Computed: os << " <- computed"; break;
+  }
+
+  printOperationInfo(os, sourceOp, indent);
+
+  if (elementExpr) {
+    os << "\n";
+    printIndent(os, indent + 1);
+    os << "element:\n";
+    elementExpr->print(os, indent + 2);
+  }
+}
+
+TensorSV::TensorSV(SourceKind src, ArrayRef<int64_t> s, Type elemType,
+                   Operation* op)
+    : SymValue(Kind::Tensor, op), source(src), elementType(elemType) {
   shape.append(s.begin(), s.end());
 }
 

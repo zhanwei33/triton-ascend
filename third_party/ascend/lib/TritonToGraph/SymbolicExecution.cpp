@@ -119,7 +119,7 @@ void SymbolicExecutionEngine::executeOperation(Operation* op,
     // 对于未处理的指令，如果有结果，创建 UnknownSV
     for (Value result : op->getResults()) {
       if (!state.hasSymValue(result)) {
-        auto sv = createUnknownSV(result.getType());
+        auto sv = createUnknownSV(result.getType(), op);
         if (sv) {
           state.setSymValue(result, std::move(sv));
         }
@@ -137,16 +137,17 @@ void SymbolicExecutionEngine::executeArithConstant(
     arith::ConstantOp op, SymbolicExecutionState& state) {
   Type type = op.getType();
   Attribute attr = op.getValue();
+  Operation* opPtr = op;
 
   if (auto intType = dyn_cast<IntegerType>(type)) {
     if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
-      auto sv = std::make_shared<ScalarConstantIntSV>(intAttr.getInt(), type);
+      auto sv = std::make_shared<ScalarConstantIntSV>(intAttr.getInt(), type, opPtr);
       state.setSymValue(op.getResult(), std::move(sv));
     }
   } else if (isa<FloatType>(type)) {
     if (auto floatAttr = dyn_cast<FloatAttr>(attr)) {
       auto sv = std::make_shared<ScalarConstantFloatSV>(
-          floatAttr.getValue().convertToDouble(), type);
+          floatAttr.getValue().convertToDouble(), type, opPtr);
       state.setSymValue(op.getResult(), std::move(sv));
     }
   } else if (auto tensorType = dyn_cast<RankedTensorType>(type)) {
@@ -157,23 +158,23 @@ void SymbolicExecutionEngine::executeArithConstant(
       if (denseAttr.isSplat()) {
         if (isa<IntegerType>(elemType)) {
           elemVal = std::make_shared<ScalarConstantIntSV>(
-              denseAttr.getSplatValue<APInt>().getSExtValue(), elemType);
+              denseAttr.getSplatValue<APInt>().getSExtValue(), elemType, opPtr);
         } else if (isa<FloatType>(elemType)) {
           elemVal = std::make_shared<ScalarConstantFloatSV>(
-              denseAttr.getSplatValue<APFloat>().convertToDouble(), elemType);
+              denseAttr.getSplatValue<APFloat>().convertToDouble(), elemType, opPtr);
         }
       }
     }
     if (!elemVal) {
       // 默认创建 0
       if (isa<IntegerType>(elemType)) {
-        elemVal = std::make_shared<ScalarConstantIntSV>(0, elemType);
+        elemVal = std::make_shared<ScalarConstantIntSV>(0, elemType, opPtr);
       } else {
-        elemVal = std::make_shared<ScalarConstantFloatSV>(0.0, elemType);
+        elemVal = std::make_shared<ScalarConstantFloatSV>(0.0, elemType, opPtr);
       }
     }
     SmallVector<int64_t> shape(tensorType.getShape());
-    auto sv = TensorSV::createSplat(std::move(elemVal), shape, elemType);
+    auto sv = TensorSV::createSplat(std::move(elemVal), shape, elemType, opPtr);
     state.setSymValue(op.getResult(), std::move(sv));
   }
 }
@@ -194,7 +195,7 @@ void SymbolicExecutionEngine::executeArithBinary(
 
     if (!lhsSym || !rhsSym) {
       // 创建 Unknown Tensor
-      auto sv = createUnknownSV(resultType);
+      auto sv = createUnknownSV(resultType, op);
       if (sv) state.setSymValue(result, std::move(sv));
       return;
     }
@@ -218,7 +219,7 @@ void SymbolicExecutionEngine::executeArithBinary(
       sourceKind = TensorSV::SourceKind::Rem;
     }
 
-    auto sv = TensorSV::createComputed(sourceKind, lhsSym.get(), rhsSym.get());
+    auto sv = TensorSV::createComputed(sourceKind, lhsSym.get(), rhsSym.get(), op);
     state.setSymValue(result, std::move(sv));
   } else {
     // Scalar 运算
@@ -227,7 +228,7 @@ void SymbolicExecutionEngine::executeArithBinary(
 
     if (!lhsSym || !rhsSym) {
       // 创建 Unknown Scalar
-      auto sv = createUnknownSV(resultType);
+      auto sv = createUnknownSV(resultType, op);
       if (sv) state.setSymValue(result, std::move(sv));
       return;
     }
@@ -235,7 +236,8 @@ void SymbolicExecutionEngine::executeArithBinary(
     auto sv = createArithExpr(op->getName().getStringRef(),
                               lhsSym,
                               rhsSym,
-                              resultType);
+                              resultType,
+                              op);
     if (sv) {
       state.setSymValue(result, std::move(sv));
     }
@@ -248,6 +250,7 @@ void SymbolicExecutionEngine::executeArithSelect(
   Value trueVal = op.getTrueValue();
   Value falseVal = op.getFalseValue();
   Value result = op.getResult();
+  Operation* opPtr = op;
 
   Type resultType = result.getType();
 
@@ -258,7 +261,7 @@ void SymbolicExecutionEngine::executeArithSelect(
     auto falseSym = state.getTensorValue(falseVal);
 
     if (!trueSym || !falseSym) {
-      auto sv = createUnknownSV(resultType);
+      auto sv = createUnknownSV(resultType, opPtr);
       if (sv) state.setSymValue(result, std::move(sv));
       return;
     }
@@ -268,7 +271,7 @@ void SymbolicExecutionEngine::executeArithSelect(
     auto condSym = (condTensor && CmpExprSV::classof(condTensor.get()) ? std::static_pointer_cast<CmpExprSV>(condTensor) : nullptr);
 
     // 使用专门的 createSelect 方法
-    auto sv = TensorSV::createSelect(trueSym.get(), falseSym.get(), condSym);
+    auto sv = TensorSV::createSelect(trueSym.get(), falseSym.get(), condSym, opPtr);
     state.setSymValue(result, std::move(sv));
   } else {
     // Scalar select
@@ -277,7 +280,7 @@ void SymbolicExecutionEngine::executeArithSelect(
     auto falseSym = state.getScalarValue(falseVal);
 
     if (!trueSym || !falseSym) {
-      auto sv = createUnknownSV(resultType);
+      auto sv = createUnknownSV(resultType, opPtr);
       if (sv) state.setSymValue(result, std::move(sv));
       return;
     }
@@ -287,7 +290,8 @@ void SymbolicExecutionEngine::executeArithSelect(
         condSym,
         trueSym,
         falseSym,
-        resultType);
+        resultType,
+        opPtr);
 
     state.setSymValue(result, std::move(sv));
   }
@@ -298,6 +302,7 @@ void SymbolicExecutionEngine::executeArithCmpI(
   Value lhs = op.getLhs();
   Value rhs = op.getRhs();
   Value result = op.getResult();
+  Operation* opPtr = op;
 
   Type resultType = result.getType();
 
@@ -308,7 +313,7 @@ void SymbolicExecutionEngine::executeArithCmpI(
     auto rhsSym = state.getTensorValue(rhs);
 
     if (!lhsSym || !rhsSym) {
-      auto sv = createUnknownSV(resultType);
+      auto sv = createUnknownSV(resultType, opPtr);
       if (sv) state.setSymValue(result, std::move(sv));
       return;
     }
@@ -328,7 +333,7 @@ void SymbolicExecutionEngine::executeArithCmpI(
       case arith::CmpIPredicate::uge: cmpKind = TensorSV::SourceKind::CmpGE; break;
     }
 
-    auto sv = TensorSV::createComputed(cmpKind, lhsSym.get(), rhsSym.get());
+    auto sv = TensorSV::createComputed(cmpKind, lhsSym.get(), rhsSym.get(), opPtr);
     state.setSymValue(result, std::move(sv));
   } else {
     // Scalar cmp
@@ -336,7 +341,7 @@ void SymbolicExecutionEngine::executeArithCmpI(
     auto rhsSym = state.getScalarValue(rhs);
 
     if (!lhsSym || !rhsSym) {
-      auto sv = createUnknownSV(resultType);
+      auto sv = createUnknownSV(resultType, opPtr);
       if (sv) state.setSymValue(result, std::move(sv));
       return;
     }
@@ -345,7 +350,8 @@ void SymbolicExecutionEngine::executeArithCmpI(
         getCmpIPred(op.getPredicate()),
         lhsSym,
         rhsSym,
-        resultType);
+        resultType,
+        opPtr);
 
     state.setSymValue(result, std::move(sv));
   }
@@ -358,7 +364,7 @@ void SymbolicExecutionEngine::executeArithCmpI(
 void SymbolicExecutionEngine::executeGetProgramID(
     tt::GetProgramIdOp op, SymbolicExecutionState& state) {
   int axis = static_cast<int>(op.getAxis());
-  auto sv = std::make_shared<ProgramIDSV>(axis, op.getResult().getType());
+  auto sv = std::make_shared<ProgramIDSV>(axis, op.getResult().getType(), op);
   state.setSymValue(op.getResult(), std::move(sv));
 }
 
@@ -369,7 +375,8 @@ void SymbolicExecutionEngine::executeMakeRange(
 
   auto sv = TensorSV::createMakeRange(
       start, end,
-      mlir::cast<RankedTensorType>(op.getResult().getType()).getElementType());
+      mlir::cast<RankedTensorType>(op.getResult().getType()).getElementType(),
+      op);
   state.setSymValue(op.getResult(), std::move(sv));
 }
 
@@ -380,21 +387,21 @@ void SymbolicExecutionEngine::executeSplat(
 
   auto inputSym = state.getScalarValue(input);
   if (!inputSym) {
-    auto sv = createUnknownSV(result.getType());
+    auto sv = createUnknownSV(result.getType(), op);
     if (sv) state.setSymValue(result, std::move(sv));
     return;
   }
 
   auto tensorType = dyn_cast<RankedTensorType>(result.getType());
   if (!tensorType) {
-    auto sv = createUnknownSV(result.getType());
+    auto sv = createUnknownSV(result.getType(), op);
     if (sv) state.setSymValue(result, std::move(sv));
     return;
   }
 
   SmallVector<int64_t> shape(tensorType.getShape());
   auto sv = TensorSV::createSplat(inputSym, shape,
-                                  tensorType.getElementType());
+                                  tensorType.getElementType(), op);
   state.setSymValue(result, std::move(sv));
 }
 
@@ -403,6 +410,7 @@ void SymbolicExecutionEngine::executeAddPtr(
   Value ptr = op.getPtr();
   Value offset = op.getOffset();
   Value result = op.getResult();
+  Operation* opPtr = op;
 
   Type ptrType = ptr.getType();
   Type resultType = result.getType();
@@ -414,7 +422,7 @@ void SymbolicExecutionEngine::executeAddPtr(
     auto offsetSym = state.getTensorValue(offset);
 
     if (!ptrSym || !offsetSym) {
-      auto sv = createUnknownSV(resultType);
+      auto sv = createUnknownSV(resultType, opPtr);
       if (sv) state.setSymValue(result, std::move(sv));
       return;
     }
@@ -434,12 +442,13 @@ void SymbolicExecutionEngine::executeAddPtr(
     auto elemPtrExpr = std::make_shared<PtrExprSV>(
         ptrSym->elementExpr,
         offsetSym->elementExpr,
-        resultTensorType.getElementType());
+        resultTensorType.getElementType(),
+        opPtr);
 
     SmallVector<int64_t> shape(resultTensorType.getShape());
     Type pointeeType = resultTensorType.getElementType();
     auto sv = std::make_shared<TensorSV>(TensorSV::SourceKind::Computed,
-                                         shape, pointeeType);
+                                         shape, pointeeType, opPtr);
     sv->elementExpr = std::move(elemPtrExpr);
     state.setSymValue(result, std::move(sv));
   } else {
@@ -448,7 +457,7 @@ void SymbolicExecutionEngine::executeAddPtr(
     auto offsetSym = state.getScalarValue(offset);
 
     if (!ptrSym || !offsetSym) {
-      auto sv = createUnknownSV(resultType);
+      auto sv = createUnknownSV(resultType, opPtr);
       if (sv) state.setSymValue(result, std::move(sv));
       return;
     }
@@ -461,11 +470,12 @@ void SymbolicExecutionEngine::executeAddPtr(
       pointeeType = resultType;
     }
     */
-    
+
     auto sv = std::make_shared<PtrExprSV>(
         ptrSym,
         offsetSym,
-        resultType);
+        resultType,
+        opPtr);
     state.setSymValue(result, std::move(sv));
   }
 }
@@ -478,12 +488,12 @@ void SymbolicExecutionEngine::executeExpandDims(
 
   auto inputSym = state.getTensorValue(input);
   if (!inputSym) {
-    auto sv = createUnknownSV(result.getType());
+    auto sv = createUnknownSV(result.getType(), op);
     if (sv) state.setSymValue(result, std::move(sv));
     return;
   }
 
-  auto sv = TensorSV::createExpandDims(inputSym.get(), axis);
+  auto sv = TensorSV::createExpandDims(inputSym.get(), axis, op);
   state.setSymValue(result, std::move(sv));
 }
 
@@ -494,37 +504,38 @@ void SymbolicExecutionEngine::executeBroadcast(
 
   auto inputSym = state.getTensorValue(input);
   if (!inputSym) {
-    auto sv = createUnknownSV(result.getType());
+    auto sv = createUnknownSV(result.getType(), op);
     if (sv) state.setSymValue(result, std::move(sv));
     return;
   }
 
   auto tensorType = dyn_cast<RankedTensorType>(result.getType());
   if (!tensorType) {
-    auto sv = createUnknownSV(result.getType());
+    auto sv = createUnknownSV(result.getType(), op);
     if (sv) state.setSymValue(result, std::move(sv));
     return;
   }
 
   SmallVector<int64_t> resultShape(tensorType.getShape());
-  auto sv = TensorSV::createBroadcast(inputSym.get(), resultShape);
+  auto sv = TensorSV::createBroadcast(inputSym.get(), resultShape, op);
   state.setSymValue(result, std::move(sv));
 }
 
 void SymbolicExecutionEngine::executeMakeTensorPtr(
     tt::MakeTensorPtrOp op, SymbolicExecutionState& state) {
   Value base = op.getBase();
+  Operation* opPtr = op;
 
   auto resultType = dyn_cast<tt::PointerType>(op.getResult().getType());
   if (!resultType) {
-    auto sv = createUnknownSV(op.getResult().getType());
+    auto sv = createUnknownSV(op.getResult().getType(), opPtr);
     if (sv) state.setSymValue(op.getResult(), std::move(sv));
     return;
   }
 
   auto tensorType = dyn_cast<RankedTensorType>(resultType.getPointeeType());
   if (!tensorType) {
-    auto sv = createUnknownSV(op.getResult().getType());
+    auto sv = createUnknownSV(op.getResult().getType(), opPtr);
     if (sv) state.setSymValue(op.getResult(), std::move(sv));
     return;
   }
@@ -536,7 +547,7 @@ void SymbolicExecutionEngine::executeMakeTensorPtr(
     if (isa<BlockArgument>(base)) {
       auto pt = dyn_cast<tt::PointerType>(base.getType());
       if (pt) {
-        baseSym = std::make_shared<GmPtrSV>(base, pt.getPointeeType());
+        baseSym = std::make_shared<GmPtrSV>(base, pt.getPointeeType(), opPtr);
         state.setSymValue(base, baseSym);
       }
     }
@@ -559,12 +570,12 @@ void SymbolicExecutionEngine::executeMakeTensorPtr(
     if (auto constOp = val.getDefiningOp<arith::ConstantOp>()) {
       if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
         return std::make_shared<ScalarConstantIntSV>(
-            intAttr.getInt(), val.getType());
+            intAttr.getInt(), val.getType(), opPtr);
       }
     }
 
     // 3. 兜底：创建 UnknownSV
-    return std::make_shared<UnknownSV>(val.getType());
+    return std::make_shared<UnknownSV>(val.getType(), opPtr);
   };
 
   // 收集 shape（只收集 shape，不涉及 blockShape）
@@ -591,7 +602,7 @@ void SymbolicExecutionEngine::executeMakeTensorPtr(
 
   // 创建 TensorPtrSV
   auto sv = std::make_shared<TensorPtrSV>(
-      shape, strides, offsets, blockShape, tensorType.getElementType());
+      shape, strides, offsets, blockShape, tensorType.getElementType(), opPtr);
 
   state.setSymValue(op.getResult(), std::move(sv));
 }
@@ -602,7 +613,7 @@ void SymbolicExecutionEngine::executeLoad(
   Type resultType = result.getType();
 
   // Load 返回 UnknownSV（区分 Scalar 还是 Tensor）
-  auto sv = createUnknownSV(resultType);
+  auto sv = createUnknownSV(resultType, op);
   if (sv) {
     state.setSymValue(result, std::move(sv));
   }
@@ -617,6 +628,7 @@ void SymbolicExecutionEngine::executeForLoop(
   // 1. 获取切片关注的 value
   Value sv = slice_ ? slice_->getDefinedValue(loop) : nullptr;
   Instruction* inst = cfg_->getInstruction(loop);
+  Operation* opPtr = loop;
 
   // 2. 获取循环边界
   Value lb = loop.getLowerBound();
@@ -632,7 +644,8 @@ void SymbolicExecutionEngine::executeForLoop(
           state.getScalarValue(lb),
           state.getScalarValue(ub),
           state.getScalarValue(step),
-          sv.getType());
+          sv.getType(),
+          opPtr);
       state.setSymValue(sv, std::move(inductionSv));
       return;  // 切片只关注 iter_var，其他不处理
     }
@@ -647,7 +660,7 @@ void SymbolicExecutionEngine::executeForLoop(
           if (pairOpt) {
             auto [initInst, yieldInst] = *pairOpt;
             auto iterArgSv = std::make_shared<IterArgSV>(
-                inst, initInst, yieldInst, sv.getType());
+                inst, initInst, yieldInst, sv.getType(), opPtr);
             state.setSymValue(sv, std::move(iterArgSv));
             return;
           }
@@ -658,7 +671,7 @@ void SymbolicExecutionEngine::executeForLoop(
     // 3.3 如果是 result → UnknownSV
     for (Value result : loop.getResults()) {
       if (sv == result) {
-        auto svUnknown = createUnknownSV(sv.getType());
+        auto svUnknown = createUnknownSV(sv.getType(), opPtr);
         if (svUnknown) state.setSymValue(sv, std::move(svUnknown));
         return;
       }
@@ -670,13 +683,14 @@ void SymbolicExecutionEngine::executeIfOp(
     scf::IfOp op, SymbolicExecutionState& state) {
   // 1. 获取切片关注的 value
   Value sv = slice_ ? slice_->getDefinedValue(op) : nullptr;
+  Operation* opPtr = op;
 
   // 2. 判断 sliceValue 是否是 result
   if (sv) {
     for (Value result : op.getResults()) {
       if (sv == result) {
         // result → UnknownSV
-        auto svUnknown = createUnknownSV(sv.getType());
+        auto svUnknown = createUnknownSV(sv.getType(), opPtr);
         if (svUnknown) state.setSymValue(sv, std::move(svUnknown));
         return;  // 切片只关注此 result
       }
@@ -685,7 +699,7 @@ void SymbolicExecutionEngine::executeIfOp(
 
   // 3. 默认处理：所有 results 创建 UnknownSV
   for (Value result : op.getResults()) {
-    auto sv = createUnknownSV(result.getType());
+    auto sv = createUnknownSV(result.getType(), opPtr);
     if (sv) {
       state.setSymValue(result, std::move(sv));
     }
@@ -708,18 +722,19 @@ void SymbolicExecutionEngine::executeYield(
 // SymbolicExecutionEngine 新增方法
 //===----------------------------------------------------------------------===//
 
-void SymbolicExecutionEngine::createSymValuesForFuncOp(triton::FuncOp& funcOp, 
-        SymbolicExecutionState& state) 
+void SymbolicExecutionEngine::createSymValuesForFuncOp(triton::FuncOp& funcOp,
+        SymbolicExecutionState& state)
 {
+  Operation* funcOpPtr = funcOp;
   // 遍历 FuncOp 的所有参数
-  for (BlockArgument arg : funcOp.getArguments()) 
+  for (BlockArgument arg : funcOp.getArguments())
   {
-    createSymValueForArgument(arg, state);
+    createSymValueForArgument(arg, state, funcOpPtr);
   }
 }
 
 void SymbolicExecutionEngine::createSymValueForArgument(
-    Value arg, SymbolicExecutionState& state) 
+    Value arg, SymbolicExecutionState& state, Operation* funcOp)
 {
   if (state.hasSymValue(arg)) {
     return;
@@ -729,19 +744,40 @@ void SymbolicExecutionEngine::createSymValueForArgument(
 
   // 如果是指针类型，创建 GmPtrSV
   if (auto ptrType = dyn_cast<tt::PointerType>(type)) {
-    auto sv = std::make_shared<GmPtrSV>(arg, ptrType.getPointeeType());
+    auto sv = std::make_shared<GmPtrSV>(arg, ptrType.getPointeeType(), funcOp);
     state.setSymValue(arg, std::move(sv));
     return;
   }
 
-  // 其他类型创建 UnknownSV
-  auto sv = createUnknownSV(type);
-  if (sv) {
-    state.setSymValue(arg, std::move(sv));
+  // 获取参数索引和名称
+  unsigned argIndex = 0;
+  std::string argName;
+  if (auto blockArg = dyn_cast<BlockArgument>(arg)) {
+    argIndex = blockArg.getArgNumber();
+    // 尝试从FuncOp获取参数名
+    if (funcOp) {
+      if (auto func = dyn_cast<triton::FuncOp>(funcOp)) {
+        // 尝试获取参数属性中的名称
+        if (auto argAttrs = func.getArgAttrsAttr()) {
+          if (auto attrs = argAttrs[argIndex].dyn_cast_or_null<DictionaryAttr>()) {
+            if (auto nameAttr = attrs.get("tt.name")) {
+              if (auto strAttr = nameAttr.dyn_cast<StringAttr>()) {
+                argName = strAttr.getValue().str();
+              }
+            }
+          }
+        }
+      }
+    }
   }
+
+  // 非指针类型的入参创建 ArgSV
+  auto sv = std::make_shared<ArgSV>(argIndex, type, funcOp, argName);
+  state.setSymValue(arg, std::move(sv));
 }
 
-std::shared_ptr<SymValue> SymbolicExecutionEngine::createUnknownSV(Type type) {
+std::shared_ptr<SymValue> SymbolicExecutionEngine::createUnknownSV(Type type,
+    Operation* op) {
   if (!type) {
     return nullptr;
   }
@@ -750,29 +786,30 @@ std::shared_ptr<SymValue> SymbolicExecutionEngine::createUnknownSV(Type type) {
   if (isa<RankedTensorType>(type)) {
     auto tensorType = cast<RankedTensorType>(type);
     SmallVector<int64_t> shape(tensorType.getShape());
-    return TensorSV::createLoad(shape, tensorType.getElementType());
+    return TensorSV::createLoad(shape, tensorType.getElementType(), op);
   } else {
-    return std::make_shared<UnknownSV>(type);
+    return std::make_shared<UnknownSV>(type, op);
   }
 }
 
 std::shared_ptr<ScalarSV> SymbolicExecutionEngine::createArithExpr(
     StringRef opName, std::shared_ptr<ScalarSV> lhs,
-    std::shared_ptr<ScalarSV> rhs, Type resultType) {
+    std::shared_ptr<ScalarSV> rhs, Type resultType,
+    Operation* op) {
   if (opName == "arith.addi" || opName == "arith.addf") {
-    return std::make_shared<AddExprSV>(lhs, rhs, resultType);
+    return std::make_shared<AddExprSV>(lhs, rhs, resultType, op);
   } else if (opName == "arith.subi" || opName == "arith.subf") {
-    return std::make_shared<SubExprSV>(lhs, rhs, resultType);
+    return std::make_shared<SubExprSV>(lhs, rhs, resultType, op);
   } else if (opName == "arith.muli" || opName == "arith.mulf") {
-    return std::make_shared<MulExprSV>(lhs, rhs, resultType);
+    return std::make_shared<MulExprSV>(lhs, rhs, resultType, op);
   } else if (opName == "arith.divsi" || opName == "arith.divui" ||
              opName == "arith.divf") {
-    return std::make_shared<DivExprSV>(lhs, rhs, resultType);
+    return std::make_shared<DivExprSV>(lhs, rhs, resultType, op);
   } else if (opName == "arith.remsi" || opName == "arith.remui") {
-    return std::make_shared<RemExprSV>(lhs, rhs, resultType);
+    return std::make_shared<RemExprSV>(lhs, rhs, resultType, op);
   }
   // 默认返回 UnknownSV
-  return std::make_shared<UnknownSV>(resultType);
+  return std::make_shared<UnknownSV>(resultType, op);
 }
 
 CmpExprSV::Pred SymbolicExecutionEngine::getCmpIPred(arith::CmpIPredicate pred) {

@@ -160,11 +160,12 @@ public:
   // 辅助方法
   //===----------------------------------------------------------------------===//
 
-  // 为入参创建 SymValue（指针类型创建 GmPtrSV，其他创建 UnknownSV）
-  void createSymValueForArgument(Value arg, SymbolicExecutionState& state);
+  // 为入参创建 SymValue（指针类型创建 GmPtrSV，其他创建 ArgSV）
+  void createSymValueForArgument(Value arg, SymbolicExecutionState& state,
+                                  Operation* funcOp = nullptr);
 
   // 创建 UnknownSV（根据类型区分 Scalar 或 Tensor）
-  std::shared_ptr<SymValue> createUnknownSV(Type type);
+  std::shared_ptr<SymValue> createUnknownSV(Type type, Operation* op = nullptr);
 
 private:
   // CFG 和 ProgramSlice（用于获取 ForOp/IfOp 的上下文信息）
@@ -174,7 +175,8 @@ private:
   // 辅助方法：根据arith操作符创建对应的表达式
   std::shared_ptr<ScalarSV> createArithExpr(
       StringRef opName, std::shared_ptr<ScalarSV> lhs,
-      std::shared_ptr<ScalarSV> rhs, Type resultType);
+      std::shared_ptr<ScalarSV> rhs, Type resultType,
+      Operation* op = nullptr);
 
   // 辅助方法：根据arith.cmpi谓词创建对应的CmpExprSV
   CmpExprSV::Pred getCmpIPred(arith::CmpIPredicate pred);
