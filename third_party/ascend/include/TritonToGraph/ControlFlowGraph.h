@@ -198,7 +198,7 @@ public:
   ~ControlFlowGraph();
 
   // 获取函数
-  triton::FuncOp getFunction() const { return function; }
+  triton::FuncOp& getFunction() { return function; }
 
   // 基本块操作
   BasicBlock *createBasicBlock(BlockType type, BasicBlock *parentStructure = nullptr);

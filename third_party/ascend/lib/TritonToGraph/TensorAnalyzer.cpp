@@ -245,7 +245,7 @@ void TensorAnalyzer::analyzeLoadWithSymbolicExecution(triton::LoadOp loadOp) {
 
       // 如果是 for/if 操作，记录其定义的 values
       if (isa<scf::ForOp>(defOp) || isa<scf::IfOp>(defOp)) {
-          slice.definedValues_[defOp] = &value;
+          slice.definedValues_[defOp] = value;
       }
 
       return true;
@@ -268,6 +268,9 @@ void TensorAnalyzer::analyzeLoadWithSymbolicExecution(triton::LoadOp loadOp) {
   // Step 3: 符号执行切片中的指令
   // 重置符号执行状态（为每个load创建新的状态）
   symExecState = std::make_unique<SymbolicExecutionState>();
+  symExecEngine->createSymValuesForFuncOp(cfg.getFunction(), *symExecState);
+  symExecEngine->setCFG(&cfg);
+  symExecEngine->setProgramSlice(&builder.slice);
 
   for (Instruction* inst : orderedInsts) {
     Operation* op = inst->getOperation();
@@ -275,6 +278,21 @@ void TensorAnalyzer::analyzeLoadWithSymbolicExecution(triton::LoadOp loadOp) {
       symExecEngine->executeOperation(op, *symExecState);
     }
   }
+
+  // ===== 新增：打印 orderedInsts =====
+  llvm::dbgs() << "[TensorAnalyzer] === Ordered Slice Instructions ("
+               << orderedInsts.size() << ") ===\n";
+  for (size_t i = 0; i < orderedInsts.size(); ++i) {
+    Instruction* inst = orderedInsts[i];
+    llvm::dbgs() << "  [" << i << "] ";
+    if (inst && inst->getOperation()) {
+      inst->getOperation()->print(llvm::dbgs());
+    } else {
+      llvm::dbgs() << "<null instruction>";
+    }
+    llvm::dbgs() << " (topoOrder=" << getTopoOrder(inst) << ")\n";
+  }
+  llvm::dbgs() << "[TensorAnalyzer] =================================\n";
 
   auto ptrSymValue = symExecState->getSymValue(ptr);
   if (ptrSymValue) {
@@ -284,7 +302,7 @@ void TensorAnalyzer::analyzeLoadWithSymbolicExecution(triton::LoadOp loadOp) {
     ptrSymValue->print(os);
     os << "\n";
   }
-  
+
   LLVM_DEBUG(llvm::dbgs()
                  << "[TensorAnalyzer] Symbolic execution completed\n");
 }

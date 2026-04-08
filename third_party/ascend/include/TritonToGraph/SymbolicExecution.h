@@ -69,6 +69,7 @@ public:
   void setCFG(cfg::ControlFlowGraph* cfg) { cfg_ = cfg; }
   void setProgramSlice(ProgramSlice* slice) { slice_ = slice; }
 
+  void createSymValuesForFuncOp(triton::FuncOp& funcOp, SymbolicExecutionState& state);
   //===----------------------------------------------------------------------===//
   // 主要执行接口
   //===----------------------------------------------------------------------===//

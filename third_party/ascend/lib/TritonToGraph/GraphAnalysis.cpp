@@ -197,6 +197,27 @@ void DFGTraverser::dfsBackwardImpl(Value value, DFGTraversalBase& visitor,
   }
 
   if (!defOp)
+  {
+    // 1. 转换为 BlockArgument
+    BlockArgument blockArg = mlir::dyn_cast<BlockArgument>(value);
+    if (!blockArg) {
+      // 不是 block argument，有 defining op
+      return;
+    }
+
+    // 2. 获取所属的 Block
+    Block* parentBlock = blockArg.getParentBlock();
+
+    // 3. 获取包含该 Block 的 Operation（即 scf.for）
+    Operation* parentOp = parentBlock->getParentOp();
+    scf::ForOp forOp = dyn_cast<scf::ForOp>(parentOp);
+
+    // 4. 验证 value 是这个 for 的 induction variable
+    if (forOp && value == forOp.getInductionVar())
+      defOp = forOp;
+  }
+    
+  if(!defOp)
     return;
 
   if (visited.contains(defOp))
@@ -511,7 +532,7 @@ OpsRegion ProgramSlice::toRegion(StringRef name) const {
   return region;
 }
 
-Value* ProgramSlice::getDefinedValue(Operation* defOp) const {
+Value ProgramSlice::getDefinedValue(Operation* defOp) const {
   auto it = definedValues_.find(defOp);
   if (it != definedValues_.end()) {
     return it->second;

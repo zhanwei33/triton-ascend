@@ -615,7 +615,7 @@ void SymbolicExecutionEngine::executeLoad(
 void SymbolicExecutionEngine::executeForLoop(
     scf::ForOp loop, SymbolicExecutionState& state) {
   // 1. 获取切片关注的 value
-  Value* sliceValue = slice_ ? slice_->getDefinedValue(loop) : nullptr;
+  Value sv = slice_ ? slice_->getDefinedValue(loop) : nullptr;
   Instruction* inst = cfg_->getInstruction(loop);
 
   // 2. 获取循环边界
@@ -624,9 +624,7 @@ void SymbolicExecutionEngine::executeForLoop(
   Value step = loop.getStep();
 
   // 3. 判断 sliceValue 类型并处理
-  if (sliceValue) {
-    Value sv = *sliceValue;
-
+  if (sv) {
     // 3.1 如果是 InductionVar
     if (sv == loop.getInductionVar()) {
       auto inductionSv = std::make_shared<InductionSV>(
@@ -671,11 +669,10 @@ void SymbolicExecutionEngine::executeForLoop(
 void SymbolicExecutionEngine::executeIfOp(
     scf::IfOp op, SymbolicExecutionState& state) {
   // 1. 获取切片关注的 value
-  Value* sliceValue = slice_ ? slice_->getDefinedValue(op) : nullptr;
+  Value sv = slice_ ? slice_->getDefinedValue(op) : nullptr;
 
   // 2. 判断 sliceValue 是否是 result
-  if (sliceValue) {
-    Value sv = *sliceValue;
+  if (sv) {
     for (Value result : op.getResults()) {
       if (sv == result) {
         // result → UnknownSV
@@ -707,8 +704,23 @@ void SymbolicExecutionEngine::executeYield(
 // 辅助方法
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// SymbolicExecutionEngine 新增方法
+//===----------------------------------------------------------------------===//
+
+void SymbolicExecutionEngine::createSymValuesForFuncOp(triton::FuncOp& funcOp, 
+        SymbolicExecutionState& state) 
+{
+  // 遍历 FuncOp 的所有参数
+  for (BlockArgument arg : funcOp.getArguments()) 
+  {
+    createSymValueForArgument(arg, state);
+  }
+}
+
 void SymbolicExecutionEngine::createSymValueForArgument(
-    Value arg, SymbolicExecutionState& state) {
+    Value arg, SymbolicExecutionState& state) 
+{
   if (state.hasSymValue(arg)) {
     return;
   }

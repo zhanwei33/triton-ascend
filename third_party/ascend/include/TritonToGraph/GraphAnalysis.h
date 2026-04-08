@@ -166,10 +166,10 @@ public:
   auto end() const { return instructions_.end(); }
 
   /// 记录 defOp 到 value 的映射（用于 for/if results, iter_args 等）
-  DenseMap<Operation*, Value*> definedValues_;
+  DenseMap<Operation*, Value> definedValues_;
 
   /// 获取 defOp 对应的 value（用于 for/if results, iter_args 等）
-  Value* getDefinedValue(Operation* defOp) const;
+  Value getDefinedValue(Operation* defOp) const;
 
 private:
   DenseSet<Instruction*> instructions_;
