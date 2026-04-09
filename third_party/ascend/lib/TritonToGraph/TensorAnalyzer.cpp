@@ -298,8 +298,8 @@ void TensorAnalyzer::analyzeLoadWithSymbolicExecution(triton::LoadOp loadOp) {
   if (ptrSymValue) {
     llvm::raw_ostream& os = llvm::dbgs();
     os << "[TensorAnalyzer] loadOp = " << loadOp << "\n";
-    os << "[TensorAnalyzer] ptr = ";
-    ptrSymValue->print(os);
+    os << "[TensorAnalyzer] ptr = \n";
+    ptrSymValue->print(os, 0);
     os << "\n";
   }
 

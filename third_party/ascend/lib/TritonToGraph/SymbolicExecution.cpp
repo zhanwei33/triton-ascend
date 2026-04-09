@@ -87,7 +87,9 @@ void SymbolicExecutionEngine::executeOperation(Operation* op,
   // 根据操作类型分发
   if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
     executeArithConstant(constOp, state);
-  } else if (isa<mlir::arith::AddIOp, mlir::arith::SubIOp, mlir::arith::MulIOp, mlir::arith::DivSIOp, mlir::arith::DivUIOp, mlir::arith::AddFOp, mlir::arith::SubFOp, mlir::arith::MulFOp, mlir::arith::DivFOp>(op)) {
+  } else if (isa<mlir::arith::AddIOp, mlir::arith::SubIOp, mlir::arith::MulIOp, mlir::arith::DivSIOp, 
+      mlir::arith::DivUIOp, mlir::arith::AddFOp, mlir::arith::SubFOp, 
+      mlir::arith::MulFOp, mlir::arith::DivFOp, mlir::arith::RemSIOp, mlir::arith::RemUIOp>(op)) {
     executeArithBinary(op, state);
   } else if (auto selectOp = dyn_cast<arith::SelectOp>(op)) {
     executeArithSelect(selectOp, state);
@@ -759,9 +761,9 @@ void SymbolicExecutionEngine::createSymValueForArgument(
       if (auto func = dyn_cast<triton::FuncOp>(funcOp)) {
         // 尝试获取参数属性中的名称
         if (auto argAttrs = func.getArgAttrsAttr()) {
-          if (auto attrs = argAttrs[argIndex].dyn_cast_or_null<DictionaryAttr>()) {
+          if (auto attrs = dyn_cast<DictionaryAttr>(argAttrs[argIndex])) {
             if (auto nameAttr = attrs.get("tt.name")) {
-              if (auto strAttr = nameAttr.dyn_cast<StringAttr>()) {
+              if (auto strAttr = dyn_cast<StringAttr>(nameAttr)) {
                 argName = strAttr.getValue().str();
               }
             }

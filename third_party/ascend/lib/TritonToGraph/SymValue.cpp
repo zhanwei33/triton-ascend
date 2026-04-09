@@ -324,14 +324,14 @@ RangeExprSV::RangeExprSV(int64_t s, int64_t e, Type type, Operation* op)
 }
 
 void RangeExprSV::print(llvm::raw_ostream& os) const {
-  os << "Range[" << start << ", " << end << ")<" << dataType << ">";
+  os << "Range[" << start << ", " << end << ")";
   printDims(os);
   printOperationInfo(os, sourceOp, 0);
 }
 
 void RangeExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
   std::string content = "Range[" + std::to_string(start) + ", " +
-                        std::to_string(end) + ")<" + dataType + ">";
+                        std::to_string(end) + ")";
   printWithOp(os, indent, content);
 }
 
@@ -492,46 +492,68 @@ void SelectExprSV::print(llvm::raw_ostream& os) const {
 void SelectExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
   printIndent(os, indent);
   // Min/Max 模式打印为函数调用格式
-  if (isMinPattern()) {
-    os << "Min(";
-    trueVal->print(os);
-    os << ", ";
-    falseVal->print(os);
-    os << ")";
+  bool bPattern = false;
+  std::string pat;
+
+  if(isMinPattern())
+  {
+    bPattern = true;
+    pat = "Min";
+  }
+  else if (isMaxPattern())
+  {
+    bPattern = true;
+    pat = "Max";
+  }
+  else if(isLengthCheck())
+  {
+    bPattern = true;
+    pat = "ClampToZero";
+  }
+
+  if(bPattern)
+  {
+    os << pat << "( ";
     printDims(os);
     printOperationInfo(os, sourceOp, indent);
-  } else if (isMaxPattern()) {
-    os << "Max(";
-    trueVal->print(os);
-    os << ", ";
-    falseVal->print(os);
-    os << ")";
-    printDims(os);
-    printOperationInfo(os, sourceOp, indent);
-  } else if (isLengthCheck()) {
-    os << "ClampToZero(";
-    trueVal->print(os);
-    os << ", ";
+    os << "\n";
+
+    trueVal->print(os, indent+1);
+
+    os << "\n";
+    printIndent(os, indent);
+    os << ", \n";
+    
     if (condition) {
-      condition->getRHS()->print(os);
+      condition->getRHS()->print(os, indent+1);
+      os << "\n";
     }
+
+    printIndent(os, indent);
     os << ")";
-    printDims(os);
-    printOperationInfo(os, sourceOp, indent);
-  } else {
+  }
+  else 
+  {
     // 默认格式: select(cond) ? trueVal : falseVal
-    os << "select(";
+    os << "select( ";
+    printDims(os);
+    printOperationInfo(os, sourceOp, indent); 
+    os << "\n";
+
     if (condition) {
-      condition->print(os);
+      condition->print(os, indent+1);
     } else {
       os << "null";
     }
-    os << ") ? ";
-    trueVal->print(os);
-    os << " : ";
-    falseVal->print(os);
-    printDims(os);
-    printOperationInfo(os, sourceOp, indent);
+    
+    printIndent(os, indent);
+    os << ") ? \n ";
+    trueVal->print(os, indent+1);
+    
+    printIndent(os, indent);
+    os << " : \n";
+    
+    falseVal->print(os, indent+1);
   }
 }
 
@@ -697,17 +719,22 @@ void ProgramIDSV::print(llvm::raw_ostream& os, unsigned indent) const {
 void GmPtrSV::print(llvm::raw_ostream& os) const {
   os << "GmPtr<" << pointeeType << ">";
   if (param) {
-    os << "(arg" << param.getArgNumber() << ")";
+    os << "(arg" << dyn_cast<BlockArgument>(param).getArgNumber() << ")";
   }
   printDims(os);
   printOperationInfo(os, sourceOp, 0);
 }
 
 void GmPtrSV::print(llvm::raw_ostream& os, unsigned indent) const {
-  std::string content = "GmPtr<" + pointeeType.str() + ">";
+  std::string content;
+  llvm::raw_string_ostream rso(content);
+
+  rso << "GmPtr<" << pointeeType << ">";
   if (param) {
-    content += "(arg" + std::to_string(param.getArgNumber()) + ")";
+    rso << "(arg" << dyn_cast<BlockArgument>(param).getArgNumber() << ")";
   }
+  rso.flush();  // 确保写入 string
+  
   printWithOp(os, indent, content);
 }
 
@@ -765,7 +792,12 @@ void UnknownSV::print(llvm::raw_ostream& os) const {
 }
 
 void UnknownSV::print(llvm::raw_ostream& os, unsigned indent) const {
-  std::string content = "Unknown<" + dataType.str() + ">";
+  std::string content;
+  llvm::raw_string_ostream rso(content);
+
+  rso << "Unknown<" << dataType << ">";
+  rso.flush();  // 确保写入 string
+
   printWithOp(os, indent, content);
 }
 
@@ -811,7 +843,12 @@ void IterArgSV::print(llvm::raw_ostream& os) const {
 }
 
 void IterArgSV::print(llvm::raw_ostream& os, unsigned indent) const {
-  std::string content = "IterArg<" + dataType.str() + ">";
+  std::string content;
+  llvm::raw_string_ostream rso(content);
+
+  rso << "IterArg<" << dataType << ">";
+  rso.flush();  // 确保写入 string
+
   printWithOp(os, indent, content);
 }
 
@@ -828,7 +865,12 @@ void ArgSV::print(llvm::raw_ostream& os) const {
 }
 
 void ArgSV::print(llvm::raw_ostream& os, unsigned indent) const {
-  std::string content = "Arg<" + dataType.str() + ">(arg" + std::to_string(argIndex);
+  std::string content;
+  llvm::raw_string_ostream rso(content);
+
+  rso << "Arg<" << dataType << ">(arg" << std::to_string(argIndex);
+  rso.flush();  // 确保写入 string
+
   if (hasName()) content += ": " + name;
   content += ")";
   printWithOp(os, indent, content);

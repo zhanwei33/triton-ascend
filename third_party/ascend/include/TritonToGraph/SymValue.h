@@ -29,7 +29,7 @@ namespace ascend {
 using cfg::Instruction;  // Bring Instruction into ascend namespace
 
 // Forward declaration for Operation
-class Operation;
+//class Operation;
 
 //===----------------------------------------------------------------------===//
 // SymValue - 符号执行值基类
@@ -199,6 +199,7 @@ public:
     return v->getKind() == Kind::ScalarConstantInt;
   }
   void print(llvm::raw_ostream& os) const override;
+  void print(llvm::raw_ostream& os, unsigned indent) const override;
 };
 
 //===----------------------------------------------------------------------===//
@@ -227,6 +228,7 @@ public:
     return v->getKind() == Kind::ScalarConstantFloat;
   }
   void print(llvm::raw_ostream& os) const override;
+  void print(llvm::raw_ostream& os, unsigned indent) const override;
 };
 
 //===----------------------------------------------------------------------===//
