@@ -931,7 +931,8 @@ std::shared_ptr<TensorSV> TensorSV::createExpandDims(
     tensor->elementExpr = input->elementExpr;
     // 更新 dims：原维度0变为维度1
     SmallVector<int> newDims;
-    for (int d : input->elementExpr->dims) {
+    tensor->elementExpr->dims[0] = 0;
+    for (int d : tensor->elementExpr->dims) {
       if (d >= axis) {
         newDims.push_back(d + 1);
       } else {
