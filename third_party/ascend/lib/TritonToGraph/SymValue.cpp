@@ -782,6 +782,49 @@ void RemExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
 }
 
 //===----------------------------------------------------------------------===//
+// AndExprSV
+//===----------------------------------------------------------------------===//
+
+AndExprSV::AndExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r,
+                     Type type, Operation* op)
+    : ScalarSV(Kind::AndExpr, op), lhs(l), rhs(r), dataType(type) {
+  // dims 默认为 [-1] (未关联)
+}
+
+void AndExprSV::print(llvm::raw_ostream& os) const {
+  os << "And<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, 0);
+  os << "\n";
+
+  printIndent(os, 1);
+  os << "lhs:\n";
+  lhs->print(os, 2);
+
+  os << "\n";
+  printIndent(os, 1);
+  os << "rhs:\n";
+  rhs->print(os, 2);
+}
+
+void AndExprSV::print(llvm::raw_ostream& os, unsigned indent) const {
+  printIndent(os, indent);
+  os << "And<" << dataType << ">";
+  printDims(os);
+  printOperationInfo(os, sourceOp, indent);
+  os << "\n";
+
+  printIndent(os, indent + 1);
+  os << "lhs:\n";
+  lhs->print(os, indent + 2);
+
+  os << "\n";
+  printIndent(os, indent + 1);
+  os << "rhs:\n";
+  rhs->print(os, indent + 2);
+}
+
+//===----------------------------------------------------------------------===//
 // UnknownSV
 //===----------------------------------------------------------------------===//
 

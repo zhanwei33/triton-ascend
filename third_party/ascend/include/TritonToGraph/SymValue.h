@@ -35,7 +35,7 @@ using cfg::Instruction;  // Bring Instruction into ascend namespace
 // SymValue - 符号执行值基类
 //===----------------------------------------------------------------------===//
 
-class SymValue {
+class SymValue : public std::enable_shared_from_this<SymValue> {
 public:
   enum class Kind {
     // Scalar
@@ -53,6 +53,7 @@ public:
     ProgramID,
     GmPtr,          // kernel 指针类型入参
     RemExpr,        // rem 操作产生的值
+    AndExpr,        // andi 操作产生的值 (按位与)
     Unknown,        // 未知值（如 load 结果）
     Induction,      // for 循环迭代变量
     IterArg,        // for 的 iter_arg
@@ -248,6 +249,8 @@ public:
 
   ScalarSV* getLHS() const { return lhs.get(); }
   ScalarSV* getRHS() const { return rhs.get(); }
+  void setLHS(std::shared_ptr<ScalarSV> l) { lhs = l; }
+  void setRHS(std::shared_ptr<ScalarSV> r) { rhs = r; }
   Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
@@ -268,6 +271,8 @@ public:
 
   ScalarSV* getLHS() const { return lhs.get(); }
   ScalarSV* getRHS() const { return rhs.get(); }
+  void setLHS(std::shared_ptr<ScalarSV> l) { lhs = l; }
+  void setRHS(std::shared_ptr<ScalarSV> r) { rhs = r; }
   Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
@@ -288,6 +293,8 @@ public:
 
   ScalarSV* getLHS() const { return lhs.get(); }
   ScalarSV* getRHS() const { return rhs.get(); }
+  void setLHS(std::shared_ptr<ScalarSV> l) { lhs = l; }
+  void setRHS(std::shared_ptr<ScalarSV> r) { rhs = r; }
   Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
@@ -308,6 +315,8 @@ public:
 
   ScalarSV* getLHS() const { return lhs.get(); }
   ScalarSV* getRHS() const { return rhs.get(); }
+  void setLHS(std::shared_ptr<ScalarSV> l) { lhs = l; }
+  void setRHS(std::shared_ptr<ScalarSV> r) { rhs = r; }
   Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
@@ -364,6 +373,8 @@ public:
   Pred getPred() const { return pred; }
   ScalarSV* getLHS() const { return lhs.get(); }
   ScalarSV* getRHS() const { return rhs.get(); }
+  void setLHS(std::shared_ptr<ScalarSV> l) { lhs = l; }
+  void setRHS(std::shared_ptr<ScalarSV> r) { rhs = r; }
   Type getDataType() const override { return dataType; }
 
   /// 获取比较操作符字符串
@@ -397,6 +408,8 @@ public:
   CmpExprSV* getCondition() const { return condition.get(); }
   ScalarSV* getTrueVal() const { return trueVal.get(); }
   ScalarSV* getFalseVal() const { return falseVal.get(); }
+  void setTrueVal(std::shared_ptr<ScalarSV> t) { trueVal = t; }
+  void setFalseVal(std::shared_ptr<ScalarSV> f) { falseVal = f; }
   Type getDataType() const override { return dataType; }
 
   bool isMinPattern() const;
@@ -428,6 +441,8 @@ public:
 
   ScalarSV* getBasePtr() const { return basePtr.get(); }
   ScalarSV* getOffset() const { return offset.get(); }
+  void setBasePtr(std::shared_ptr<ScalarSV> base) { basePtr = base; }
+  void setOffset(std::shared_ptr<ScalarSV> off) { offset = off; }
   Type getPointeeType() const { return pointeeType; }
   Type getDataType() const override {
     return tt::PointerType::get(pointeeType, 1);
@@ -550,10 +565,40 @@ public:
 
   ScalarSV* getLHS() const { return lhs.get(); }
   ScalarSV* getRHS() const { return rhs.get(); }
+  void setLHS(std::shared_ptr<ScalarSV> l) { lhs = l; }
+  void setRHS(std::shared_ptr<ScalarSV> r) { rhs = r; }
   Type getDataType() const override { return dataType; }
 
   static bool classof(const SymValue* v) {
     return v->getKind() == Kind::RemExpr;
+  }
+  void print(llvm::raw_ostream& os) const override;
+  void print(llvm::raw_ostream& os, unsigned indent) const override;
+};
+
+//===----------------------------------------------------------------------===//
+// AndExprSV - andi 操作产生的表达式 (按位与)
+//
+// 注意：构造时 dims 默认为 [-1]，应在 symbolic execution 时设置
+//===----------------------------------------------------------------------===//
+
+class AndExprSV : public ScalarSV {
+  std::shared_ptr<ScalarSV> lhs;
+  std::shared_ptr<ScalarSV> rhs;
+  Type dataType;
+
+public:
+  AndExprSV(std::shared_ptr<ScalarSV> l, std::shared_ptr<ScalarSV> r,
+            Type type, Operation* op = nullptr);
+
+  ScalarSV* getLHS() const { return lhs.get(); }
+  ScalarSV* getRHS() const { return rhs.get(); }
+  void setLHS(std::shared_ptr<ScalarSV> l) { lhs = l; }
+  void setRHS(std::shared_ptr<ScalarSV> r) { rhs = r; }
+  Type getDataType() const override { return dataType; }
+
+  static bool classof(const SymValue* v) {
+    return v->getKind() == Kind::AndExpr;
   }
   void print(llvm::raw_ostream& os) const override;
   void print(llvm::raw_ostream& os, unsigned indent) const override;

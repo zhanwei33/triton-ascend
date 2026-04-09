@@ -59,7 +59,7 @@ class SValPatternAnalyzer {
 public:
   SValPatternAnalyzer() = default;
 
-  // 主入口：分析 SymValue（支持 ScalarSV 和 TensorSV）
+  // 主入口：分析 SymValue（支持 TensorSV 和 PtrExprSV）
   std::optional<TensorPattern> analyze(std::shared_ptr<SymValue> sv);
 
 private:
@@ -67,44 +67,64 @@ private:
   // 规范化阶段
   //===--------------------------------------------------------------------===//
 
-  // 1. 传播 dims 到 RangeExprSV
-  void propagateDimsToRange(std::shared_ptr<ScalarSV> sv, ArrayRef<int> parentDims);
+  // 1. 传播 dims 到 RangeExprSV（DFS遍历）
+  // 如果子项的 dims[0] != -1，将其传播给子项下的 RangeExprSV
+  void propagateDimsToRange(ScalarSV* sv, ArrayRef<int> parentDims);
 
-  // 2. 展开分配律: (a+b)*c -> a*c + b*c，深度最多2层
+  // 2. 提升包含 RangeExprSV 的 SelectExprSV
+  // 如果 SelectExpr 的 true/false 分支包含 RangeExprSV，
+  // 用该分支替换 SelectExpr 在父表达式中的位置
+  std::shared_ptr<ScalarSV> hoistSelectWithRange(std::shared_ptr<ScalarSV> sv);
+
+  // 3. 展开分配律: (a+b)*c -> a*c + b*c，深度最多2层（非递归：收集+重建）
+  // 将包含 RangeExprSV 的项展开到最外层
   std::shared_ptr<ScalarSV> expandDistribution(std::shared_ptr<ScalarSV> sv, int depth = 0);
 
-  // 3. 收集所有加法项
-  void collectAddTerms(std::shared_ptr<ScalarSV> sv,
-                       SmallVector<std::shared_ptr<ScalarSV>>& terms);
+  // 4. 收集所有加法项（展开后的表达式是加法链）
+  void collectAddTerms(ScalarSV* sv, SmallVector<ScalarSV*>& terms);
 
-  // 4. 检查是否包含 RangeExprSV
+  // 5. 检查是否包含 RangeExprSV
   bool containsRangeExpr(ScalarSV* sv);
 
-  // 5. 把 RangeExprSV 交换到最左面
-  std::shared_ptr<ScalarSV> bringRangeToLeft(std::shared_ptr<ScalarSV> sv);
+  // 6. 把 RangeExprSV 交换到乘法最左面 (a*b, b是Range -> b*a)
+  // 原地修改，不重建节点
+  void bringRangeToLeft(ScalarSV* sv);
 
-  // 6. 提取 stride 乘数（RangeExprSV 外的乘数）
-  std::shared_ptr<ScalarSV> extractStrideMultiplier(std::shared_ptr<ScalarSV> sv);
+  // 7. 提取 stride 乘数（RangeExprSV 外的乘数部分）
+  // 例如：Range[0,128)*k -> 返回 k
+  ScalarSV* extractStrideMultiplier(ScalarSV* sv);
 
-  // 7. 归一化项
-  NormalizedTerms normalizeTerms(std::shared_ptr<ScalarSV> sv);
+  // 8. 获取 RangeExprSV 所在的维度 (dims[0])
+  int getRangeDim(ScalarSV* sv);
 
-  // 8. 合并加法项
-  std::shared_ptr<ScalarSV> mergeAddTerms(ArrayRef<std::shared_ptr<ScalarSV>> terms);
+  // 9. 归一化项：分类为 basePtr, offsetTerms, strideTerms，并排序
+  NormalizedTerms normalizeTerms(ScalarSV* sv);
+
+  // 10. 合并加法项为一个表达式
+  std::shared_ptr<ScalarSV> mergeAddTerms(ArrayRef<ScalarSV*> terms);
 
   //===--------------------------------------------------------------------===//
   // 分类处理
   //===--------------------------------------------------------------------===//
 
-  std::optional<TensorPattern> analyzeMatrix(std::shared_ptr<TensorSV> tensor,
-                                              NormalizedTerms& terms);
-  std::optional<TensorPattern> analyzeVector(std::shared_ptr<TensorSV> tensor,
-                                              NormalizedTerms& terms);
-  std::optional<TensorPattern> analyzeScalar(std::shared_ptr<TensorSV> tensor,
-                                              NormalizedTerms& terms);
+  // 分析 Matrix (2D Tensor)
+  std::optional<TensorPattern> analyzeMatrix(
+      ArrayRef<int64_t> shape, Type elemType,
+      NormalizedTerms& terms, Operation* op);
 
-  // 分析 PtrExprSV（标量指针）
-  std::optional<TensorPattern> analyzePtrExpr(std::shared_ptr<PtrExprSV> ptrExpr);
+  // 分析 Vector (1D Tensor)
+  std::optional<TensorPattern> analyzeVector(
+      ArrayRef<int64_t> shape, Type elemType,
+      NormalizedTerms& terms, Operation* op);
+
+  // 分析 Scalar (0D)
+  std::optional<TensorPattern> analyzeScalar(
+      ArrayRef<int64_t> shape, Type elemType,
+      NormalizedTerms& terms, Operation* op);
+
+  // 分析 PtrExprSV（标量指针，作为 0D 处理）
+  std::optional<TensorPattern> analyzePtrExpr(
+      std::shared_ptr<PtrExprSV> ptrExpr);
 };
 
 } // namespace ascend
