@@ -3,6 +3,7 @@
  */
 
 #include "TritonToGraph/TensorAnalyzer.h"
+#include "TritonToGraph/SValPatternAnalyzer.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -301,6 +302,18 @@ void TensorAnalyzer::analyzeLoadWithSymbolicExecution(triton::LoadOp loadOp) {
     os << "[TensorAnalyzer] ptr = \n";
     ptrSymValue->print(os, 0);
     os << "\n";
+
+    // 创建 Pattern Analyzer 进行分析
+    SValPatternAnalyzer patternAnalyzer;
+    auto patternOpt = patternAnalyzer.analyze(ptrSymValue);
+
+    if (patternOpt) {
+        os << "[TensorAnalyzer] === SValPatternAnalyzer Result ===\n";
+        patternOpt->print(os);
+        os << "\n[TensorAnalyzer] =================================\n";
+    } else {
+        os << "[TensorAnalyzer] SValPatternAnalyzer failed to analyze ptr\n";
+    }
   }
 
   LLVM_DEBUG(llvm::dbgs()

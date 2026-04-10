@@ -377,7 +377,7 @@ static std::shared_ptr<ScalarSV> rebuildWithExpansion(
 // 展开分配律（非递归：收集 + 重建）
 std::shared_ptr<ScalarSV> SValPatternAnalyzer::expandDistribution(
     std::shared_ptr<ScalarSV> sv, int depth) {
-  if (!sv || depth >= 2) return sv;
+  if (!sv || depth >= 1) return sv;
 
   // 1. 收集所有节点
   SmallVector<ExpandNodeInfo> nodes;
@@ -392,6 +392,13 @@ std::shared_ptr<ScalarSV> SValPatternAnalyzer::expandDistribution(
 
     auto* lhs = mul->getLHS();
     auto* rhs = mul->getRHS();
+
+    // 判断是否需要展开：a或b必须包含 RangeExprSV
+    bool lhsHasRange = containsRangeExpr(lhs);
+    bool rhsHasRange = containsRangeExpr(rhs);
+    bool shouldExpand = lhsHasRange || rhsHasRange;
+
+    if (!shouldExpand) continue;
 
     // (a+b)*c -> a*c + b*c
     if (auto* add = dyn_cast<AddExprSV>(lhs)) {
@@ -429,16 +436,27 @@ std::shared_ptr<ScalarSV> SValPatternAnalyzer::expandDistribution(
   return expandDistribution(result, depth + 1);
 }
 
-// 收集所有加法项（裸指针版本）
+// 收集所有加法项
 void SValPatternAnalyzer::collectAddTerms(
     ScalarSV* sv, SmallVector<ScalarSV*>& terms) {
   if (!sv) return;
 
   // 递归分解加法
-  if (auto* add = dyn_cast<AddExprSV>(sv)) {
+  if (auto* add = dyn_cast<AddExprSV>(sv)) 
+  {
     collectAddTerms(add->getLHS(), terms);
     collectAddTerms(add->getRHS(), terms);
-  } else {
+  }
+  // 如果是 PtrExprSV，提取 base + offset 结构
+  else if (auto* ptrExpr = dyn_cast<PtrExprSV>(sv)) 
+  {
+    // 收集 base 部分
+    collectAddTerms(ptrExpr->getBasePtr(), terms);
+    // 收集 offset 部分
+    collectAddTerms(ptrExpr->getOffset(), terms);
+  } 
+  else 
+  {
     terms.push_back(sv);
   }
 }
@@ -485,7 +503,7 @@ void SValPatternAnalyzer::bringRangeToLeft(ScalarSV* sv) {
   }
 }
 
-// 提取 stride 乘数（RangeExprSV 外的乘数部分）- 裸指针版本
+// 提取 stride 乘数（RangeExprSV 外的乘数部分）
 ScalarSV* SValPatternAnalyzer::extractStrideMultiplier(ScalarSV* sv) {
   if (!sv) return nullptr;
 
@@ -513,7 +531,7 @@ ScalarSV* SValPatternAnalyzer::extractStrideMultiplier(ScalarSV* sv) {
   return sv;
 }
 
-// 获取 RangeExprSV 所在的维度 - 裸指针版本
+// 获取 RangeExprSV 所在的维度
 int SValPatternAnalyzer::getRangeDim(ScalarSV* sv) {
   if (!sv) return -1;
 
@@ -577,16 +595,16 @@ NormalizedTerms SValPatternAnalyzer::normalizeTerms(ScalarSV* sv) {
   return result;
 }
 
-// 合并加法项 - 裸指针版本
-std::shared_ptr<ScalarSV> SValPatternAnalyzer::mergeAddTerms(
-    ArrayRef<ScalarSV*> terms) {
+// 合并加法项
+std::shared_ptr<ScalarSV> SValPatternAnalyzer::mergeAddTerms(ArrayRef<std::shared_ptr<ScalarSV>> terms) 
+{
   if (terms.empty()) return nullptr;
-  if (terms.size() == 1) return shared_from_raw(terms[0]);
+  if (terms.size() == 1) return terms[0];
 
   // 合并为加法链
-  auto result = shared_from_raw(terms[0]);
+  auto result = terms[0];
   for (size_t i = 1; i < terms.size(); ++i) {
-    result = std::make_shared<AddExprSV>(result, shared_from_raw(terms[i]),
+    result = std::make_shared<AddExprSV>(result, terms[i],
                                          terms[i]->getDataType(), terms[i]->getOperation());
   }
   return result;
@@ -687,7 +705,7 @@ std::optional<TensorPattern> SValPatternAnalyzer::analyzePtrExpr(
   }
 
   // 获取 basePtr
-  auto base = std::dynamic_pointer_cast<ScalarSV>(
+  auto base = std::static_pointer_cast<ScalarSV>(
       std::const_pointer_cast<SymValue>(ptrExpr->getBasePtr()->shared_from_this()));
   if (isa<GmPtrSV>(base.get())) {
     pattern.basePtr = std::static_pointer_cast<GmPtrSV>(base);

@@ -101,7 +101,7 @@ private:
   NormalizedTerms normalizeTerms(ScalarSV* sv);
 
   // 10. 合并加法项为一个表达式
-  std::shared_ptr<ScalarSV> mergeAddTerms(ArrayRef<ScalarSV*> terms);
+  std::shared_ptr<ScalarSV> mergeAddTerms(ArrayRef<std::shared_ptr<ScalarSV>> terms);
 
   //===--------------------------------------------------------------------===//
   // 分类处理

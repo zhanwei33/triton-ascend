@@ -8,6 +8,7 @@ add_triton_library(TritonToGraph
   TensorAnalyzer.cpp
   SymValue.cpp
   SymbolicExecution.cpp
+  SValPatternAnalyzer.cpp
   Passes.cpp
 
   DEPENDS
