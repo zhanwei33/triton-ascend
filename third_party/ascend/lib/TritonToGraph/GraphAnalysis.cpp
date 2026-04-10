@@ -213,7 +213,7 @@ void DFGTraverser::dfsBackwardImpl(Value value, DFGTraversalBase& visitor,
     scf::ForOp forOp = dyn_cast<scf::ForOp>(parentOp);
 
     // 4. 验证 value 是这个 for 的 induction variable
-    if (forOp && value == forOp.getInductionVar())
+    //if (forOp && value == forOp.getInductionVar())
       defOp = forOp;
   }
     
