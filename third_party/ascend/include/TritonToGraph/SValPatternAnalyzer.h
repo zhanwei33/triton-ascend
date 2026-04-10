@@ -34,6 +34,7 @@ struct TensorPattern {
 
   // 各轴的 stride 信息（按 dims[0] 升序排列）
   SmallVector<std::shared_ptr<ScalarSV>> axisStrides;
+  SmallVector<std::shared_ptr<ScalarSV>> strideTerms;
 
   // 连续性信息：记录哪些轴是连续的
   SmallVector<bool> isContinuous;
@@ -92,7 +93,7 @@ private:
 
   // 7. 提取 stride 乘数（RangeExprSV 外的乘数部分）
   // 例如：Range[0,128)*k -> 返回 k
-  ScalarSV* extractStrideMultiplier(ScalarSV* sv);
+  std::shared_ptr<ScalarSV> extractStrideMultiplier(ScalarSV* sv);
 
   // 8. 获取 RangeExprSV 所在的维度 (dims[0])
   int getRangeDim(ScalarSV* sv);

@@ -49,6 +49,14 @@ void TensorPattern::print(llvm::raw_ostream& os) const {
     os << "    Axis[" << i << "]: ";
     axisStrides[i]->print(os, 0);
     os << "  " << (isContinuous[i] ? "[continuous]" : "[strided]") << "\n";
+
+    // 打印原始 stride term（如果可用）
+    if (i < strideTerms.size() && strideTerms[i]) {
+      os << "  (from: ";
+      strideTerms[i]->print(os, 0);
+      os << ")";
+    }
+    os << "\n";
   }
 }
 
@@ -111,7 +119,7 @@ void SValPatternAnalyzer::propagateDimsToRange(
   if (!sv) return;
 
   // 确定当前节点应该使用的 dims
-  ArrayRef<int> currentDims = sv->isAssociated() ? sv->dims : parentDims;
+  ArrayRef<int> currentDims = parentDims;
 
   // 如果是 RangeExprSV，设置 dims
   if (auto* range = dyn_cast<RangeExprSV>(sv)) {
@@ -121,6 +129,9 @@ void SValPatternAnalyzer::propagateDimsToRange(
     return;
   }
 
+  if(sv->isAssociated())
+    currentDims = sv->dims;
+  
   // 递归处理子表达式 - 直接使用裸指针
   if (auto* add = dyn_cast<AddExprSV>(sv)) {
     propagateDimsToRange(add->getLHS(), currentDims);
@@ -504,12 +515,13 @@ void SValPatternAnalyzer::bringRangeToLeft(ScalarSV* sv) {
 }
 
 // 提取 stride 乘数（RangeExprSV 外的乘数部分）
-ScalarSV* SValPatternAnalyzer::extractStrideMultiplier(ScalarSV* sv) {
+std::shared_ptr<ScalarSV> SValPatternAnalyzer::extractStrideMultiplier(ScalarSV* sv) {
   if (!sv) return nullptr;
 
-  // 如果是 RangeExprSV，返回 sv 自身（表示乘数为1）
+  // 如果是 RangeExprSV，创建常量1
   if (isa<RangeExprSV>(sv)) {
-    return sv;
+    auto* range = cast<RangeExprSV>(sv);
+    return std::make_shared<ScalarConstantIntSV>(1, range->getDataType(), sv->getOperation());
   }
 
   // 如果是乘法，提取非 RangeExprSV 的部分
@@ -519,16 +531,16 @@ ScalarSV* SValPatternAnalyzer::extractStrideMultiplier(ScalarSV* sv) {
 
     if (isa<RangeExprSV>(lhs)) {
       // lhs 是 range，rhs 是 multiplier
-      return rhs;
+      return shared_from_raw(rhs);
     }
     if (isa<RangeExprSV>(rhs)) {
       // rhs 是 range，lhs 是 multiplier
-      return lhs;
+      return shared_from_raw(lhs);
     }
   }
 
   // 其他情况返回原值
-  return sv;
+  return shared_from_raw(sv);
 }
 
 // 获取 RangeExprSV 所在的维度
@@ -557,7 +569,7 @@ int SValPatternAnalyzer::getRangeDim(ScalarSV* sv) {
   return -1;
 }
 
-// 归一化项 - 裸指针版本
+// 归一化项
 NormalizedTerms SValPatternAnalyzer::normalizeTerms(ScalarSV* sv) {
   NormalizedTerms result;
 
@@ -630,12 +642,15 @@ std::optional<TensorPattern> SValPatternAnalyzer::analyzeMatrix(
 
   // 提取各轴的 stride（按 dims[0] 升序）
   for (auto& strideTerm : terms.strideTerms) {
-    ScalarSV* multiplier = extractStrideMultiplier(strideTerm.get());
-    pattern.axisStrides.push_back(shared_from_raw(multiplier));
+    // 保存原始 term
+    pattern.strideTerms.push_back(strideTerm);
+
+    auto multiplier = extractStrideMultiplier(strideTerm.get());
+    pattern.axisStrides.push_back(multiplier);
 
     // 连续性分析：如果 stride=1，则该轴连续
     bool continuous = false;
-    if (auto* constInt = dyn_cast<ScalarConstantIntSV>(multiplier)) {
+    if (auto* constInt = dyn_cast<ScalarConstantIntSV>(multiplier.get())) {
       continuous = (constInt->getInt() == 1);
     }
     pattern.isContinuous.push_back(continuous);
@@ -660,12 +675,15 @@ std::optional<TensorPattern> SValPatternAnalyzer::analyzeVector(
 
   // 提取 stride
   for (auto& strideTerm : terms.strideTerms) {
-    ScalarSV* multiplier = extractStrideMultiplier(strideTerm.get());
-    pattern.axisStrides.push_back(shared_from_raw(multiplier));
+    // 保存原始 term
+    pattern.strideTerms.push_back(strideTerm);
+
+    auto multiplier = extractStrideMultiplier(strideTerm.get());
+    pattern.axisStrides.push_back(multiplier);
 
     // 连续性分析
     bool continuous = false;
-    if (auto* constInt = dyn_cast<ScalarConstantIntSV>(multiplier)) {
+    if (auto* constInt = dyn_cast<ScalarConstantIntSV>(multiplier.get())) {
       continuous = (constInt->getInt() == 1);
     }
     pattern.isContinuous.push_back(continuous);
@@ -733,8 +751,8 @@ std::optional<TensorPattern> SValPatternAnalyzer::analyzePtrExpr(
 
   // strideTerms 作为 axisStrides（虽然 scalar 应该为空）
   for (auto& strideTerm : terms.strideTerms) {
-    ScalarSV* multiplier = extractStrideMultiplier(strideTerm.get());
-    pattern.axisStrides.push_back(shared_from_raw(multiplier));
+    auto multiplier = extractStrideMultiplier(strideTerm.get());
+    pattern.axisStrides.push_back(multiplier);
     pattern.isContinuous.push_back(false);
   }
 
