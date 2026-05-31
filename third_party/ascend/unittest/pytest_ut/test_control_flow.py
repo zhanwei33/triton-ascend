@@ -568,3 +568,65 @@ def test_control_flow_while_tensor_ptr_dynamic_step():
         pos += step
         expected += x[pos:pos + block]
     _assert_close(out, expected)
+
+
+@triton.jit
+def _for_nested_if_block_ptr_load_after_repeated_advance_kernel(
+    in_ptr,
+    out_ptr,
+    flag0,
+    flag1,
+    n_elements,
+    block: tl.constexpr,
+    n_loops: tl.constexpr,
+):
+    bp = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(0,),
+        block_shape=(block,),
+        order=(0,),
+    )
+    acc = tl.zeros([block], tl.float32)
+    for _ in range(0, n_loops):
+        if flag0 != 0:
+            bp = tl.advance(bp, (1,))
+            if flag1 != 0:
+                bp = tl.advance(bp, (2,))
+            else:
+                bp = tl.advance(bp, (4,))
+        else:
+            bp = tl.advance(bp, (3,))
+            if flag1 != 0:
+                bp = tl.advance(bp, (1,))
+            else:
+                bp = tl.advance(bp, (2,))
+        bp = tl.advance(bp, (1,))
+        acc += tl.load(bp)
+    tl.store(out_ptr + tl.arange(0, block), acc)
+
+
+def test_control_flow_stress_for_nested_if_block_ptr_load_after_repeated_advance():
+    block, n_loops = 16, 4
+    n_elements = block + n_loops * 6
+    x = torch.randn((n_elements,), dtype=torch.float32, device="npu")
+
+    for flag0, flag1 in [(1, 1), (1, 0), (0, 1), (0, 0)]:
+        out = torch.empty((block,), dtype=torch.float32, device="npu")
+        _for_nested_if_block_ptr_load_after_repeated_advance_kernel[(1,)](
+            x, out, flag0, flag1, n_elements, block, n_loops
+        )
+
+        pos = 0
+        expected = torch.zeros((block,), dtype=torch.float32, device="npu")
+        for _ in range(n_loops):
+            if flag0 != 0:
+                pos += 1
+                pos += 2 if flag1 != 0 else 4
+            else:
+                pos += 3
+                pos += 1 if flag1 != 0 else 2
+            pos += 1
+            expected += x[pos:pos + block]
+        _assert_close(out, expected)

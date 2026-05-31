@@ -201,7 +201,6 @@ def matmul(a, b, activation=""):
 # ---------
 #
 # We can test our custom matrix multiplication operation against a native torch implementation.
-@pytest.mark.skip(reason="skip on this case")
 @pytest.mark.parametrize(
     "shape",
     [
