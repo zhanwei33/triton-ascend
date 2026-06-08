@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UB Pointer Cast 分析报告 - attn_fwd.mlir</title>
+    <style>
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header .subtitle {
+            color: #666;
+            font-size: 16px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .stat-card .number {
+            font-size: 32px;
+            font-weight: bold;
+        }
+
+        .stat-card .label {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .content {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        .entry {
+            margin-bottom: 25px;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .entry:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+
+        .entry-header {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .entry-header .address {
+            background: #667eea;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+
+        .entry-header .line-number {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .entry-header .memref-type {
+            color: #333;
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            background: rgba(255,255,255,0.7);
+            padding: 3px 10px;
+            border-radius: 5px;
+        }
+
+        .code-block {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .code-line {
+            display: flex;
+            padding: 2px 0;
+        }
+
+        .code-line .line-num {
+            color: #858585;
+            min-width: 50px;
+            text-align: right;
+            padding-right: 15px;
+            user-select: none;
+        }
+
+        .code-line .line-content {
+            white-space: pre;
+        }
+
+        .code-line.highlight {
+            background: rgba(255, 255, 0, 0.15);
+        }
+
+        .code-line.highlight .line-num {
+            color: #ffd700;
+            font-weight: bold;
+        }
+
+        /* 语法高亮 */
+        .keyword { color: #569cd6; }
+        .string { color: #ce9178; }
+        .number { color: #b5cea8; }
+        .comment { color: #6a9955; }
+        .type { color: #4ec9b0; }
+        .variable { color: #9cdcfe; }
+        .function { color: #dcdcaa; }
+
+        .chart-container {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        .address-chart {
+            width: 100%;
+            height: 400px;
+            position: relative;
+            overflow-x: auto;
+            overflow-y: hidden;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .chart-svg {
+            min-width: 100%;
+            height: 100%;
+        }
+
+        .axis-line {
+            stroke: #666;
+            stroke-width: 2;
+        }
+
+        .grid-line {
+            stroke: #e0e0e0;
+            stroke-width: 1;
+            stroke-dasharray: 4;
+        }
+
+        .address-point {
+            cursor: pointer;
+            transition: r 0.2s;
+        }
+
+        .address-point:hover {
+            r: 8;
+        }
+
+        .address-label {
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+            fill: #333;
+            pointer-events: none;
+        }
+
+        .tooltip {
+            position: fixed;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 13px;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            max-width: 300px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+
+        .tooltip-row {
+            margin: 3px 0;
+        }
+
+        .tooltip-label {
+            color: #aaa;
+            font-size: 11px;
+        }
+
+        .tooltip-value {
+            color: #fff;
+            font-weight: bold;
+        }
+
+        .chart-legend {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .zoom-controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 5px;
+        }
+
+        .zoom-btn {
+            background: white;
+            border: 1px solid #ccc;
+            padding: 5px 12px;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .zoom-btn:hover {
+            background: #f0f0f0;
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 20px;
+            opacity: 0.8;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 20px;
+            }
+
+            .entry-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+        }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 UB Pointer Cast 分析报告</h1>
+            <p class="subtitle">文件: attn_fwd.mlir</p>
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="number">27</div>
+                    <div class="label">总指令数</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number">0</div>
+                    <div class="label">最小地址</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number">249344</div>
+                    <div class="label">最大地址</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number">249344</div>
+                    <div class="label">地址范围</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h2 style="margin-bottom: 20px; color: #333;">📈 地址分布图 (按地址排序)</h2>
+            <div class="address-chart" id="addressChart">
+                <div class="zoom-controls">
+                    <button class="zoom-btn" onclick="zoomIn()">+</button>
+                    <button class="zoom-btn" onclick="zoomOut()">-</button>
+                    <button class="zoom-btn" onclick="resetZoom()">⟲</button>
+                </div>
+                <svg class="chart-svg" id="chartSvg" preserveAspectRatio="none"></svg>
+            </div>
+            <div class="chart-legend">
+                💡 提示：鼠标悬停查看详细信息，点击圆点跳转到对应代码。使用右上角按钮缩放图表。
+            </div>
+        </div>
+
+        <div class="content">
+            <h2 style="margin-bottom: 20px; color: #333;">📝 详细代码片段</h2>
+            <div class="entry" id="entry-0">
+            <div class="entry-header">
+                <span class="address">0x0000 (0)</span>
+                <span class="memref-type">memref&lt;128x32xf16, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 119 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">114</span><span class="line-content">    hivm.hir.set_flag[&lt;PIPE_FIX&gt;, &lt;PIPE_M&gt;, &lt;EVENT_ID1&gt;]</span></div><div class="code-line"><span class="line-num">115</span><span class="line-content">    hivm.hir.set_flag[&lt;PIPE_M&gt;, &lt;PIPE_MTE1&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">116</span><span class="line-content">    hivm.hir.set_flag[&lt;PIPE_M&gt;, &lt;PIPE_MTE1&gt;, &lt;EVENT_ID1&gt;]</span></div><div class="code-line"><span class="line-num">117</span><span class="line-content">    %<span class="number">41</span> = <span class="keyword">scf.for</span> <span class="variable">%arg28</span> = <span class="variable">%c0_i32</span> to <span class="variable">%arg24</span> step <span class="variable">%c32_i32</span> iter_args(<span class="variable">%arg29</span> = %<span class="number">37</span>) -&gt; (<span class="keyword">index</span>)  : <span class="keyword">i32</span> {</span></div><div class="code-line"><span class="line-num">118</span><span class="line-content">      <span class="variable">%reinterpret_cast_2</span> = <span class="keyword">memref</span>.reinterpret_cast <span class="variable">%arg4</span> to offset: [<span class="variable">%arg29</span>], sizes: [<span class="number">32</span>, <span class="number">128</span>], strides: [%<span class="number">38</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;?xf16, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt; to <span class="keyword">memref</span>&lt;32x128xf16, strided&lt;[?, <span class="number">1</span>], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt;</span></div><div class="code-line highlight" id="entry-0"><span class="line-num">119</span><span class="line-content">      %<span class="number">42</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">120</span><span class="line-content">      annotation.mark %<span class="number">42</span> {effects = [&quot;write&quot;, &quot;read&quot;], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer&lt;<span class="number">0</span>&gt;} : <span class="keyword">memref</span>&lt;128x32xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">121</span><span class="line-content">      %<span class="number">43</span> = arith.index_cast <span class="variable">%arg28</span> : <span class="keyword">i32</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">122</span><span class="line-content">      %<span class="number">44</span> = <span class="keyword">affine.apply</span> #map6()[%<span class="number">43</span>]</span></div><div class="code-line"><span class="line-num">123</span><span class="line-content">      %<span class="number">45</span> = arith.maxsi %<span class="number">43</span>, %<span class="number">39</span> : <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">124</span><span class="line-content">      %<span class="number">46</span> = arith.minsi %<span class="number">44</span>, %<span class="number">45</span> : <span class="keyword">index</span></span></div>
+            </div>
+        </div><div class="entry" id="entry-1">
+            <div class="entry-header">
+                <span class="address">0x0000 (0)</span>
+                <span class="memref-type">memref&lt;16384xi8, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 142 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">137</span><span class="line-content">      hivm.hir.sync_block_set[&lt;CUBE&gt;, &lt;PIPE_MTE1&gt;, &lt;PIPE_MTE3&gt;] flag = <span class="number">2</span></span></div><div class="code-line"><span class="line-num">138</span><span class="line-content">      %<span class="number">51</span> = <span class="keyword">affine.apply</span> #map5()[%<span class="number">46</span>, %<span class="number">43</span>]</span></div><div class="code-line"><span class="line-num">139</span><span class="line-content">      <span class="variable">%subview_4</span> = <span class="keyword">memref</span>.subview %<span class="number">50</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [%<span class="number">51</span>, <span class="number">8</span>, <span class="number">16</span>, <span class="number">16</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;2x8x16x16xf32, #<span class="keyword">hivm.address_space</span>&lt;cc&gt;&gt; to <span class="keyword">memref</span>&lt;?x8x16x16xf32, strided&lt;[<span class="number">2048</span>, <span class="number">256</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;cc&gt;&gt;</span></div><div class="code-line"><span class="line-num">140</span><span class="line-content">      <span class="variable">%cast_5</span> = <span class="keyword">memref</span>.cast <span class="variable">%subview_4</span> : <span class="keyword">memref</span>&lt;?x8x16x16xf32, strided&lt;[<span class="number">2048</span>, <span class="number">256</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;cc&gt;&gt; to <span class="keyword">memref</span>&lt;?x?x?x?xf32, strided&lt;[?, ?, ?, <span class="number">1</span>], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;cc&gt;&gt;</span></div><div class="code-line"><span class="line-num">141</span><span class="line-content">      %<span class="number">52</span> = <span class="keyword">affine.apply</span> #map7()[%<span class="number">46</span>, %<span class="number">43</span>]</span></div><div class="code-line highlight" id="entry-1"><span class="line-num">142</span><span class="line-content">      %<span class="number">53</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;16384xi8, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">143</span><span class="line-content">      <span class="variable">%view</span> = <span class="keyword">memref</span>.view %<span class="number">53</span>[<span class="variable">%c0</span>][%<span class="number">52</span>] : <span class="keyword">memref</span>&lt;16384xi8, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?x1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">144</span><span class="line-content">      <span class="variable">%subview_6</span> = <span class="keyword">memref</span>.subview <span class="variable">%view</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">128</span>, %<span class="number">47</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;128x?x1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">145</span><span class="line-content">      annotation.mark <span class="variable">%subview_6</span> {effects = [&quot;write&quot;, &quot;read&quot;], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer&lt;<span class="number">2</span>&gt;} : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">146</span><span class="line-content">      hivm.hir.sync_block_wait[&lt;CUBE&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">3</span></span></div><div class="code-line"><span class="line-num">147</span><span class="line-content">      hivm.hir.wait_flag[&lt;PIPE_M&gt;, &lt;PIPE_FIX&gt;, &lt;EVENT_ID0&gt;]</span></div>
+            </div>
+        </div><div class="entry" id="entry-2">
+            <div class="entry-header">
+                <span class="address">0x0000 (0)</span>
+                <span class="memref-type">memref&lt;128x32xf16, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 576 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">571</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_10(%<span class="number">45</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">572</span><span class="line-content">    %<span class="number">46</span> = arith.index_cast %<span class="number">38</span> : <span class="keyword">i32</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">573</span><span class="line-content">    %<span class="number">47</span>:<span class="number">4</span> = <span class="keyword">scf.for</span> <span class="variable">%arg28</span> = <span class="variable">%c0_i32</span> to <span class="variable">%arg24</span> step <span class="variable">%c32_i32</span> iter_args(<span class="variable">%arg29</span> = %<span class="number">12</span>, <span class="variable">%arg30</span> = %<span class="number">10</span>, <span class="variable">%arg31</span> = %<span class="number">11</span>, <span class="variable">%arg32</span> = %<span class="number">39</span>) -&gt; (<span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">index</span>)  : <span class="keyword">i32</span> {</span></div><div class="code-line"><span class="line-num">574</span><span class="line-content">      <span class="variable">%cast</span> = <span class="keyword">memref</span>.cast <span class="variable">%arg31</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128xf32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">575</span><span class="line-content">      <span class="variable">%reinterpret_cast_4</span> = <span class="keyword">memref</span>.reinterpret_cast <span class="variable">%arg3</span> to offset: [<span class="variable">%arg32</span>], sizes: [<span class="number">128</span>, <span class="number">32</span>], strides: [<span class="number">1</span>, %<span class="number">40</span>] : <span class="keyword">memref</span>&lt;?xf16, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt; to <span class="keyword">memref</span>&lt;128x32xf16, strided&lt;[<span class="number">1</span>, ?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt;</span></div><div class="code-line highlight" id="entry-2"><span class="line-num">576</span><span class="line-content">      %<span class="number">53</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">577</span><span class="line-content">      annotation.mark %<span class="number">53</span> {effects = [&quot;write&quot;, &quot;read&quot;], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer&lt;<span class="number">0</span>&gt;} : <span class="keyword">memref</span>&lt;128x32xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">578</span><span class="line-content">      %<span class="number">54</span> = arith.index_cast <span class="variable">%arg28</span> : <span class="keyword">i32</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">579</span><span class="line-content">      %<span class="number">55</span> = <span class="keyword">affine.apply</span> #map6()[%<span class="number">54</span>]</span></div><div class="code-line"><span class="line-num">580</span><span class="line-content">      %<span class="number">56</span> = arith.maxsi %<span class="number">54</span>, %<span class="number">41</span> : <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">581</span><span class="line-content">      %<span class="number">57</span> = arith.minsi %<span class="number">55</span>, %<span class="number">56</span> : <span class="keyword">index</span></span></div>
+            </div>
+        </div><div class="entry" id="entry-3">
+            <div class="entry-header">
+                <span class="address">0x0000 (0)</span>
+                <span class="memref-type">memref&lt;16384xi8, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 613 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">608</span><span class="line-content">        hivm.hir.copy ins(<span class="variable">%collapse_shape</span> : <span class="keyword">memref</span>&lt;2x2048xf16, strided&lt;[<span class="number">2064</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) outs(<span class="variable">%collapse_shape_13</span> : <span class="keyword">memref</span>&lt;2x2048xf16, #<span class="keyword">hivm.address_space</span>&lt;cbuf&gt;&gt;)</span></div><div class="code-line"><span class="line-num">609</span><span class="line-content">      } {limit_sub_block_id0}</span></div><div class="code-line"><span class="line-num">610</span><span class="line-content">      hivm.hir.set_flag[&lt;PIPE_MTE3&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">611</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_MTE3&gt;, &lt;PIPE_MTE1&gt;] flag = <span class="number">1</span></span></div><div class="code-line"><span class="line-num">612</span><span class="line-content">      %<span class="number">62</span> = <span class="keyword">affine.apply</span> #map7()[%<span class="number">57</span>, %<span class="number">54</span>]</span></div><div class="code-line highlight" id="entry-3"><span class="line-num">613</span><span class="line-content">      %<span class="number">63</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;16384xi8, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">614</span><span class="line-content">      <span class="variable">%view</span> = <span class="keyword">memref</span>.view %<span class="number">63</span>[<span class="variable">%c0</span>][%<span class="number">62</span>] : <span class="keyword">memref</span>&lt;16384xi8, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?x1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">615</span><span class="line-content">      <span class="variable">%subview_8</span> = <span class="keyword">memref</span>.subview <span class="variable">%view</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">128</span>, %<span class="number">58</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;128x?x1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">616</span><span class="line-content">      annotation.mark <span class="variable">%subview_8</span> {effects = [&quot;write&quot;, &quot;read&quot;], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer&lt;<span class="number">2</span>&gt;} : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">617</span><span class="line-content">      hivm.hir.sync_block_wait[&lt;VECTOR&gt;, &lt;PIPE_FIX&gt;, &lt;PIPE_V&gt;] flag = <span class="number">0</span></span></div><div class="code-line"><span class="line-num">618</span><span class="line-content">      %<span class="number">64</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c99840_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-4">
+            <div class="entry-header">
+                <span class="address">0x0000 (0)</span>
+                <span class="memref-type">memref&lt;128x32xi32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 624 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">619</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_2(%<span class="number">64</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">620</span><span class="line-content">      <span class="variable">%subview_9</span> = <span class="keyword">memref</span>.subview %<span class="number">64</span>[<span class="number">0</span>, <span class="number">0</span>] [<span class="number">128</span>, %<span class="number">58</span>] [<span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[<span class="number">32</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">621</span><span class="line-content">      hivm.hir.copy ins(<span class="variable">%subview_8</span> : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) outs(<span class="variable">%subview_9</span> : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[<span class="number">32</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;)</span></div><div class="code-line"><span class="line-num">622</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">3</span></span></div><div class="code-line"><span class="line-num">623</span><span class="line-content">      %<span class="number">65</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c99840_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-4"><span class="line-num">624</span><span class="line-content">      %<span class="number">66</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">625</span><span class="line-content">      hivm.hir.wait_flag[&lt;PIPE_MTE3&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">626</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_3(%<span class="number">64</span>, %<span class="number">37</span>, %<span class="number">65</span>, %<span class="number">66</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">627</span><span class="line-content">      %<span class="number">67</span> = hivm.hir.bitcast %<span class="number">65</span> : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">628</span><span class="line-content">      %<span class="number">68</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116224_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">629</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_4(%<span class="number">67</span>, %<span class="number">66</span>, %<span class="number">65</span>, %<span class="number">68</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div>
+            </div>
+        </div><div class="entry" id="entry-5">
+            <div class="entry-header">
+                <span class="address">0x0000 (0)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 667 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">662</span><span class="line-content">      scf.yield %<span class="number">76</span>, %<span class="number">79</span>, %<span class="number">81</span>, %<span class="number">80</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">663</span><span class="line-content">    }</span></div><div class="code-line"><span class="line-num">664</span><span class="line-content">    hivm.hir.set_flag[&lt;PIPE_MTE3&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">665</span><span class="line-content">    hivm.hir.sync_block_wait[&lt;VECTOR&gt;, &lt;PIPE_MTE1&gt;, &lt;PIPE_MTE3&gt;] flag = <span class="number">2</span></span></div><div class="code-line"><span class="line-num">666</span><span class="line-content">    hivm.hir.sync_block_wait[&lt;VECTOR&gt;, &lt;PIPE_MTE1&gt;, &lt;PIPE_MTE3&gt;] flag = <span class="number">4</span></span></div><div class="code-line highlight" id="entry-5"><span class="line-num">667</span><span class="line-content">    %<span class="number">48</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">668</span><span class="line-content">    %<span class="number">49</span> = arith.muli %<span class="number">5</span>, <span class="variable">%arg23</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">669</span><span class="line-content">    %<span class="number">50</span> = arith.index_cast %<span class="number">49</span> : <span class="keyword">i32</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">670</span><span class="line-content">    %<span class="number">51</span> = <span class="keyword">affine.apply</span> #map8()[%<span class="number">50</span>, %<span class="number">28</span>]</span></div><div class="code-line"><span class="line-num">671</span><span class="line-content">    <span class="variable">%reinterpret_cast_0</span> = <span class="keyword">memref</span>.reinterpret_cast <span class="variable">%arg6</span> to offset: [%<span class="number">51</span>], sizes: [<span class="number">128</span>], strides: [<span class="number">1</span>] : <span class="keyword">memref</span>&lt;?xf32, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt; to <span class="keyword">memref</span>&lt;128xf32, strided&lt;[<span class="number">1</span>], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt;</span></div><div class="code-line"><span class="line-num">672</span><span class="line-content">    <span class="variable">%subview</span> = <span class="keyword">memref</span>.subview <span class="variable">%reinterpret_cast_0</span>[<span class="number">0</span>] [%<span class="number">36</span>] [<span class="number">1</span>] : <span class="keyword">memref</span>&lt;128xf32, strided&lt;[<span class="number">1</span>], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt; to <span class="keyword">memref</span>&lt;?xf32, strided&lt;[<span class="number">1</span>], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-6">
+            <div class="entry-header">
+                <span class="address">0x0200 (512)</span>
+                <span class="memref-type">memref&lt;128x128xf16, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 673 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">668</span><span class="line-content">    %<span class="number">49</span> = arith.muli %<span class="number">5</span>, <span class="variable">%arg23</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">669</span><span class="line-content">    %<span class="number">50</span> = arith.index_cast %<span class="number">49</span> : <span class="keyword">i32</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">670</span><span class="line-content">    %<span class="number">51</span> = <span class="keyword">affine.apply</span> #map8()[%<span class="number">50</span>, %<span class="number">28</span>]</span></div><div class="code-line"><span class="line-num">671</span><span class="line-content">    <span class="variable">%reinterpret_cast_0</span> = <span class="keyword">memref</span>.reinterpret_cast <span class="variable">%arg6</span> to offset: [%<span class="number">51</span>], sizes: [<span class="number">128</span>], strides: [<span class="number">1</span>] : <span class="keyword">memref</span>&lt;?xf32, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt; to <span class="keyword">memref</span>&lt;128xf32, strided&lt;[<span class="number">1</span>], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt;</span></div><div class="code-line"><span class="line-num">672</span><span class="line-content">    <span class="variable">%subview</span> = <span class="keyword">memref</span>.subview <span class="variable">%reinterpret_cast_0</span>[<span class="number">0</span>] [%<span class="number">36</span>] [<span class="number">1</span>] : <span class="keyword">memref</span>&lt;128xf32, strided&lt;[<span class="number">1</span>], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt; to <span class="keyword">memref</span>&lt;?xf32, strided&lt;[<span class="number">1</span>], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt;</span></div><div class="code-line highlight" id="entry-6"><span class="line-num">673</span><span class="line-content">    %<span class="number">52</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c512_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">674</span><span class="line-content">    hivm.hir.wait_flag[&lt;PIPE_MTE3&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">675</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_merged_vf_0(%<span class="number">47</span>#<span class="number">2</span>, %<span class="number">47</span>#<span class="number">0</span>, %<span class="number">48</span>, %<span class="number">47</span>#<span class="number">0</span>, %<span class="number">47</span>#<span class="number">1</span>, %<span class="number">52</span>) {hivm.vector_function, no_inline, ptc_simdvf} : (<span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">676</span><span class="line-content">    hivm.hir.set_flag[&lt;PIPE_V&gt;, &lt;PIPE_MTE3&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">677</span><span class="line-content">    <span class="variable">%subview_1</span> = <span class="keyword">memref</span>.subview %<span class="number">48</span>[<span class="number">0</span>] [%<span class="number">36</span>] [<span class="number">1</span>] : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;?xf32, strided&lt;[<span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">678</span><span class="line-content">    hivm.hir.wait_flag[&lt;PIPE_V&gt;, &lt;PIPE_MTE3&gt;, &lt;EVENT_ID0&gt;]</span></div>
+            </div>
+        </div><div class="entry" id="entry-7">
+            <div class="entry-header">
+                <span class="address">0x2000 (8192)</span>
+                <span class="memref-type">memref&lt;2x129x16x1xf16, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 595 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">590</span><span class="line-content">      hivm.hir.wait_flag[&lt;PIPE_V&gt;, &lt;PIPE_MTE2&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">591</span><span class="line-content">      hivm.hir.load ins(<span class="variable">%subview_5</span> : <span class="keyword">memref</span>&lt;128x?xf16, strided&lt;[<span class="number">1</span>, ?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt;) outs(<span class="variable">%subview_6</span> : <span class="keyword">memref</span>&lt;128x?xf16, strided&lt;[<span class="number">32</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) pad_mode = &lt;PadValue&gt; pad_value = <span class="variable">%cst</span> : <span class="keyword">f16</span> eviction_policy = &lt;EvictFirst&gt;</span></div><div class="code-line"><span class="line-num">592</span><span class="line-content">      hivm.hir.set_flag[&lt;PIPE_MTE2&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">593</span><span class="line-content">      annotation.mark %<span class="number">53</span> {MayImplicitTransposeWithLastAxis} : <span class="keyword">memref</span>&lt;128x32xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">594</span><span class="line-content">      annotation.mark %<span class="number">53</span> {MayImplicitTransposeWithLastAxis} : <span class="keyword">memref</span>&lt;128x32xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-7"><span class="line-num">595</span><span class="line-content">      %<span class="number">60</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c8192_i64</span>) : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">596</span><span class="line-content">      <span class="variable">%subview_7</span> = <span class="keyword">memref</span>.subview %<span class="number">60</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">2</span>, <span class="number">128</span>, <span class="number">16</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">597</span><span class="line-content">      hivm.hir.wait_flag[&lt;PIPE_MTE2&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">598</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_1(%<span class="number">53</span>, <span class="variable">%subview_7</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">599</span><span class="line-content">      hivm.hir.set_flag[&lt;PIPE_V&gt;, &lt;PIPE_MTE3&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">600</span><span class="line-content">      <span class="variable">%expand_shape</span> = <span class="keyword">memref</span>.expand_shape <span class="variable">%subview_7</span> [[<span class="number">0</span>], [<span class="number">1</span>, <span class="number">2</span>], [<span class="number">3</span>]] output_shape [<span class="number">2</span>, <span class="number">8</span>, <span class="number">16</span>, <span class="number">16</span>] : <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; into <span class="keyword">memref</span>&lt;2x8x16x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">256</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-8">
+            <div class="entry-header">
+                <span class="address">0x4040 (16448)</span>
+                <span class="memref-type">memref&lt;2x129x16x1xf16, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 636 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">631</span><span class="line-content">      %<span class="number">70</span> = hivm.hir.bitcast %<span class="number">68</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">632</span><span class="line-content">      %<span class="number">71</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116736_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">633</span><span class="line-content">      %<span class="number">72</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117248_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">634</span><span class="line-content">      %<span class="number">73</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117760_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">635</span><span class="line-content">      %<span class="number">74</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-8"><span class="line-num">636</span><span class="line-content">      %<span class="number">75</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c16448_i64</span>) : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">637</span><span class="line-content">      <span class="variable">%subview_10</span> = <span class="keyword">memref</span>.subview %<span class="number">75</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">2</span>, <span class="number">128</span>, <span class="number">16</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">638</span><span class="line-content">      %<span class="number">76</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">639</span><span class="line-content">      <span class="variable">%cast_11</span> = <span class="keyword">memref</span>.cast %<span class="number">69</span> : <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">640</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_5(<span class="variable">%cast_11</span>, %<span class="number">45</span>, <span class="variable">%arg31</span>, %<span class="number">70</span>, %<span class="number">68</span>, %<span class="number">71</span>, %<span class="number">72</span>, <span class="variable">%arg30</span>, %<span class="number">65</span>, %<span class="number">73</span>, %<span class="number">74</span>, <span class="variable">%subview_10</span>, <span class="variable">%arg29</span>, %<span class="number">76</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">641</span><span class="line-content">      hivm.hir.set_flag[&lt;PIPE_V&gt;, &lt;PIPE_MTE3&gt;, &lt;EVENT_ID0&gt;]</span></div>
+            </div>
+        </div><div class="entry" id="entry-9">
+            <div class="entry-header">
+                <span class="address">0x8200 (33280)</span>
+                <span class="memref-type">memref&lt;128x128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 526 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">521</span><span class="line-content">    %<span class="number">5</span> = arith.remsi %<span class="number">4</span>, <span class="variable">%arg26</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">522</span><span class="line-content">    %<span class="number">6</span> = arith.muli <span class="variable">%arg27</span>, <span class="variable">%arg26</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">523</span><span class="line-content">    %<span class="number">7</span> = arith.divsi %<span class="number">3</span>, %<span class="number">6</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">524</span><span class="line-content">    %<span class="number">8</span> = arith.remsi %<span class="number">7</span>, <span class="variable">%arg25</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">525</span><span class="line-content">    %<span class="number">9</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c249344_i64</span>) : <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-9"><span class="line-num">526</span><span class="line-content">    %<span class="number">10</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c33280_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">527</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_7(%<span class="number">10</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">528</span><span class="line-content">    %<span class="number">11</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c248832_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">529</span><span class="line-content">    %<span class="number">12</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">530</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_8(%<span class="number">11</span>, %<span class="number">12</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">531</span><span class="line-content">    %<span class="number">13</span> = arith.divsi %<span class="number">5</span>, <span class="variable">%arg21</span> : <span class="keyword">i32</span></span></div>
+            </div>
+        </div><div class="entry" id="entry-10">
+            <div class="entry-header">
+                <span class="address">0x8200 (33280)</span>
+                <span class="memref-type">memref&lt;128x128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 656 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">651</span><span class="line-content">      } {limit_sub_block_id0}</span></div><div class="code-line"><span class="line-num">652</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_MTE3&gt;, &lt;PIPE_MTE1&gt;] flag = <span class="number">1</span></span></div><div class="code-line"><span class="line-num">653</span><span class="line-content">      %<span class="number">78</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">654</span><span class="line-content">      annotation.mark %<span class="number">78</span> {effects = [&quot;write&quot;, &quot;read&quot;], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer&lt;<span class="number">4</span>&gt;} : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">655</span><span class="line-content">      hivm.hir.sync_block_wait[&lt;VECTOR&gt;, &lt;PIPE_FIX&gt;, &lt;PIPE_V&gt;] flag = <span class="number">0</span></span></div><div class="code-line highlight" id="entry-10"><span class="line-num">656</span><span class="line-content">      %<span class="number">79</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c33280_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">657</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_6(%<span class="number">78</span>, %<span class="number">73</span>, %<span class="number">79</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">658</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">5</span></span></div><div class="code-line"><span class="line-num">659</span><span class="line-content">      %<span class="number">80</span> = <span class="keyword">affine.apply</span> #map8()[<span class="variable">%arg32</span>, %<span class="number">46</span>]</span></div><div class="code-line"><span class="line-num">660</span><span class="line-content">      %<span class="number">81</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c248832_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">661</span><span class="line-content">      hivm.hir.copy ins(%<span class="number">71</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) outs(%<span class="number">81</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;)</span></div>
+            </div>
+        </div><div class="entry" id="entry-11">
+            <div class="entry-header">
+                <span class="address">0x18200 (98816)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 529 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">524</span><span class="line-content">    %<span class="number">8</span> = arith.remsi %<span class="number">7</span>, <span class="variable">%arg25</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">525</span><span class="line-content">    %<span class="number">9</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c249344_i64</span>) : <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">526</span><span class="line-content">    %<span class="number">10</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c33280_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">527</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_7(%<span class="number">10</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">528</span><span class="line-content">    %<span class="number">11</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c248832_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-11"><span class="line-num">529</span><span class="line-content">    %<span class="number">12</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">530</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_8(%<span class="number">11</span>, %<span class="number">12</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">531</span><span class="line-content">    %<span class="number">13</span> = arith.divsi %<span class="number">5</span>, <span class="variable">%arg21</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">532</span><span class="line-content">    %<span class="number">14</span> = arith.remsi %<span class="number">5</span>, <span class="variable">%arg21</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">533</span><span class="line-content">    %<span class="number">15</span> = arith.extsi %<span class="number">13</span> : <span class="keyword">i32</span> to <span class="keyword">i64</span></span></div><div class="code-line"><span class="line-num">534</span><span class="line-content">    %<span class="number">16</span> = arith.extsi %<span class="number">14</span> : <span class="keyword">i32</span> to <span class="keyword">i64</span></span></div>
+            </div>
+        </div><div class="entry" id="entry-12">
+            <div class="entry-header">
+                <span class="address">0x18200 (98816)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 638 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">633</span><span class="line-content">      %<span class="number">72</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117248_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">634</span><span class="line-content">      %<span class="number">73</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117760_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">635</span><span class="line-content">      %<span class="number">74</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">636</span><span class="line-content">      %<span class="number">75</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c16448_i64</span>) : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">637</span><span class="line-content">      <span class="variable">%subview_10</span> = <span class="keyword">memref</span>.subview %<span class="number">75</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">2</span>, <span class="number">128</span>, <span class="number">16</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-12"><span class="line-num">638</span><span class="line-content">      %<span class="number">76</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">639</span><span class="line-content">      <span class="variable">%cast_11</span> = <span class="keyword">memref</span>.cast %<span class="number">69</span> : <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">640</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_5(<span class="variable">%cast_11</span>, %<span class="number">45</span>, <span class="variable">%arg31</span>, %<span class="number">70</span>, %<span class="number">68</span>, %<span class="number">71</span>, %<span class="number">72</span>, <span class="variable">%arg30</span>, %<span class="number">65</span>, %<span class="number">73</span>, %<span class="number">74</span>, <span class="variable">%subview_10</span>, <span class="variable">%arg29</span>, %<span class="number">76</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">641</span><span class="line-content">      hivm.hir.set_flag[&lt;PIPE_V&gt;, &lt;PIPE_MTE3&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">642</span><span class="line-content">      <span class="variable">%expand_shape_12</span> = <span class="keyword">memref</span>.expand_shape <span class="variable">%subview_10</span> [[<span class="number">0</span>], [<span class="number">1</span>, <span class="number">2</span>], [<span class="number">3</span>]] output_shape [<span class="number">2</span>, <span class="number">8</span>, <span class="number">16</span>, <span class="number">16</span>] : <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; into <span class="keyword">memref</span>&lt;2x8x16x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">256</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">643</span><span class="line-content">      %<span class="number">77</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c49152_i64</span>) : <span class="keyword">memref</span>&lt;2x8x16x16xf16, #<span class="keyword">hivm.address_space</span>&lt;cbuf&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-13">
+            <div class="entry-header">
+                <span class="address">0x18400 (99328)</span>
+                <span class="memref-type">memref&lt;128xi32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 570 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">565</span><span class="line-content">    hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">5</span></span></div><div class="code-line"><span class="line-num">566</span><span class="line-content">    %<span class="number">41</span> = arith.index_cast <span class="variable">%arg24</span> : <span class="keyword">i32</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">567</span><span class="line-content">    %<span class="number">42</span> = hivm.hir.get_sub_block_idx -&gt; <span class="keyword">i64</span></span></div><div class="code-line"><span class="line-num">568</span><span class="line-content">    %<span class="number">43</span> = arith.index_cast %<span class="number">42</span> : <span class="keyword">i64</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">569</span><span class="line-content">    %<span class="number">44</span> = arith.cmpi eq, %<span class="number">43</span>, <span class="variable">%c0</span> : <span class="keyword">index</span></span></div><div class="code-line highlight" id="entry-13"><span class="line-num">570</span><span class="line-content">    %<span class="number">45</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c99328_i64</span>) : <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">571</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_10(%<span class="number">45</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">572</span><span class="line-content">    %<span class="number">46</span> = arith.index_cast %<span class="number">38</span> : <span class="keyword">i32</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">573</span><span class="line-content">    %<span class="number">47</span>:<span class="number">4</span> = <span class="keyword">scf.for</span> <span class="variable">%arg28</span> = <span class="variable">%c0_i32</span> to <span class="variable">%arg24</span> step <span class="variable">%c32_i32</span> iter_args(<span class="variable">%arg29</span> = %<span class="number">12</span>, <span class="variable">%arg30</span> = %<span class="number">10</span>, <span class="variable">%arg31</span> = %<span class="number">11</span>, <span class="variable">%arg32</span> = %<span class="number">39</span>) -&gt; (<span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">index</span>)  : <span class="keyword">i32</span> {</span></div><div class="code-line"><span class="line-num">574</span><span class="line-content">      <span class="variable">%cast</span> = <span class="keyword">memref</span>.cast <span class="variable">%arg31</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128xf32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">575</span><span class="line-content">      <span class="variable">%reinterpret_cast_4</span> = <span class="keyword">memref</span>.reinterpret_cast <span class="variable">%arg3</span> to offset: [<span class="variable">%arg32</span>], sizes: [<span class="number">128</span>, <span class="number">32</span>], strides: [<span class="number">1</span>, %<span class="number">40</span>] : <span class="keyword">memref</span>&lt;?xf16, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt; to <span class="keyword">memref</span>&lt;128x32xf16, strided&lt;[<span class="number">1</span>, ?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;gm&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-14">
+            <div class="entry-header">
+                <span class="address">0x18600 (99840)</span>
+                <span class="memref-type">memref&lt;128x32xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 618 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">613</span><span class="line-content">      %<span class="number">63</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;16384xi8, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">614</span><span class="line-content">      <span class="variable">%view</span> = <span class="keyword">memref</span>.view %<span class="number">63</span>[<span class="variable">%c0</span>][%<span class="number">62</span>] : <span class="keyword">memref</span>&lt;16384xi8, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?x1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">615</span><span class="line-content">      <span class="variable">%subview_8</span> = <span class="keyword">memref</span>.subview <span class="variable">%view</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">128</span>, %<span class="number">58</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;128x?x1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">616</span><span class="line-content">      annotation.mark <span class="variable">%subview_8</span> {effects = [&quot;write&quot;, &quot;read&quot;], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer&lt;<span class="number">2</span>&gt;} : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">617</span><span class="line-content">      hivm.hir.sync_block_wait[&lt;VECTOR&gt;, &lt;PIPE_FIX&gt;, &lt;PIPE_V&gt;] flag = <span class="number">0</span></span></div><div class="code-line highlight" id="entry-14"><span class="line-num">618</span><span class="line-content">      %<span class="number">64</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c99840_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">619</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_2(%<span class="number">64</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">620</span><span class="line-content">      <span class="variable">%subview_9</span> = <span class="keyword">memref</span>.subview %<span class="number">64</span>[<span class="number">0</span>, <span class="number">0</span>] [<span class="number">128</span>, %<span class="number">58</span>] [<span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[<span class="number">32</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">621</span><span class="line-content">      hivm.hir.copy ins(<span class="variable">%subview_8</span> : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) outs(<span class="variable">%subview_9</span> : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[<span class="number">32</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;)</span></div><div class="code-line"><span class="line-num">622</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">3</span></span></div><div class="code-line"><span class="line-num">623</span><span class="line-content">      %<span class="number">65</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c99840_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-15">
+            <div class="entry-header">
+                <span class="address">0x18600 (99840)</span>
+                <span class="memref-type">memref&lt;128x32xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 623 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">618</span><span class="line-content">      %<span class="number">64</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c99840_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">619</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_2(%<span class="number">64</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">620</span><span class="line-content">      <span class="variable">%subview_9</span> = <span class="keyword">memref</span>.subview %<span class="number">64</span>[<span class="number">0</span>, <span class="number">0</span>] [<span class="number">128</span>, %<span class="number">58</span>] [<span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[<span class="number">32</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">621</span><span class="line-content">      hivm.hir.copy ins(<span class="variable">%subview_8</span> : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[?, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) outs(<span class="variable">%subview_9</span> : <span class="keyword">memref</span>&lt;128x?xf32, strided&lt;[<span class="number">32</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;)</span></div><div class="code-line"><span class="line-num">622</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">3</span></span></div><div class="code-line highlight" id="entry-15"><span class="line-num">623</span><span class="line-content">      %<span class="number">65</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c99840_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">624</span><span class="line-content">      %<span class="number">66</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">625</span><span class="line-content">      hivm.hir.wait_flag[&lt;PIPE_MTE3&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">626</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_3(%<span class="number">64</span>, %<span class="number">37</span>, %<span class="number">65</span>, %<span class="number">66</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">627</span><span class="line-content">      %<span class="number">67</span> = hivm.hir.bitcast %<span class="number">65</span> : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">628</span><span class="line-content">      %<span class="number">68</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116224_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-16">
+            <div class="entry-header">
+                <span class="address">0x1C600 (116224)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 628 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">623</span><span class="line-content">      %<span class="number">65</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c99840_i64</span>) : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">624</span><span class="line-content">      %<span class="number">66</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c0_i64</span>) : <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">625</span><span class="line-content">      hivm.hir.wait_flag[&lt;PIPE_MTE3&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">626</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_3(%<span class="number">64</span>, %<span class="number">37</span>, %<span class="number">65</span>, %<span class="number">66</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">627</span><span class="line-content">      %<span class="number">67</span> = hivm.hir.bitcast %<span class="number">65</span> : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-16"><span class="line-num">628</span><span class="line-content">      %<span class="number">68</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116224_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">629</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_4(%<span class="number">67</span>, %<span class="number">66</span>, %<span class="number">65</span>, %<span class="number">68</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">630</span><span class="line-content">      %<span class="number">69</span> = hivm.hir.bitcast <span class="variable">%cast</span> : <span class="keyword">memref</span>&lt;128xf32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">631</span><span class="line-content">      %<span class="number">70</span> = hivm.hir.bitcast %<span class="number">68</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">632</span><span class="line-content">      %<span class="number">71</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116736_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">633</span><span class="line-content">      %<span class="number">72</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117248_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-17">
+            <div class="entry-header">
+                <span class="address">0x1C800 (116736)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 632 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">627</span><span class="line-content">      %<span class="number">67</span> = hivm.hir.bitcast %<span class="number">65</span> : <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">628</span><span class="line-content">      %<span class="number">68</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116224_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">629</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_4(%<span class="number">67</span>, %<span class="number">66</span>, %<span class="number">65</span>, %<span class="number">68</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">630</span><span class="line-content">      %<span class="number">69</span> = hivm.hir.bitcast <span class="variable">%cast</span> : <span class="keyword">memref</span>&lt;128xf32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">631</span><span class="line-content">      %<span class="number">70</span> = hivm.hir.bitcast %<span class="number">68</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-17"><span class="line-num">632</span><span class="line-content">      %<span class="number">71</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116736_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">633</span><span class="line-content">      %<span class="number">72</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117248_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">634</span><span class="line-content">      %<span class="number">73</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117760_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">635</span><span class="line-content">      %<span class="number">74</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">636</span><span class="line-content">      %<span class="number">75</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c16448_i64</span>) : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">637</span><span class="line-content">      <span class="variable">%subview_10</span> = <span class="keyword">memref</span>.subview %<span class="number">75</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">2</span>, <span class="number">128</span>, <span class="number">16</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-18">
+            <div class="entry-header">
+                <span class="address">0x1CA00 (117248)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 633 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">628</span><span class="line-content">      %<span class="number">68</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116224_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">629</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_4(%<span class="number">67</span>, %<span class="number">66</span>, %<span class="number">65</span>, %<span class="number">68</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">630</span><span class="line-content">      %<span class="number">69</span> = hivm.hir.bitcast <span class="variable">%cast</span> : <span class="keyword">memref</span>&lt;128xf32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">631</span><span class="line-content">      %<span class="number">70</span> = hivm.hir.bitcast %<span class="number">68</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">632</span><span class="line-content">      %<span class="number">71</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116736_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-18"><span class="line-num">633</span><span class="line-content">      %<span class="number">72</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117248_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">634</span><span class="line-content">      %<span class="number">73</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117760_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">635</span><span class="line-content">      %<span class="number">74</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">636</span><span class="line-content">      %<span class="number">75</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c16448_i64</span>) : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">637</span><span class="line-content">      <span class="variable">%subview_10</span> = <span class="keyword">memref</span>.subview %<span class="number">75</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">2</span>, <span class="number">128</span>, <span class="number">16</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">638</span><span class="line-content">      %<span class="number">76</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-19">
+            <div class="entry-header">
+                <span class="address">0x1CC00 (117760)</span>
+                <span class="memref-type">memref&lt;128x128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 634 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">629</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_4(%<span class="number">67</span>, %<span class="number">66</span>, %<span class="number">65</span>, %<span class="number">68</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">630</span><span class="line-content">      %<span class="number">69</span> = hivm.hir.bitcast <span class="variable">%cast</span> : <span class="keyword">memref</span>&lt;128xf32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">631</span><span class="line-content">      %<span class="number">70</span> = hivm.hir.bitcast %<span class="number">68</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">632</span><span class="line-content">      %<span class="number">71</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116736_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">633</span><span class="line-content">      %<span class="number">72</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117248_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-19"><span class="line-num">634</span><span class="line-content">      %<span class="number">73</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117760_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">635</span><span class="line-content">      %<span class="number">74</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">636</span><span class="line-content">      %<span class="number">75</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c16448_i64</span>) : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">637</span><span class="line-content">      <span class="variable">%subview_10</span> = <span class="keyword">memref</span>.subview %<span class="number">75</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">2</span>, <span class="number">128</span>, <span class="number">16</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">638</span><span class="line-content">      %<span class="number">76</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">639</span><span class="line-content">      <span class="variable">%cast_11</span> = <span class="keyword">memref</span>.cast %<span class="number">69</span> : <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div>
+            </div>
+        </div><div class="entry" id="entry-20">
+            <div class="entry-header">
+                <span class="address">0x2CC00 (183296)</span>
+                <span class="memref-type">memref&lt;128x128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 173 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">168</span><span class="line-content">      <span class="variable">%cast_11</span> = <span class="keyword">memref</span>.cast %<span class="number">56</span> : <span class="keyword">memref</span>&lt;8x8x16x16xf32, #<span class="keyword">hivm.address_space</span>&lt;cc&gt;&gt; to <span class="keyword">memref</span>&lt;?x?x?x?xf32, #<span class="keyword">hivm.address_space</span>&lt;cc&gt;&gt;</span></div><div class="code-line"><span class="line-num">169</span><span class="line-content">      hivm.hir.wait_flag[&lt;PIPE_FIX&gt;, &lt;PIPE_M&gt;, &lt;EVENT_ID1&gt;]</span></div><div class="code-line"><span class="line-num">170</span><span class="line-content">      hivm.hir.mmadL1 {already_set_real_mkn, fixpipe_already_inserted = true} ins(%<span class="number">55</span>, <span class="variable">%cast_7</span>, <span class="variable">%true</span>, <span class="variable">%c128</span>, <span class="variable">%c32</span>, <span class="variable">%c128</span> : <span class="keyword">memref</span>&lt;2x8x16x16xf16, #<span class="keyword">hivm.address_space</span>&lt;cbuf&gt;&gt;, <span class="keyword">memref</span>&lt;?x?x?x?xf16, #<span class="keyword">hivm.address_space</span>&lt;cbuf&gt;&gt;, i1, <span class="keyword">index</span>, <span class="keyword">index</span>, <span class="keyword">index</span>) outs(<span class="variable">%cast_11</span> : <span class="keyword">memref</span>&lt;?x?x?x?xf32, #<span class="keyword">hivm.address_space</span>&lt;cc&gt;&gt;) sync_related_args(<span class="variable">%c</span>-1_i64, <span class="variable">%c0_i64</span>, <span class="variable">%c</span>-1_i64, <span class="variable">%c0_i64</span>, <span class="variable">%c</span>-1_i64, <span class="variable">%c</span>-1_i64, <span class="variable">%c</span>-1_i64 : <span class="keyword">i64</span>, <span class="keyword">i64</span>, <span class="keyword">i64</span>, <span class="keyword">i64</span>, <span class="keyword">i64</span>, <span class="keyword">i64</span>, <span class="keyword">i64</span>)</span></div><div class="code-line"><span class="line-num">171</span><span class="line-content">      hivm.hir.set_flag[&lt;PIPE_M&gt;, &lt;PIPE_FIX&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">172</span><span class="line-content">      hivm.hir.sync_block_set[&lt;CUBE&gt;, &lt;PIPE_MTE1&gt;, &lt;PIPE_MTE3&gt;] flag = <span class="number">4</span></span></div><div class="code-line highlight" id="entry-20"><span class="line-num">173</span><span class="line-content">      %<span class="number">57</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">174</span><span class="line-content">      annotation.mark %<span class="number">57</span> {effects = [&quot;write&quot;, &quot;read&quot;], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer&lt;<span class="number">4</span>&gt;} : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">175</span><span class="line-content">      hivm.hir.sync_block_wait[&lt;CUBE&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">5</span></span></div><div class="code-line"><span class="line-num">176</span><span class="line-content">      hivm.hir.wait_flag[&lt;PIPE_M&gt;, &lt;PIPE_FIX&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">177</span><span class="line-content">      hivm.hir.fixpipe {dma_mode = #hivm.dma_mode&lt;nz2nd&gt;} ins(<span class="variable">%cast_11</span> : <span class="keyword">memref</span>&lt;?x?x?x?xf32, #<span class="keyword">hivm.address_space</span>&lt;cc&gt;&gt;) outs(%<span class="number">57</span> : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;)</span></div><div class="code-line"><span class="line-num">178</span><span class="line-content">      hivm.hir.set_flag[&lt;PIPE_FIX&gt;, &lt;PIPE_M&gt;, &lt;EVENT_ID1&gt;]</span></div>
+            </div>
+        </div><div class="entry" id="entry-21">
+            <div class="entry-header">
+                <span class="address">0x2CC00 (183296)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 635 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">630</span><span class="line-content">      %<span class="number">69</span> = hivm.hir.bitcast <span class="variable">%cast</span> : <span class="keyword">memref</span>&lt;128xf32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">631</span><span class="line-content">      %<span class="number">70</span> = hivm.hir.bitcast %<span class="number">68</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; -&gt; <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">632</span><span class="line-content">      %<span class="number">71</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c116736_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">633</span><span class="line-content">      %<span class="number">72</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117248_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">634</span><span class="line-content">      %<span class="number">73</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c117760_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line highlight" id="entry-21"><span class="line-num">635</span><span class="line-content">      %<span class="number">74</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">636</span><span class="line-content">      %<span class="number">75</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c16448_i64</span>) : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">637</span><span class="line-content">      <span class="variable">%subview_10</span> = <span class="keyword">memref</span>.subview %<span class="number">75</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>] [<span class="number">2</span>, <span class="number">128</span>, <span class="number">16</span>, <span class="number">1</span>] [<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>] : <span class="keyword">memref</span>&lt;2x129x16x1xf16, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">638</span><span class="line-content">      %<span class="number">76</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">639</span><span class="line-content">      <span class="variable">%cast_11</span> = <span class="keyword">memref</span>.cast %<span class="number">69</span> : <span class="keyword">memref</span>&lt;128xi32, strided&lt;[?], offset: ?&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; to <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">640</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_5(<span class="variable">%cast_11</span>, %<span class="number">45</span>, <span class="variable">%arg31</span>, %<span class="number">70</span>, %<span class="number">68</span>, %<span class="number">71</span>, %<span class="number">72</span>, <span class="variable">%arg30</span>, %<span class="number">65</span>, %<span class="number">73</span>, %<span class="number">74</span>, <span class="variable">%subview_10</span>, <span class="variable">%arg29</span>, %<span class="number">76</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xi32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x32xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;2x128x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div>
+            </div>
+        </div><div class="entry" id="entry-22">
+            <div class="entry-header">
+                <span class="address">0x2CC00 (183296)</span>
+                <span class="memref-type">memref&lt;128x128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 653 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">648</span><span class="line-content">        <span class="variable">%collapse_shape</span> = <span class="keyword">memref</span>.collapse_shape <span class="variable">%expand_shape_12</span> [[<span class="number">0</span>], [<span class="number">1</span>, <span class="number">2</span>, <span class="number">3</span>]] : <span class="keyword">memref</span>&lt;2x8x16x16xf16, strided&lt;[<span class="number">2064</span>, <span class="number">256</span>, <span class="number">16</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt; into <span class="keyword">memref</span>&lt;2x2048xf16, strided&lt;[<span class="number">2064</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">649</span><span class="line-content">        <span class="variable">%collapse_shape_13</span> = <span class="keyword">memref</span>.collapse_shape %<span class="number">77</span> [[<span class="number">0</span>], [<span class="number">1</span>, <span class="number">2</span>, <span class="number">3</span>]] : <span class="keyword">memref</span>&lt;2x8x16x16xf16, #<span class="keyword">hivm.address_space</span>&lt;cbuf&gt;&gt; into <span class="keyword">memref</span>&lt;2x2048xf16, #<span class="keyword">hivm.address_space</span>&lt;cbuf&gt;&gt;</span></div><div class="code-line"><span class="line-num">650</span><span class="line-content">        hivm.hir.copy ins(<span class="variable">%collapse_shape</span> : <span class="keyword">memref</span>&lt;2x2048xf16, strided&lt;[<span class="number">2064</span>, <span class="number">1</span>]&gt;, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) outs(<span class="variable">%collapse_shape_13</span> : <span class="keyword">memref</span>&lt;2x2048xf16, #<span class="keyword">hivm.address_space</span>&lt;cbuf&gt;&gt;)</span></div><div class="code-line"><span class="line-num">651</span><span class="line-content">      } {limit_sub_block_id0}</span></div><div class="code-line"><span class="line-num">652</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_MTE3&gt;, &lt;PIPE_MTE1&gt;] flag = <span class="number">1</span></span></div><div class="code-line highlight" id="entry-22"><span class="line-num">653</span><span class="line-content">      %<span class="number">78</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c183296_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">654</span><span class="line-content">      annotation.mark %<span class="number">78</span> {effects = [&quot;write&quot;, &quot;read&quot;], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer&lt;<span class="number">4</span>&gt;} : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">655</span><span class="line-content">      hivm.hir.sync_block_wait[&lt;VECTOR&gt;, &lt;PIPE_FIX&gt;, &lt;PIPE_V&gt;] flag = <span class="number">0</span></span></div><div class="code-line"><span class="line-num">656</span><span class="line-content">      %<span class="number">79</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c33280_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">657</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_6(%<span class="number">78</span>, %<span class="number">73</span>, %<span class="number">79</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">658</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">5</span></span></div>
+            </div>
+        </div><div class="entry" id="entry-23">
+            <div class="entry-header">
+                <span class="address">0x3CC00 (248832)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 528 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">523</span><span class="line-content">    %<span class="number">7</span> = arith.divsi %<span class="number">3</span>, %<span class="number">6</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">524</span><span class="line-content">    %<span class="number">8</span> = arith.remsi %<span class="number">7</span>, <span class="variable">%arg25</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">525</span><span class="line-content">    %<span class="number">9</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c249344_i64</span>) : <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">526</span><span class="line-content">    %<span class="number">10</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c33280_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">527</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_7(%<span class="number">10</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line highlight" id="entry-23"><span class="line-num">528</span><span class="line-content">    %<span class="number">11</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c248832_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">529</span><span class="line-content">    %<span class="number">12</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">530</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_8(%<span class="number">11</span>, %<span class="number">12</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">531</span><span class="line-content">    %<span class="number">13</span> = arith.divsi %<span class="number">5</span>, <span class="variable">%arg21</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">532</span><span class="line-content">    %<span class="number">14</span> = arith.remsi %<span class="number">5</span>, <span class="variable">%arg21</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">533</span><span class="line-content">    %<span class="number">15</span> = arith.extsi %<span class="number">13</span> : <span class="keyword">i32</span> to <span class="keyword">i64</span></span></div>
+            </div>
+        </div><div class="entry" id="entry-24">
+            <div class="entry-header">
+                <span class="address">0x3CC00 (248832)</span>
+                <span class="memref-type">memref&lt;128xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 660 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">655</span><span class="line-content">      hivm.hir.sync_block_wait[&lt;VECTOR&gt;, &lt;PIPE_FIX&gt;, &lt;PIPE_V&gt;] flag = <span class="number">0</span></span></div><div class="code-line"><span class="line-num">656</span><span class="line-content">      %<span class="number">79</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c33280_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">657</span><span class="line-content">      func.call @_attn_fwd_mix_aiv_outlined_vf_6(%<span class="number">78</span>, %<span class="number">73</span>, %<span class="number">79</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">658</span><span class="line-content">      hivm.hir.sync_block_set[&lt;VECTOR&gt;, &lt;PIPE_V&gt;, &lt;PIPE_FIX&gt;] flag = <span class="number">5</span></span></div><div class="code-line"><span class="line-num">659</span><span class="line-content">      %<span class="number">80</span> = <span class="keyword">affine.apply</span> #map8()[<span class="variable">%arg32</span>, %<span class="number">46</span>]</span></div><div class="code-line highlight" id="entry-24"><span class="line-num">660</span><span class="line-content">      %<span class="number">81</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c248832_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">661</span><span class="line-content">      hivm.hir.copy ins(%<span class="number">71</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) outs(%<span class="number">81</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;)</span></div><div class="code-line"><span class="line-num">662</span><span class="line-content">      scf.yield %<span class="number">76</span>, %<span class="number">79</span>, %<span class="number">81</span>, %<span class="number">80</span> : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">663</span><span class="line-content">    }</span></div><div class="code-line"><span class="line-num">664</span><span class="line-content">    hivm.hir.set_flag[&lt;PIPE_MTE3&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">665</span><span class="line-content">    hivm.hir.sync_block_wait[&lt;VECTOR&gt;, &lt;PIPE_MTE1&gt;, &lt;PIPE_MTE3&gt;] flag = <span class="number">2</span></span></div>
+            </div>
+        </div><div class="entry" id="entry-25">
+            <div class="entry-header">
+                <span class="address">0x3CE00 (249344)</span>
+                <span class="memref-type">memref&lt;1xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 525 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">520</span><span class="line-content">    %<span class="number">4</span> = arith.divsi %<span class="number">3</span>, <span class="variable">%arg27</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">521</span><span class="line-content">    %<span class="number">5</span> = arith.remsi %<span class="number">4</span>, <span class="variable">%arg26</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">522</span><span class="line-content">    %<span class="number">6</span> = arith.muli <span class="variable">%arg27</span>, <span class="variable">%arg26</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">523</span><span class="line-content">    %<span class="number">7</span> = arith.divsi %<span class="number">3</span>, %<span class="number">6</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">524</span><span class="line-content">    %<span class="number">8</span> = arith.remsi %<span class="number">7</span>, <span class="variable">%arg25</span> : <span class="keyword">i32</span></span></div><div class="code-line highlight" id="entry-25"><span class="line-num">525</span><span class="line-content">    %<span class="number">9</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c249344_i64</span>) : <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">526</span><span class="line-content">    %<span class="number">10</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c33280_i64</span>) : <span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">527</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_7(%<span class="number">10</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128x128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">528</span><span class="line-content">    %<span class="number">11</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c248832_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">529</span><span class="line-content">    %<span class="number">12</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c98816_i64</span>) : <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">530</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_8(%<span class="number">11</span>, %<span class="number">12</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;128xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div>
+            </div>
+        </div><div class="entry" id="entry-26">
+            <div class="entry-header">
+                <span class="address">0x3CE00 (249344)</span>
+                <span class="memref-type">memref&lt;1xf32, #hivm.address_space&lt;ub&gt;&gt;&gt;</span>
+                <span class="line-number">第 558 行</span>
+            </div>
+            <div class="code-block">
+                <div class="code-line"><span class="line-num">553</span><span class="line-content">    %<span class="number">34</span> = arith.maxsi %<span class="number">28</span>, %<span class="number">33</span> : <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">554</span><span class="line-content">    %<span class="number">35</span> = arith.minsi %<span class="number">32</span>, %<span class="number">34</span> : <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">555</span><span class="line-content">    %<span class="number">36</span> = <span class="keyword">affine.apply</span> #map4()[%<span class="number">35</span>, %<span class="number">28</span>]</span></div><div class="code-line"><span class="line-num">556</span><span class="line-content">    <span class="keyword">memref</span>.store <span class="variable">%arg5</span>, %<span class="number">9</span>[<span class="variable">%c0</span>] : <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">557</span><span class="line-content">    hivm.hir.set_flag[&lt;PIPE_S&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line highlight" id="entry-26"><span class="line-num">558</span><span class="line-content">    %<span class="number">37</span> = <span class="keyword">hivm.hir.pointer_cast</span>(<span class="variable">%c249344_i64</span>) : <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;</span></div><div class="code-line"><span class="line-num">559</span><span class="line-content">    hivm.hir.wait_flag[&lt;PIPE_S&gt;, &lt;PIPE_V&gt;, &lt;EVENT_ID0&gt;]</span></div><div class="code-line"><span class="line-num">560</span><span class="line-content">    call @_attn_fwd_mix_aiv_outlined_vf_9(%<span class="number">9</span>, %<span class="number">37</span>) {hivm.vector_function, no_inline} : (<span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;, <span class="keyword">memref</span>&lt;1xf32, #<span class="keyword">hivm.address_space</span>&lt;ub&gt;&gt;) -&gt; ()</span></div><div class="code-line"><span class="line-num">561</span><span class="line-content">    %<span class="number">38</span> = arith.muli <span class="variable">%arg13</span>, <span class="variable">%c32_i32</span> : <span class="keyword">i32</span></span></div><div class="code-line"><span class="line-num">562</span><span class="line-content">    %<span class="number">39</span> = arith.index_cast %<span class="number">26</span> : <span class="keyword">i64</span> to <span class="keyword">index</span></span></div><div class="code-line"><span class="line-num">563</span><span class="line-content">    %<span class="number">40</span> = arith.index_cast <span class="variable">%arg13</span> : <span class="keyword">i32</span> to <span class="keyword">index</span></span></div>
+            </div>
+        </div>
+        </div>
+
+        <div class="footer">
+            <p>Generated by MLIR UB Pointer Analyzer</p>
+        </div>
+    </div>
+
+    <div class="tooltip" id="tooltip">
+        <div class="tooltip-row"><span class="tooltip-label">地址:</span> <span class="tooltip-value" id="tt-address"></span></div>
+        <div class="tooltip-row"><span class="tooltip-label">行号:</span> <span class="tooltip-value" id="tt-line"></span></div>
+        <div class="tooltip-row"><span class="tooltip-label">类型:</span> <span class="tooltip-value" id="tt-type"></span></div>
+    </div>
+
+    <script>
+        const entries = [{"index": 0, "address": 0, "line_number": 119, "memref_type": "memref<128x32xf16, #hivm.address_space<ub>>>", "line_content": "%42 = hivm.hir.pointer_cast(%c0_i64) : memref<128x32xf16, #hivm.address_space<ub>>"}, {"index": 1, "address": 0, "line_number": 142, "memref_type": "memref<16384xi8, #hivm.address_space<ub>>>", "line_content": "%53 = hivm.hir.pointer_cast(%c0_i64) : memref<16384xi8, #hivm.address_space<ub>>"}, {"index": 2, "address": 0, "line_number": 576, "memref_type": "memref<128x32xf16, #hivm.address_space<ub>>>", "line_content": "%53 = hivm.hir.pointer_cast(%c0_i64) : memref<128x32xf16, #hivm.address_space<ub>>"}, {"index": 3, "address": 0, "line_number": 613, "memref_type": "memref<16384xi8, #hivm.address_space<ub>>>", "line_content": "%63 = hivm.hir.pointer_cast(%c0_i64) : memref<16384xi8, #hivm.address_space<ub>>"}, {"index": 4, "address": 0, "line_number": 624, "memref_type": "memref<128x32xi32, #hivm.address_space<ub>>>", "line_content": "%66 = hivm.hir.pointer_cast(%c0_i64) : memref<128x32xi32, #hivm.address_space<ub>>"}, {"index": 5, "address": 0, "line_number": 667, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%48 = hivm.hir.pointer_cast(%c0_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 6, "address": 512, "line_number": 673, "memref_type": "memref<128x128xf16, #hivm.address_space<ub>>>", "line_content": "%52 = hivm.hir.pointer_cast(%c512_i64) : memref<128x128xf16, #hivm.address_space<ub>>"}, {"index": 7, "address": 8192, "line_number": 595, "memref_type": "memref<2x129x16x1xf16, #hivm.address_space<ub>>>", "line_content": "%60 = hivm.hir.pointer_cast(%c8192_i64) : memref<2x129x16x1xf16, #hivm.address_space<ub>>"}, {"index": 8, "address": 16448, "line_number": 636, "memref_type": "memref<2x129x16x1xf16, #hivm.address_space<ub>>>", "line_content": "%75 = hivm.hir.pointer_cast(%c16448_i64) : memref<2x129x16x1xf16, #hivm.address_space<ub>>"}, {"index": 9, "address": 33280, "line_number": 526, "memref_type": "memref<128x128xf32, #hivm.address_space<ub>>>", "line_content": "%10 = hivm.hir.pointer_cast(%c33280_i64) : memref<128x128xf32, #hivm.address_space<ub>>"}, {"index": 10, "address": 33280, "line_number": 656, "memref_type": "memref<128x128xf32, #hivm.address_space<ub>>>", "line_content": "%79 = hivm.hir.pointer_cast(%c33280_i64) : memref<128x128xf32, #hivm.address_space<ub>>"}, {"index": 11, "address": 98816, "line_number": 529, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%12 = hivm.hir.pointer_cast(%c98816_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 12, "address": 98816, "line_number": 638, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%76 = hivm.hir.pointer_cast(%c98816_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 13, "address": 99328, "line_number": 570, "memref_type": "memref<128xi32, #hivm.address_space<ub>>>", "line_content": "%45 = hivm.hir.pointer_cast(%c99328_i64) : memref<128xi32, #hivm.address_space<ub>>"}, {"index": 14, "address": 99840, "line_number": 618, "memref_type": "memref<128x32xf32, #hivm.address_space<ub>>>", "line_content": "%64 = hivm.hir.pointer_cast(%c99840_i64) : memref<128x32xf32, #hivm.address_space<ub>>"}, {"index": 15, "address": 99840, "line_number": 623, "memref_type": "memref<128x32xf32, #hivm.address_space<ub>>>", "line_content": "%65 = hivm.hir.pointer_cast(%c99840_i64) : memref<128x32xf32, #hivm.address_space<ub>>"}, {"index": 16, "address": 116224, "line_number": 628, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%68 = hivm.hir.pointer_cast(%c116224_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 17, "address": 116736, "line_number": 632, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%71 = hivm.hir.pointer_cast(%c116736_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 18, "address": 117248, "line_number": 633, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%72 = hivm.hir.pointer_cast(%c117248_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 19, "address": 117760, "line_number": 634, "memref_type": "memref<128x128xf32, #hivm.address_space<ub>>>", "line_content": "%73 = hivm.hir.pointer_cast(%c117760_i64) : memref<128x128xf32, #hivm.address_space<ub>>"}, {"index": 20, "address": 183296, "line_number": 173, "memref_type": "memref<128x128xf32, #hivm.address_space<ub>>>", "line_content": "%57 = hivm.hir.pointer_cast(%c183296_i64) : memref<128x128xf32, #hivm.address_space<ub>>"}, {"index": 21, "address": 183296, "line_number": 635, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%74 = hivm.hir.pointer_cast(%c183296_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 22, "address": 183296, "line_number": 653, "memref_type": "memref<128x128xf32, #hivm.address_space<ub>>>", "line_content": "%78 = hivm.hir.pointer_cast(%c183296_i64) : memref<128x128xf32, #hivm.address_space<ub>>"}, {"index": 23, "address": 248832, "line_number": 528, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%11 = hivm.hir.pointer_cast(%c248832_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 24, "address": 248832, "line_number": 660, "memref_type": "memref<128xf32, #hivm.address_space<ub>>>", "line_content": "%81 = hivm.hir.pointer_cast(%c248832_i64) : memref<128xf32, #hivm.address_space<ub>>"}, {"index": 25, "address": 249344, "line_number": 525, "memref_type": "memref<1xf32, #hivm.address_space<ub>>>", "line_content": "%9 = hivm.hir.pointer_cast(%c249344_i64) : memref<1xf32, #hivm.address_space<ub>>"}, {"index": 26, "address": 249344, "line_number": 558, "memref_type": "memref<1xf32, #hivm.address_space<ub>>>", "line_content": "%37 = hivm.hir.pointer_cast(%c249344_i64) : memref<1xf32, #hivm.address_space<ub>>"}];
+        let currentZoom = 1;
+        const baseWidth = 1200;
+        const height = 380;
+        const padding = { top: 40, right: 50, bottom: 60, left: 80 };
+
+        function drawChart() {
+            const svg = document.getElementById('chartSvg');
+            const chartWidth = baseWidth * currentZoom;
+            const plotWidth = chartWidth - padding.left - padding.right;
+            const plotHeight = height - padding.top - padding.bottom;
+
+            svg.setAttribute('width', chartWidth);
+            svg.setAttribute('height', height);
+            svg.innerHTML = '';
+
+            const addresses = entries.map(e => e.address);
+            const minAddr = Math.min(...addresses);
+            const maxAddr = Math.max(...addresses);
+            const addrRange = maxAddr - minAddr || 1;
+
+            // 计算地址分布密度，用于调整点的垂直位置
+            const addressGroups = {};
+            entries.forEach((entry, idx) => {
+                const x = padding.left + ((entry.address - minAddr) / addrRange) * plotWidth;
+                const xKey = Math.round(x / 15); // 按15像素分组
+                if (!addressGroups[xKey]) addressGroups[xKey] = [];
+                addressGroups[xKey].push({ ...entry, idx, x });
+            });
+
+            // 定义颜色映射（根据内存大小）
+            function getMemrefSize(type) {
+                const match = type.match(/memref<([^>]+)>/);
+                if (!match) return 0;
+                const dims = match[1].split('x').map(Number).filter(n => !isNaN(n));
+                return dims.reduce((a, b) => a * b, 1);
+            }
+
+            const sizes = entries.map(e => getMemrefSize(e.memref_type));
+            const maxSize = Math.max(...sizes, 1);
+
+            // 绘制网格线
+            for (let i = 0; i <= 10; i++) {
+                const x = padding.left + (plotWidth / 10) * i;
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', x);
+                line.setAttribute('y1', padding.top);
+                line.setAttribute('x2', x);
+                line.setAttribute('y2', padding.top + plotHeight);
+                line.setAttribute('class', 'grid-line');
+                svg.appendChild(line);
+
+                // X轴标签
+                const addr = Math.round(minAddr + (addrRange / 10) * i);
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                text.setAttribute('x', x);
+                text.setAttribute('y', padding.top + plotHeight + 25);
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('class', 'address-label');
+                text.textContent = '0x' + addr.toString(16).toUpperCase();
+                svg.appendChild(text);
+            }
+
+            // Y轴标签
+            for (let i = 0; i <= 5; i++) {
+                const y = padding.top + (plotHeight / 5) * i;
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                text.setAttribute('x', padding.left - 15);
+                text.setAttribute('y', y + 4);
+                text.setAttribute('text-anchor', 'end');
+                text.setAttribute('class', 'address-label');
+                text.textContent = entries.length - Math.round((entries.length / 5) * i);
+                svg.appendChild(text);
+            }
+
+            // 坐标轴
+            const xAxis = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            xAxis.setAttribute('x1', padding.left);
+            xAxis.setAttribute('y1', padding.top + plotHeight);
+            xAxis.setAttribute('x2', padding.left + plotWidth);
+            xAxis.setAttribute('y2', padding.top + plotHeight);
+            xAxis.setAttribute('class', 'axis-line');
+            svg.appendChild(xAxis);
+
+            const yAxis = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            yAxis.setAttribute('x1', padding.left);
+            yAxis.setAttribute('y1', padding.top);
+            yAxis.setAttribute('x2', padding.left);
+            yAxis.setAttribute('y2', padding.top + plotHeight);
+            yAxis.setAttribute('class', 'axis-line');
+            svg.appendChild(yAxis);
+
+            // 轴标题
+            const xTitle = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            xTitle.setAttribute('x', padding.left + plotWidth / 2);
+            xTitle.setAttribute('y', height - 10);
+            xTitle.setAttribute('text-anchor', 'middle');
+            xTitle.setAttribute('fill', '#333');
+            xTitle.setAttribute('font-size', '14');
+            xTitle.setAttribute('font-weight', 'bold');
+            xTitle.textContent = 'UB 地址 (十六进制)';
+            svg.appendChild(xTitle);
+
+            const yTitle = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            yTitle.setAttribute('x', 20);
+            yTitle.setAttribute('y', padding.top + plotHeight / 2);
+            yTitle.setAttribute('text-anchor', 'middle');
+            yTitle.setAttribute('fill', '#333');
+            yTitle.setAttribute('font-size', '14');
+            yTitle.setAttribute('font-weight', 'bold');
+            yTitle.setAttribute('transform', `rotate(-90, 20, ${padding.top + plotHeight / 2})`);
+            yTitle.textContent = '序号 (按地址排序)';
+            svg.appendChild(yTitle);
+
+            // 绘制数据点 - 使用垂直偏移避免重叠
+            Object.values(addressGroups).forEach(group => {
+                group.forEach((item, localIdx) => {
+                    const baseY = padding.top + plotHeight - ((item.idx + 1) / entries.length) * plotHeight;
+                    const offsetY = (localIdx % 3) * 15 * (localIdx % 2 === 0 ? 1 : -1);
+                    const y = Math.max(padding.top + 10, Math.min(padding.top + plotHeight - 10, baseY + offsetY));
+
+                    const size = getMemrefSize(item.memref_type);
+                    const radius = 4 + (size / maxSize) * 6;
+                    const intensity = 0.4 + (size / maxSize) * 0.6;
+
+                    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle.setAttribute('cx', item.x);
+                    circle.setAttribute('cy', y);
+                    circle.setAttribute('r', radius);
+                    circle.setAttribute('fill', `rgba(102, 126, 234, ${intensity})`);
+                    circle.setAttribute('stroke', '#667eea');
+                    circle.setAttribute('stroke-width', '2');
+                    circle.setAttribute('class', 'address-point');
+                    circle.setAttribute('data-index', item.idx);
+
+                    // 事件处理
+                    circle.addEventListener('mouseenter', (e) => showTooltip(e, item));
+                    circle.addEventListener('mouseleave', hideTooltip);
+                    circle.addEventListener('click', () => scrollToEntry(item.idx));
+
+                    svg.appendChild(circle);
+
+                    // 为孤立的点添加地址标签
+                    if (group.length === 1 && item.idx % 3 === 0) {
+                        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                        label.setAttribute('x', item.x);
+                        label.setAttribute('y', y - radius - 5);
+                        label.setAttribute('text-anchor', 'middle');
+                        label.setAttribute('class', 'address-label');
+                        label.setAttribute('font-size', '9');
+                        label.textContent = '0x' + item.address.toString(16).toUpperCase();
+                        svg.appendChild(label);
+                    }
+                });
+            });
+        }
+
+        function showTooltip(e, item) {
+            const tooltip = document.getElementById('tooltip');
+            document.getElementById('tt-address').textContent = '0x' + item.address.toString(16).toUpperCase() + ' (' + item.address + ')';
+            document.getElementById('tt-line').textContent = item.line_number;
+            document.getElementById('tt-type').textContent = item.memref_type;
+            tooltip.style.display = 'block';
+            tooltip.style.left = (e.clientX + 15) + 'px';
+            tooltip.style.top = (e.clientY - 10) + 'px';
+        }
+
+        function hideTooltip() {
+            document.getElementById('tooltip').style.display = 'none';
+        }
+
+        function scrollToEntry(index) {
+            const entry = document.getElementById('entry-' + index);
+            if (entry) {
+                entry.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                entry.style.border = '3px solid #667eea';
+                setTimeout(() => {
+                    entry.style.border = '1px solid #e0e0e0';
+                }, 3000);
+            }
+        }
+
+        function zoomIn() {
+            currentZoom *= 1.5;
+            drawChart();
+        }
+
+        function zoomOut() {
+            currentZoom = Math.max(0.5, currentZoom / 1.5);
+            drawChart();
+        }
+
+        function resetZoom() {
+            currentZoom = 1;
+            drawChart();
+        }
+
+        // 初始化
+        drawChart();
+    </script>
+</body>
+</html>
