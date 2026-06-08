@@ -405,6 +405,8 @@ Tensor ScoreModFunc::Backward(Graph graph, Tensor grad) {
 
 ### 6.1 优化前: 原始 HLO 图
 
+前端框架（JAX/PyTorch）生成的原始计算图包含多个独立的 HLO 指令，每个指令对应一个单独的 GPU kernel：
+
 ```
 前端生成的计算图:
 
@@ -444,72 +446,253 @@ Kernel 数量: 5+ (transpose, dot, multiply, softmax, dot)
 全局内存读写: 每个中间结果都要写回 HBM 再读回
 ```
 
+**问题分析**：
+- **内存瓶颈**: 需要存储注意力矩阵 S = Q@K^T 和 softmax 输出两个 O(N²) 张量
+- **Kernel 启动开销**: 5+ 个独立 kernel 的启动和同步开销
+- **带宽瓶颈**: 每个中间结果都需要从 HBM 写入再读出（4 次 O(N²) 数据搬运）
+
 ### 6.2 优化阶段 1: 模式匹配与 FMHA 融合
 
-**Pass**: `fused_mha_rewriter` (`xla/service/gpu/cublas_cudnn.h:205`)
+**Pass**: `xla/service/gpu/cublas_cudnn.h:174-205` 定义了 FMHA 模式，实际的 pattern matching 和重写由前端（JAX/PyTorch）或专门的 rewriter pass 完成。
 
-**支持的融合模式**:
-1. `BMM1 → Softmax → BMM2`
-2. `BMM1 → Softmax → Dropout → BMM2`
-3. `BMM1 → Scale → Bias → Softmax → BMM2`
-4. `BMM1 → Scale → Bias → Softmax → Dropout → BMM2`
+**支持的融合模式** (`CudnnfMHAKind` 枚举定义):
+| 模式 | Call Target | 说明 |
+|------|-------------|------|
+| `kSoftmax` | `__cudnn$fmhaSoftmax` | BMM1 → Softmax → BMM2 |
+| `kSoftmaxDropout` | `__cudnn$fmhaSoftmaxDropout` | 增加 Dropout |
+| `kScaleBiasSoftmax` | `__cudnn$fmhaScaleBiasSoftmax` | 增加 Scale + Bias |
+| `kScaleBiasSoftmaxDropout` | `__cudnn$fmhaScaleBiasSoftmaxDropout` | 完整版本 |
+| `kSoftmaxF8` | `__cudnn$fmhaSoftmaxF8` | FP8 量化版本 |
 
-**优化后**:
+**优化后 HLO 表示**:
 
 ```hlo
-// 融合前 (5+ 个独立指令)
-%dot1 = dot(Q, transpose(K))
-%scaled = multiply(%dot1, scale)
-%attn = softmax(%scaled)
-%output = dot(%attn, V)
+// 融合前 (8+ 个独立指令，5+ 个 kernel)
+%dot1 = bf16[4,4,1024,1024] dot(Q, transpose(K))
+%scaled = bf16[4,4,1024,1024] multiply(%dot1, scale)
+%attn = bf16[4,4,1024,1024] softmax(%scaled)
+%output = bf16[4,4,1024,64] dot(%attn, V)
 
-// 融合后 (1 个 custom-call)
-%fmha = custom-call(Q, K, V) {
-  custom_call_target = "__cudnn$fmhaSoftmax"
-  backend_config = {
+// 融合后 (1 个 custom-call，1 个 kernel)
+%fmha = (bf16[4,4,1024,64], u8[0]) custom-call(Q, K, V),
+  custom_call_target="__cudnn$fmhaSoftmax",
+  backend_config={
     "cudnn_fmha_backend_config": {
-      "is_flash_attention": true,
-      "mask_type": "CAUSAL",
+      "algorithm": {
+        "algo_id": "0",
+        "math_type": "TENSOR_OP_MATH",
+        "tuning_knobs": {"17": "1", "24": "0"},
+        "workspace_size": "0"
+      },
       "fmha_scale": 0.125,
-      ...
+      "mask_type": "CAUSAL",
+      "is_flash_attention": true,
+      "is_causal_mask": false,
+      "bmm1_dot_dimension_numbers": {...},
+      "bmm2_dot_dimension_numbers": {...},
+      "intermediate_tensor_shape": {...}
     }
   }
-}
+%output = bf16[4,4,1024,64] get-tuple-element(%fmha), index=0
 ```
 
 **优化效果**:
-- **内存**: O(N²) 中间张量变为虚拟，不分配 HBM
+- **内存**: O(N²) 中间张量变为虚拟，不分配 HBM 内存
 - **Kernel**: 5+ → 1 (Flash Attention 融合 kernel)
-- **内存带宽**: 消除 2 次 O(N²) 的全局内存读写
+- **内存带宽**: 消除 2 次 O(N²) 的全局内存读写，降至 ~2×O(N)
 
 ### 6.3 优化阶段 2: ScoreMod 自定义运算内联
 
-**Pass**: `cudnn_custom_call_compiler.cc:183-200`
+**核心机制**: `ScoreModFunc` 类 (`xla/stream_executor/cuda/cudnn_sdpa_score_mod.h:32`) 实现了 HLO computation 到 cuDNN graph 的编译。
+
+**源码分析**:
+
+**A. ScoreModFunc 构造函数与成员变量** (`cudnn_sdpa_score_mod.h:32-64`):
 
 ```cpp
-// 提取 called_computations 中的自定义 score_mod
-if (computations.size() == 1) {
-  score_mod_fwd_comp = computations[0];
-  score_mod.emplace(ScoreModFunc(score_mod_fwd_comp, nullptr));
+class ScoreModFunc {
+ public:
+  // fwd_comp: 前向传播 score modification 计算
+  // bwd_comp: 反向传播梯度计算（可选）
+  ScoreModFunc(const xla::HloComputation* fwd_comp,
+               const xla::HloComputation* bwd_comp);
+
+  // 将 HLO 参数和常量映射到 cuDNN tensor
+  absl::Status UpdateCudnnMap(cudnn_frontend::graph::Graph& graph,
+                              UidGenerator next_uid);
+
+  // 前向: 接收 attention_score，返回修改后的 score
+  Tensor Forward(Graph graph, Tensor attention_score);
+
+  // 反向: 接收梯度，返回修改后的梯度
+  Tensor Backward(Graph graph, Tensor grad);
+
+ private:
+  std::vector<Tensor> fwd_parameters_;  // 保存前向参数供反向使用
+  const xla::HloComputation* fwd_comp_;
+  const xla::HloComputation* bwd_comp_;
+  absl::flat_hash_map<const xla::HloInstruction*, Tensor> fwd_hlo_to_cudnn_;
+  absl::flat_hash_map<const xla::HloInstruction*, Tensor> bwd_hlo_to_cudnn_;
+};
+```
+
+**B. ScoreMod 提取与构建** (`cudnn_custom_call_compiler.cc:182-201`):
+
+```cpp
+absl::StatusOr<se::gpu::CudnnGraph> BuildGraphForCustomCallToForwardFMHA(
+    se::dnn::DnnSupport &dnn_support, HloCustomCallInstruction *custom_call) {
+  // ... 提取 Q, K, V, output 等 tensor 描述 ...
+
+  auto computations = custom_call->called_computations();
+  const HloComputation *score_mod_fwd_comp = nullptr;
+  std::optional<stream_executor::gpu::ScoreModFunc> score_mod;
+
+  TF_RET_CHECK(computations.size() <= 1);
+  if (computations.size() == 1) {
+    score_mod_fwd_comp = computations[0];  // @softcap_score_mod
+    score_mod.emplace(
+        stream_executor::gpu::ScoreModFunc(score_mod_fwd_comp, nullptr));
+    // 调整 input_index 以考虑 score_mod 的额外参数
+    input_index += score_mod_fwd_comp->num_parameters() - 1;
+  }
+  auto score_mod_ptr = score_mod.has_value() ? &score_mod.value() : nullptr;
+
+  // 构建 cuDNN Flash Attention 图，传入 score_mod
+  return se::gpu::GetCudnnFlashAttentionOperationGraph(
+      dnn_support, q, k, v, output, bias, activation,
+      page_table_k, page_table_v,
+      static_cast<float>(config.fmha_scale()),
+      dropout_rate > 0.0, dropout_rate,
+      dnn_mask_type, sliding_window_length, max_seg_per_batch,
+      score_mod_ptr  // ← 自定义运算传入 cuDNN
+  );
 }
 ```
 
-**优化后** (Flash Attention Kernel 内部):
+**C. HLO 到 cuDNN 的编译过程** (`cudnn_sdpa_score_mod.cc:267-373`):
+
+```cpp
+Tensor ScoreModFunc::Compile(
+    Graph graph,
+    absl::flat_hash_map<const xla::HloInstruction*, Tensor>& hlo_to_cudnn,
+    const xla::HloComputation* computation) {
+  // 后序遍历 HLO 指令
+  std::vector<xla::HloInstruction*> instructions =
+      computation->MakeInstructionPostOrder();
+
+  for (const xla::HloInstruction* hlo : instructions) {
+    auto operand = [&hlo_to_cudnn, &hlo](int i) {
+      return hlo_to_cudnn[hlo->operand(i)];
+    };
+
+    // 处理常量参数
+    if (xla::HloPredicateIsOp<xla::HloOpcode::kConstant,
+                              xla::HloOpcode::kParameter>(hlo)) {
+      continue;
+    }
+
+    // 处理广播和 bitcast（虚拟操作）
+    if (xla::HloPredicateIsOp<xla::HloOpcode::kBitcast,
+                              xla::HloOpcode::kBroadcast>(hlo)) {
+      hlo_to_cudnn[hlo] = operand(0);
+    }
+    // 处理 Iota 操作（生成序列）
+    else if (xla::HloPredicateIsOp<xla::HloOpcode::kIota>(hlo)) {
+      auto attrs = cudnn_frontend::graph::Pointwise_attributes()
+                       .set_mode(cudnn_frontend::PointwiseMode_t::GEN_INDEX)
+                       .set_compute_data_type(cudnn_frontend::DataType_t::INT32)
+                       .set_axis(iota->iota_dimension());
+      hlo_to_cudnn[hlo] = graph->pointwise(..., attrs);
+    }
+    // 处理逐元素操作（核心）
+    else if (hlo->IsElementwise()) {
+      const auto mode = GetElementwiseMode(*hlo);  // HLO opcode → cuDNN mode
+      auto attrs = cudnn_frontend::graph::Pointwise_attributes()
+                       .set_mode(mode.value())
+                       .set_compute_data_type(compute_dtype)
+                       .set_name(std::string(hlo->name()));
+
+      if (hlo->operand_count() == 1) {
+        // 一元操作: tanh, exp, etc.
+        hlo_to_cudnn[hlo] = graph->pointwise(operand(0), attrs);
+      } else if (hlo->operand_count() == 2) {
+        // 二元操作: add, multiply, divide, etc.
+        // 确保第一个操作数是 virtual（cuDNN 限制）
+        hlo_to_cudnn[hlo] = graph->pointwise(o0, o1, attrs);
+      } else if (hlo->operand_count() == 3) {
+        // 三元操作: select
+        hlo_to_cudnn[hlo] = graph->pointwise(operand(1), operand(2), operand(0), attrs);
+      }
+    }
+  }
+  return hlo_to_cudnn[computation->root_instruction()];
+}
+```
+
+**D. 支持的逐元素操作映射** (`cudnn_sdpa_score_mod.cc:45-117`):
+
+| HLO Opcode | cuDNN Pointwise Mode | 说明 |
+|------------|---------------------|------|
+| `kAdd` | `ADD` | 加法 |
+| `kMultiply` | `MUL` | 乘法 |
+| `kDivide` | `DIV` | 除法 |
+| `kTanh` | `TANH_FWD` | 双曲正切 |
+| `kExp` | `EXP` | 指数 |
+| `kLog` | `LOG` | 对数 |
+| `kMaximum` | `MAX` | 最大值 |
+| `kMinimum` | `MIN` | 最小值 |
+| `kCompare` | `CMP_*` | 比较操作 |
+| `kSelect` | `BINARY_SELECT` | 条件选择 |
+| `kRsqrt` | `RSQRT` | 反平方根 |
+| `kAnd`/`kOr` | `LOGICAL_AND`/`OR` | 逻辑运算 |
+
+**E. ScoreMod 内联的核心优势**:
 
 ```
-for each block:
-  S_block = Q_block @ K_block^T        // SRAM 中计算
-  S_block = S_block * scale            // SRAM 中 scale
-  S_block = 30 * tanh(S_block / 30)    // ← ScoreMod 在 SRAM 中直接计算
-  S_block = S_block + causal_mask      // mask 在 SRAM 中应用
-  O_block += softmax(S_block) @ V_block // SRAM 中 softmax + BMM2
+传统方式（无 ScoreMod 内联）:
+┌─────────┐     ┌──────────────┐     ┌─────────┐
+│ BMM1    │────→│ 全局内存存储 │────→│ ScoreMod│  ← 独立 kernel
+│ (SRAM)  │     │ (HBM, O(N²)) │     │ (HBM)   │
+└─────────┘     └──────────────┘     └────┬────┘
+                                          │
+                                     ┌────▼────┐
+                                     │ 全局内存│
+                                     │ (HBM)   │
+                                     └────┬────┘
+                                          │
+┌─────────┐     ┌──────────────┐     ┌────▼────┐
+│ BMM2    │←────│ Softmax      │←────│ 读取    │
+│ (SRAM)  │     │ (SRAM/HBM)   │     │ (HBM)   │
+└─────────┘     └──────────────┘     └─────────┘
+
+ScoreMod 内联后（SRAM 内计算）:
+┌─────────────────────────────────────────────────┐
+│  for each tile in Q:                            │
+│    for each tile in K:                          │
+│      S_tile = Q_tile @ K_tile^T   ← BMM1 (SRAM) │
+│      S_tile = S_tile * scale      ← scale       │
+│      S_tile = softcap(S_tile)     ← ScoreMod!   │
+│      S_tile = S_tile + mask       ← mask        │
+│      P_tile = softmax(S_tile)     ← softmax     │
+│      O_tile += P_tile @ V_tile    ← BMM2 (SRAM) │
+│    end                                          │
+│  end                                            │
+└─────────────────────────────────────────────────┘
+         ↓ 仅输出最终结果 O (HBM)
 ```
 
-**关键**: `ScoreModFunc::UpdateCudnnMap` 将 HLO 计算映射为 cuDNN graph 节点，所有运算在 GPU SRAM 中完成，不产生中间 HBM 读写。
+**内存访问对比**:
+
+| 方案 | HBM 读取 | HBM 写入 | 中间存储 |
+|------|---------|---------|---------|
+| 无 ScoreMod 内联 | 2×O(N²) + O(N) | 2×O(N²) | 2×O(N²) |
+| **ScoreMod 内联** | **O(N)** | **O(N)** | **0** |
 
 ### 6.4 优化阶段 3: CuDNN Custom Call → Fusion 转换
 
-**Pass**: `cudnn_custom_call_converter.cc:37-54`
+**Pass**: `xla/service/gpu/transforms/cudnn_custom_call_converter.cc:34-54`
+
+此 pass 负责将 cuDNN custom-call 包装为 kCustom fusion，便于后续优化。
 
 ```cpp
 class CustomCallVisitor : public DfsHloRewriteVisitor {
@@ -517,89 +700,184 @@ class CustomCallVisitor : public DfsHloRewriteVisitor {
     if (hlo->custom_call_target() != kCuDnnFusionKind) {
       return absl::OkStatus();
     }
-    // 将 custom-call 转换为 kCustom fusion
-    HloInstruction *fusion = HloInstruction::CreateFusion(
-        hlo->shape(), HloInstruction::FusionKind::kCustom, 
-        hlo->operands(), computation);
+
+    // 克隆 called_computation 作为 embedded computation
+    HloComputation *computation = hlo->GetModule()->AddEmbeddedComputation(
+        hlo->called_computations()[0]->Clone());
+
+    // 创建 kCustom fusion 指令
+    HloInstruction *fusion =
+        hlo->parent()->AddInstruction(HloInstruction::CreateFusion(
+            hlo->shape(), HloInstruction::FusionKind::kCustom,
+            hlo->operands(), computation));
+
+    // 设置 backend config
+    GpuBackendConfig gpu_config;
+    FusionBackendConfig &backend_config =
+        *gpu_config.mutable_fusion_backend_config();
     backend_config.set_kind(hlo->custom_call_target());
-    fusion->set_backend_config(gpu_config);
-    return ReplaceInstruction(hlo, fusion);
+    TF_RETURN_IF_ERROR(fusion->set_backend_config(gpu_config));
+
+    // 替换原指令
+    TF_RETURN_IF_ERROR(ReplaceInstruction(hlo, fusion));
+    return absl::OkStatus();
   }
 };
 ```
 
+**执行时机**: 在 `pre_spmd_pipeline` 早期执行（`gpu_compiler.cc:449`）。
+
 ### 6.5 优化阶段 4: 自动调优 (Autotuning)
 
-**Pass**: `autotuner_pass.cc:92-154`
+**Pass**: `xla/service/gpu/autotuning/autotuner_pass.cc:92-139`
 
-```cpp
-if (backend_config.kind() == kCuDnnFusionKind) {
-  // 尝试多种 cuDNN 算法配置
-  for (auto& algo : available_algorithms) {
-    config.mutable_cudnn_fmha_backend_config()
-          .mutable_algorithm()
-          ->set_algo_id(algo.id);
-    config.mutable_cudnn_fmha_backend_config()
-          .mutable_algorithm()
-          ->mutable_tuning_knobs()
-          ->insert({knob_id, knob_value});
-    // 测量性能，选择最优配置
+自动调优器通过实际运行测量来选择最优的 cuDNN 算法配置。
+
+**调优配置** (`CudnnfMHABackendConfig`):
+
+```protobuf
+message CudnnfMHABackendConfig {
+  // cuDNN 算法选择和调优参数
+  stream_executor.dnn.AlgorithmProto algorithm = 8;
+
+  // Flash Attention 缩放因子
+  double fmha_scale = 10;
+
+  // Dropout 配置
+  double dropout_rate = 13;
+  int64 seed = 15;
+
+  // BMM 维度配置
+  xla.DotDimensionNumbers bmm1_dot_dimension_numbers = 11;
+  xla.DotDimensionNumbers bmm2_dot_dimension_numbers = 12;
+
+  // 中间张量形状（用于反向传播）
+  xla.ShapeProto intermediate_tensor_shape = 14;
+
+  // Flash Attention 标志
+  bool is_flash_attention = 20;
+  bool is_causal_mask = 21;
+
+  // Mask 类型枚举
+  enum MaskType {
+    NO_MASK = 0;
+    PADDING = 1;
+    CAUSAL = 2;
+    PADDING_CAUSAL = 3;
+    ALIBI = 4;
   }
+  MaskType mask_type = 22;
+
+  // 性能调优参数
+  bool force_deterministic = 23;
+  int32 sliding_window_length = 24;  // Mistral 风格滑动窗口
+  int32 max_seg_per_batch = 25;      // Packed layout 支持
+  bool is_paged_attention = 26;      // vLLM 风格分页注意力
 }
 ```
 
-**Backend Config 中的调优参数**:
+**算法配置示例**:
 
 ```json
-"algorithm": {
-  "algo_id": "0",
-  "math_type": "TENSOR_OP_MATH",
-  "tuning_knobs": {
-    "17": "1",   // block size 配置
-    "24": "0"    // pipeline 配置
+{
+  "algorithm": {
+    "algo_id": "0",           // cuDNN 算法 ID
+    "math_type": "TENSOR_OP_MATH",  // 使用 Tensor Core
+    "tuning_knobs": {
+      "17": "1",              // block size 配置
+      "24": "0"               // pipeline 阶段数
+    },
+    "workspace_size": "0"     // 工作空间大小
   },
-  "workspace_size": "0"
+  "fmha_scale": 0.125,
+  "mask_type": "CAUSAL",
+  "is_flash_attention": true,
+  "sliding_window_length": 4096  // 可选：滑动窗口
 }
 ```
 
 ### 6.6 优化阶段 5: 布局优化 (Layout Assignment)
 
-**Pass**: `layout_assignment.cc`
+**Pass**: `xla/service/gpu/transforms/layout_assignment.cc`
+
+针对 cuDNN Flash Attention 的要求，优化 tensor 布局以减少转置开销。
 
 ```hlo
-// 优化前 (默认布局)
-Q: bf16[4,4,1024,64]{3,2,1,0}  // 默认 minor-to-major
+// 优化前 (默认布局 {3,2,1,0} - minor-to-major)
+Q: bf16[4,4,1024,64]{3,2,1,0}
+K: bf16[4,4,1024,64]{3,2,1,0}
 
-// 优化后 (针对 cuDNN Flash Attention 优化的布局)
-Q: bf16[4,4,1024,64]{3,1,2,0}  // 调整维度顺序以匹配 cuDNN 要求
+// 优化后 (针对 cuDNN 优化的布局)
+Q: bf16[4,4,1024,64]{3,1,2,0}  // 调整维度顺序
+K: bf16[4,4,1024,64]{3,1,2,0}  // 匹配 cuDNN 期望
 ```
 
 ### 6.7 优化阶段 6: 代数化简与常量折叠
 
-**Pass**: `algebraic_simplifier.cc`
+**Pass**: `xla/service/gpu/transforms/algebraic_simplifier.cc`
 
 ```hlo
-// 优化前
-%scale = constant(0.125)
-%broadcast = broadcast(%scale)  // 广播到 [4,4,1024,1024]
-%scaled = multiply(%dot1, %broadcast)
+// 优化前：broadcast + multiply 组合
+%scale = bf16[] constant(0.125)
+%broadcast = bf16[4,4,1024,1024] broadcast(%scale), dimensions={}
+%scaled = bf16[4,4,1024,1024] multiply(%dot1, %broadcast)
 
-// 优化后
-// broadcast + multiply 被吸收到 Flash Attention kernel 内部
-// 只需要传递标量 scale 因子
-backend_config.fmha_scale = 0.125
+// 优化后：直接传递标量 scale 给 backend config
+// broadcast + multiply 被完全消除
+backend_config: {
+  "cudnn_fmha_backend_config": {
+    "fmha_scale": 0.125  // 标量直接传入 cuDNN
+  }
+}
 ```
 
-### 6.8 完整优化流程对比
+### 6.8 完整优化流程与数据流
 
-| 指标 | 优化前 | 优化后 |
-|------|--------|--------|
-| **HLO 指令数** | 8+ | 1 (custom-call) |
-| **GPU Kernel 数** | 5+ | 1 (Flash Attention) |
-| **中间内存** | 2 × O(N²) ≈ 128MB | 0 (虚拟张量) |
-| **HBM 读写** | ~4 × O(N²) | ~2 × O(N) |
-| **自定义运算** | 独立 kernel | 内联到 Flash Attention SRAM 循环 |
-| **Mask 处理** | 独立 multiply/add | cuDNN 内置 + ScoreMod 回调 |
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         XLA 编译管线 (GPU Backend)                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. 前端 HLO                                                                 │
+│     └── dot → multiply → softmax → dot (8+ 指令，5+ kernels)                │
+│                                                                             │
+│  2. Pattern Matching & Fusion                                               │
+│     └── custom-call(target="__cudnn$fmhaSoftmax", ...)                       │
+│                                                                             │
+│  3. ScoreMod 提取与编译                                                      │
+│     └── called_computations=[@score_mod]                                    │
+│     └── ScoreModFunc::UpdateCudnnMap() → cuDNN graph nodes                  │
+│                                                                             │
+│  4. CuDNN Custom Call Converter                                             │
+│     └── kCustom fusion (便于后续优化)                                        │
+│                                                                             │
+│  5. Layout Assignment                                                       │
+│     └── 优化 tensor layout 匹配 cuDNN 要求                                   │
+│                                                                             │
+│  6. Autotuning                                                              │
+│     └── 选择最优 algorithm + tuning_knobs                                   │
+│                                                                             │
+│  7. Algebraic Simplification                                                │
+│     └── 消除冗余 broadcast/multiply                                         │
+│                                                                             │
+│  8. IR 发射与代码生成                                                         │
+│     └── CuDNN thunk (Flash Attention kernel)                                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 6.9 优化效果总结
+
+| 指标 | 优化前 | 优化后 | 改善倍数 |
+|------|--------|--------|---------|
+| **HLO 指令数** | 8+ | 1 | **8×** |
+| **GPU Kernel 数** | 5+ | 1 | **5×** |
+| **中间内存** | 2 × O(N²) ≈ 128MB | 0 (虚拟张量) | **∞** |
+| **HBM 读写** | ~4 × O(N²) | ~2 × O(N) | **~2000×** (seq=1024) |
+| **自定义运算** | 独立 kernel | SRAM 内联 | **消除 kernel 启动开销** |
+| **Mask 处理** | 独立 multiply/add | cuDNN 内置 + ScoreMod | **融合到 SRAM 循环** |
+
+**注**: HBM 读写改善倍数与序列长度相关。对于 seq_len=1024，改善约为 (4×1024²)/(2×1024) = 2000×；更大的序列长度带来更显著的改善。
 
 ---
 
