@@ -299,7 +299,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>📊 UB Pointer Cast 分析报告</h1>
+            <h1>UB Pointer Cast 分析报告</h1>
             <p class="subtitle">文件: attn_fwd.mlir</p>
             <div class="stats">
                 <div class="stat-card">
@@ -322,7 +322,7 @@
         </div>
 
         <div class="chart-container">
-            <h2 style="margin-bottom: 20px; color: #333;">📈 地址分布图 (按地址排序)</h2>
+            <h2 style="margin-bottom: 20px; color: #333;">地址趋势图 (等间距 / 按序号)</h2>
             <div class="address-chart" id="addressChart">
                 <div class="zoom-controls">
                     <button class="zoom-btn" onclick="zoomIn()">+</button>
@@ -332,12 +332,12 @@
                 <svg class="chart-svg" id="chartSvg" preserveAspectRatio="none"></svg>
             </div>
             <div class="chart-legend">
-                💡 提示：鼠标悬停查看详细信息，点击圆点跳转到对应代码。使用右上角按钮缩放图表。
+                提示：鼠标悬停查看详细信息，点击圆点跳转到对应代码。使用右上角按钮缩放图表。
             </div>
         </div>
 
         <div class="content">
-            <h2 style="margin-bottom: 20px; color: #333;">📝 详细代码片段</h2>
+            <h2 style="margin-bottom: 20px; color: #333;">详细代码片段</h2>
             <div class="entry" id="entry-0">
             <div class="entry-header">
                 <span class="address">0x0000 (0)</span>
@@ -616,15 +616,7 @@
             const minAddr = Math.min(...addresses);
             const maxAddr = Math.max(...addresses);
             const addrRange = maxAddr - minAddr || 1;
-
-            // 计算地址分布密度，用于调整点的垂直位置
-            const addressGroups = {};
-            entries.forEach((entry, idx) => {
-                const x = padding.left + ((entry.address - minAddr) / addrRange) * plotWidth;
-                const xKey = Math.round(x / 15); // 按15像素分组
-                if (!addressGroups[xKey]) addressGroups[xKey] = [];
-                addressGroups[xKey].push({ ...entry, idx, x });
-            });
+            const count = entries.length;
 
             // 定义颜色映射（根据内存大小）
             function getMemrefSize(type) {
@@ -637,9 +629,17 @@
             const sizes = entries.map(e => getMemrefSize(e.memref_type));
             const maxSize = Math.max(...sizes, 1);
 
-            // 绘制网格线
-            for (let i = 0; i <= 10; i++) {
-                const x = padding.left + (plotWidth / 10) * i;
+            // 计算等间距的坐标点
+            const points = entries.map((entry, idx) => {
+                const x = count === 1 ? padding.left + plotWidth / 2 : padding.left + (idx / (count - 1)) * plotWidth;
+                const y = padding.top + plotHeight - ((entry.address - minAddr) / addrRange) * plotHeight;
+                return { x, y, idx, ...entry };
+            });
+
+            // 绘制网格线（垂直，对应序号）
+            const xGridCount = Math.min(count, 10);
+            for (let i = 0; i <= xGridCount; i++) {
+                const x = padding.left + (plotWidth / xGridCount) * i;
                 const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
                 line.setAttribute('x1', x);
                 line.setAttribute('y1', padding.top);
@@ -648,26 +648,36 @@
                 line.setAttribute('class', 'grid-line');
                 svg.appendChild(line);
 
-                // X轴标签
-                const addr = Math.round(minAddr + (addrRange / 10) * i);
+                // X轴标签（序号）
+                const idxLabel = Math.round((count - 1) * (i / xGridCount)) + 1;
                 const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
                 text.setAttribute('x', x);
                 text.setAttribute('y', padding.top + plotHeight + 25);
                 text.setAttribute('text-anchor', 'middle');
                 text.setAttribute('class', 'address-label');
-                text.textContent = '0x' + addr.toString(16).toUpperCase();
+                text.textContent = idxLabel;
                 svg.appendChild(text);
             }
 
-            // Y轴标签
+            // 绘制网格线（水平，对应地址）
             for (let i = 0; i <= 5; i++) {
                 const y = padding.top + (plotHeight / 5) * i;
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', padding.left);
+                line.setAttribute('y1', y);
+                line.setAttribute('x2', padding.left + plotWidth);
+                line.setAttribute('y2', y);
+                line.setAttribute('class', 'grid-line');
+                svg.appendChild(line);
+
+                // Y轴标签（地址）
+                const addr = Math.round(maxAddr - (addrRange / 5) * i);
                 const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
                 text.setAttribute('x', padding.left - 15);
                 text.setAttribute('y', y + 4);
                 text.setAttribute('text-anchor', 'end');
                 text.setAttribute('class', 'address-label');
-                text.textContent = entries.length - Math.round((entries.length / 5) * i);
+                text.textContent = '0x' + addr.toString(16).toUpperCase();
                 svg.appendChild(text);
             }
 
@@ -696,7 +706,7 @@
             xTitle.setAttribute('fill', '#333');
             xTitle.setAttribute('font-size', '14');
             xTitle.setAttribute('font-weight', 'bold');
-            xTitle.textContent = 'UB 地址 (十六进制)';
+            xTitle.textContent = '序号';
             svg.appendChild(xTitle);
 
             const yTitle = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -707,49 +717,57 @@
             yTitle.setAttribute('font-size', '14');
             yTitle.setAttribute('font-weight', 'bold');
             yTitle.setAttribute('transform', `rotate(-90, 20, ${padding.top + plotHeight / 2})`);
-            yTitle.textContent = '序号 (按地址排序)';
+            yTitle.textContent = 'UB 地址 (十六进制)';
             svg.appendChild(yTitle);
 
-            // 绘制数据点 - 使用垂直偏移避免重叠
-            Object.values(addressGroups).forEach(group => {
-                group.forEach((item, localIdx) => {
-                    const baseY = padding.top + plotHeight - ((item.idx + 1) / entries.length) * plotHeight;
-                    const offsetY = (localIdx % 3) * 15 * (localIdx % 2 === 0 ? 1 : -1);
-                    const y = Math.max(padding.top + 10, Math.min(padding.top + plotHeight - 10, baseY + offsetY));
+            // 绘制连接线（趋势图）
+            if (points.length > 1) {
+                const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+                const pointsAttr = points.map(p => `${p.x},${p.y}`).join(' ');
+                polyline.setAttribute('points', pointsAttr);
+                polyline.setAttribute('fill', 'none');
+                polyline.setAttribute('stroke', '#667eea');
+                polyline.setAttribute('stroke-width', '2');
+                polyline.setAttribute('stroke-linejoin', 'round');
+                polyline.setAttribute('stroke-linecap', 'round');
+                polyline.setAttribute('opacity', '0.6');
+                svg.appendChild(polyline);
+            }
 
-                    const size = getMemrefSize(item.memref_type);
-                    const radius = 4 + (size / maxSize) * 6;
-                    const intensity = 0.4 + (size / maxSize) * 0.6;
+            // 绘制数据点
+            points.forEach((item) => {
+                const size = getMemrefSize(item.memref_type);
+                const radius = 4 + (size / maxSize) * 6;
+                const intensity = 0.4 + (size / maxSize) * 0.6;
 
-                    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                    circle.setAttribute('cx', item.x);
-                    circle.setAttribute('cy', y);
-                    circle.setAttribute('r', radius);
-                    circle.setAttribute('fill', `rgba(102, 126, 234, ${intensity})`);
-                    circle.setAttribute('stroke', '#667eea');
-                    circle.setAttribute('stroke-width', '2');
-                    circle.setAttribute('class', 'address-point');
-                    circle.setAttribute('data-index', item.idx);
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', item.x);
+                circle.setAttribute('cy', item.y);
+                circle.setAttribute('r', radius);
+                circle.setAttribute('fill', `rgba(102, 126, 234, ${intensity})`);
+                circle.setAttribute('stroke', '#667eea');
+                circle.setAttribute('stroke-width', '2');
+                circle.setAttribute('class', 'address-point');
+                circle.setAttribute('data-index', item.idx);
 
-                    // 事件处理
-                    circle.addEventListener('mouseenter', (e) => showTooltip(e, item));
-                    circle.addEventListener('mouseleave', hideTooltip);
-                    circle.addEventListener('click', () => scrollToEntry(item.idx));
+                // 事件处理
+                circle.addEventListener('mouseenter', (e) => showTooltip(e, item));
+                circle.addEventListener('mouseleave', hideTooltip);
+                circle.addEventListener('click', () => scrollToEntry(item.idx));
 
-                    svg.appendChild(circle);
+                svg.appendChild(circle);
 
-                    // 为孤立的点添加地址标签
-                    if (group.length === 1 && item.idx % 3 === 0) {
-                        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                        label.setAttribute('x', item.x);
-                        label.setAttribute('y', y - radius - 5);
-                        label.setAttribute('text-anchor', 'middle');
-                        label.setAttribute('class', 'address-label');
-                        label.setAttribute('font-size', '9');
-                        label.textContent = '0x' + item.address.toString(16).toUpperCase();
-                        svg.appendChild(label);
-                    }
-                });
+                // 为部分点添加地址标签，避免拥挤
+                if (item.idx % Math.max(1, Math.floor(count / 8)) === 0) {
+                    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    label.setAttribute('x', item.x);
+                    label.setAttribute('y', item.y - radius - 5);
+                    label.setAttribute('text-anchor', 'middle');
+                    label.setAttribute('class', 'address-label');
+                    label.setAttribute('font-size', '9');
+                    label.textContent = '0x' + item.address.toString(16).toUpperCase();
+                    svg.appendChild(label);
+                }
             });
         }
 
