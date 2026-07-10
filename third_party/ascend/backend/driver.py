@@ -24,6 +24,7 @@ import os
 import os.path
 import re
 import subprocess
+import sys
 import sysconfig
 from typing import Optional
 import functools
@@ -44,6 +45,45 @@ from triton.backends.ascend.utils import (
 # Bind the already-imported utils module once so the launch hot path can write
 # TRITON_PROFILER_REGISTERED without a per-launch `import triton` + attribute walk.
 import triton.backends.ascend.utils as _ascend_utils
+
+
+def _npu_utils_debug_enabled():
+    env = os.getenv("TRITON_ASCEND_DEBUG_NPU_UTILS", "")
+    return env and env.lower() not in ("0", "false", "no", "off")
+
+
+def _npu_utils_debug_log(message):
+    if _npu_utils_debug_enabled():
+        print(f"[triton-ascend:npu_utils] {message}", file=sys.stderr, flush=True)
+
+
+def _npu_utils_debug_symbols(so_path):
+    if not _npu_utils_debug_enabled():
+        return
+    symbols = [
+        "triton_allocate_workspace_legacy",
+        "triton_allocate_sync_block_lock",
+        "triton_async_launch",
+        "triton_release_retained_tensor",
+    ]
+    output = ""
+    for cmd in (["nm", "-D", so_path], ["readelf", "-Ws", so_path]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            continue
+        if result.returncode == 0:
+            output = result.stdout
+            break
+        _npu_utils_debug_log(
+            f"symbol check command failed cmd={' '.join(cmd)} stderr={result.stderr.strip()}"
+        )
+    if not output:
+        _npu_utils_debug_log(f"symbol check unavailable path={so_path}")
+        return
+    status = ", ".join(f"{symbol}={symbol in output}" for symbol in symbols)
+    _npu_utils_debug_log(f"symbol status path={so_path} {status}")
+
 
 class NPUUtils(object):
     def __new__(cls):
@@ -77,14 +117,23 @@ class NPUUtils(object):
         cache = get_cache_manager(key)
         fname = "npu_utils.so"
         cache_path = cache.get_file(fname)
+        _npu_utils_debug_log(
+            f"cache lookup key={key} cache_dir={getattr(cache, 'cache_dir', None)} "
+            f"hit={cache_path is not None and os.path.exists(cache_path)} path={cache_path}"
+        )
         if cache_path is None or not os.path.exists(cache_path):
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_src_path = os.path.join(tmpdir, "npu_utils.cpp")
                 with open(tmp_src_path, "w") as f:
                     f.write(src)
+                _npu_utils_debug_log(f"building npu_utils src={tmp_src_path}")
                 so = _build_npu_ext("npu_utils", tmp_src_path)
+                _npu_utils_debug_log(f"built temporary npu_utils so={so}")
+                _npu_utils_debug_symbols(so)
                 with open(so, "rb") as f:
                     cache_path = cache.put(f.read(), fname, binary=True)
+                _npu_utils_debug_log(f"stored npu_utils cache path={cache_path}")
+        _npu_utils_debug_symbols(cache_path)
         return cache_path
 
     def _load_mod(self):
@@ -505,15 +554,35 @@ def generate_npu_wrapper_src(constants, signature, metadata):
 
     npu_utils_so_path = NPUUtils().get_so_path()
     cpp_npu_utils_dlopen = f"""
+#include <cstdlib>
+
 typedef void* (*triton_allocate_workspace_legacy_t)(uint64_t);
 typedef void* (*triton_allocate_sync_block_lock_t)(uint64_t, void*, void**);
 typedef void  (*triton_async_launch_t)(void*, const char*);
 typedef void  (*triton_release_retained_tensor_t)(void*);
 
+static const char* g_npu_utils_so_path = "{npu_utils_so_path}";
 static triton_allocate_workspace_legacy_t g_allocate_workspace_legacy = nullptr;
 static triton_allocate_sync_block_lock_t g_allocate_sync_block_lock = nullptr;
 static triton_async_launch_t g_async_launch = nullptr;
 static triton_release_retained_tensor_t g_release_retained_tensor = nullptr;
+
+static bool npu_utils_debug_enabled() {{
+    const char* env = std::getenv("TRITON_ASCEND_DEBUG_NPU_UTILS");
+    return env && env[0] && !(env[0] == '0' && env[1] == '\\0');
+}}
+
+static void* load_npu_utils_symbol(void* handle, const char* symbol) {{
+    dlerror();
+    void* ptr = dlsym(handle, symbol);
+    const char* err = dlerror();
+    if (npu_utils_debug_enabled()) {{
+        fprintf(stderr,
+                "[triton-ascend:npu_utils] dlsym path=%s symbol=%s ptr=%p err=%s\\n",
+                g_npu_utils_so_path, symbol, ptr, err ? err : "none");
+    }}
+    return ptr;
+}}
 
 static bool npu_utils_ready() {{
     return g_allocate_workspace_legacy &&
@@ -524,16 +593,27 @@ static bool npu_utils_ready() {{
 
 static void init_npu_utils() {{
     if (npu_utils_ready()) return;
-    const char* so_path = "{npu_utils_so_path}";
+    const char* so_path = g_npu_utils_so_path;
     void* handle = dlopen(so_path, RTLD_LAZY);
+    if (npu_utils_debug_enabled()) {{
+        fprintf(stderr, "[triton-ascend:npu_utils] dlopen path=%s handle=%p\\n", so_path, handle);
+    }}
     if (!handle) {{
         fprintf(stderr, "Error: dlopen %s failed: %s\\n", so_path, dlerror());
         return;
     }}
-    g_allocate_workspace_legacy = (triton_allocate_workspace_legacy_t)dlsym(handle, "triton_allocate_workspace_legacy");
-    g_allocate_sync_block_lock = (triton_allocate_sync_block_lock_t)dlsym(handle, "triton_allocate_sync_block_lock");
-    g_async_launch = (triton_async_launch_t)dlsym(handle, "triton_async_launch");
-    g_release_retained_tensor = (triton_release_retained_tensor_t)dlsym(handle, "triton_release_retained_tensor");
+    g_allocate_workspace_legacy = (triton_allocate_workspace_legacy_t)load_npu_utils_symbol(handle, "triton_allocate_workspace_legacy");
+    g_allocate_sync_block_lock = (triton_allocate_sync_block_lock_t)load_npu_utils_symbol(handle, "triton_allocate_sync_block_lock");
+    g_async_launch = (triton_async_launch_t)load_npu_utils_symbol(handle, "triton_async_launch");
+    g_release_retained_tensor = (triton_release_retained_tensor_t)load_npu_utils_symbol(handle, "triton_release_retained_tensor");
+    if (npu_utils_debug_enabled() && !npu_utils_ready()) {{
+        fprintf(stderr,
+                "[triton-ascend:npu_utils] symbol readiness workspace=%d sync=%d async=%d release=%d\\n",
+                g_allocate_workspace_legacy != nullptr,
+                g_allocate_sync_block_lock != nullptr,
+                g_async_launch != nullptr,
+                g_release_retained_tensor != nullptr);
+    }}
 }}
 
 static void release_npu_tensor_handle(void* handle) {{

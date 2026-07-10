@@ -24,8 +24,10 @@ import hashlib
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import sysconfig
 from pathlib import Path
 import logging
@@ -363,11 +365,35 @@ def _build_npu_ext(obj_name: str, header_or_src_path, src_path=None, *, kernel_l
 
     cc_cmd += ["-std=c++17", "-shared", "-fPIC", "-o", so_path]
 
+    debug_npu_utils = (
+        obj_name == "npu_utils" and
+        os.getenv("TRITON_ASCEND_DEBUG_NPU_UTILS", "").lower() not in ("", "0", "false", "no", "off")
+    )
+    if debug_npu_utils:
+        print(
+            f"[triton-ascend:npu_utils] build command: {shlex.join(cc_cmd)}",
+            file=sys.stderr,
+            flush=True,
+        )
+
     result = subprocess.run(cc_cmd, capture_output=True, text=True)
 
     if result.returncode == 0:
+        if debug_npu_utils:
+            print(
+                f"[triton-ascend:npu_utils] build success so={so_path}",
+                file=sys.stderr,
+                flush=True,
+            )
         return so_path
     else:
+        if debug_npu_utils:
+            print(
+                f"[triton-ascend:npu_utils] build failed returncode={result.returncode} "
+                f"stderr={result.stderr}",
+                file=sys.stderr,
+                flush=True,
+            )
         raise RuntimeError(f"Failed to compile {src_path}, error: {result.stderr},cmd={cc_cmd}")
 
 

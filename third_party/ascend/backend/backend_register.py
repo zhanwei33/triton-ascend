@@ -409,7 +409,7 @@ def async_launch(func):
 def async_launch(func):
     return f'''init_npu_utils();
    if (!g_async_launch) {{
-     fprintf(stderr, "Error: triton_async_launch is unavailable\\n");
+     fprintf(stderr, "Error: triton_async_launch is unavailable (npu_utils=%s)\\n", g_npu_utils_so_path);
      return;
    }}
    g_async_launch(static_cast<void*>(&{func}), name.c_str());'''
