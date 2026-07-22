@@ -83,6 +83,16 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_licm(pm)
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
+    if opt.enable_graph_optimize:
+        ascend.passes.ttir.add_graph_optimize(
+            pm,
+            rule_mask=opt.graph_optimize_rule_mask,
+            max_rewrites_per_function=opt.graph_optimize_max_rewrites_per_function,
+            ub_capacity_bytes=opt.graph_optimize_ub_capacity_bytes,
+            emit_remarks=opt.graph_optimize_emit_remarks,
+        )
+    passes.common.add_cse(pm)
+    passes.common.add_canonicalizer(pm)
     pm.run(mod)
     if opt.debug:
         dump_manager = get_dump_manager(metadata["hash"])
@@ -837,6 +847,11 @@ class NPUOptions:
     enable_persistent: bool = False
     optimize_epilogue: bool = False
     enable_fp_fusion: bool = True
+    enable_graph_optimize: bool = True
+    graph_optimize_rule_mask: int = 7
+    graph_optimize_max_rewrites_per_function: int = 64
+    graph_optimize_ub_capacity_bytes: int = 0
+    graph_optimize_emit_remarks: bool = False
     allow_fp8e4nv: bool = False
     auto_tile_and_bind_subblock: bool = True
     vf_merge_level: int = 0
@@ -932,6 +947,11 @@ class CPUOptions:
     enable_persistent: bool = False
     optimize_epilogue: bool = False
     enable_fp_fusion: bool = True
+    enable_graph_optimize: bool = True
+    graph_optimize_rule_mask: int = 7
+    graph_optimize_max_rewrites_per_function: int = 64
+    graph_optimize_ub_capacity_bytes: int = 0
+    graph_optimize_emit_remarks: bool = False
     allow_fp8e4nv: bool = False
     max_num_imprecise_acc_default: int = 0
     extern_libs: dict = None

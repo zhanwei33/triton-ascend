@@ -21,6 +21,7 @@
  */
 
 #include "TritonToGraph/ControlFlowGraphBuilder.h"
+#include "TritonToGraph/AliasAnalysis.h"
 #include "TritonToGraph/DataflowGraph.h"
 #include "TritonToGraph/TensorAnalyzer.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -84,7 +85,9 @@ void BuildCFGPass::runOnOperation() {
 
     // 构建 DataFlowGraph（包含 Memory SSA 分析）
     llvm::errs() << "  Building DataFlowGraph with Memory SSA...\n";
-    DataFlowGraph dataFlowGraph(*cfg);
+    AliasAnalysis aliasAnalysis;
+    aliasAnalysis.analyzePointerAliases(*cfg);
+    DataFlowGraph dataFlowGraph(*cfg, aliasAnalysis);
     dataFlowGraph.build();
 
     // === TensorAnalyzer 测试代码开始 ===
@@ -807,4 +810,3 @@ ControlFlowGraphBuilder::collectForCondBlocks(cfg::ControlFlowGraph &cfg) {
 
   return forCondBlocks;
 }
-

@@ -23,6 +23,8 @@
 #ifndef TRITON_TO_CFG_PASSES_H
 #define TRITON_TO_CFG_PASSES_H
 
+#include "TritonToGraph/GraphOptimization.h"
+
 #include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
 
@@ -34,6 +36,9 @@ namespace cfg {
 std::unique_ptr<OperationPass<mlir::ModuleOp>> createBuildCFGPass();
 
 // 注册所有 CFG 相关的 passes
+#define GEN_PASS_DECL_GRAPHOPTIMIZE
+#include "ascend/include/TritonToGraph/Passes.h.inc"
+
 #define GEN_PASS_REGISTRATION
 #include "ascend/include/TritonToGraph/Passes.h.inc"
 

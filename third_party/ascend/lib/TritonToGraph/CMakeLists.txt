@@ -5,6 +5,12 @@ add_triton_library(TritonToGraph
   DataflowGraph.cpp
   MemorySsaBuilder.cpp
   GraphAnalysis.cpp
+  GraphOptimizationContext.cpp
+  GraphOptimizationPass.cpp
+  PermutationAnalysis.cpp
+  Rules/LoadStoreTransposeRule.cpp
+  Rules/TransposePointwiseReorderRule.cpp
+  Rules/UBPreloadRule.cpp
   TensorAnalyzer.cpp
   SymValue.cpp
   SymbolicExecution.cpp
@@ -23,6 +29,7 @@ add_triton_library(TritonToGraph
   MLIRPass
   MLIRSCFDialect
   MLIRSupport
+  MLIRTensorDialect
   MLIRTransforms
   TritonIR
   TritonTransforms

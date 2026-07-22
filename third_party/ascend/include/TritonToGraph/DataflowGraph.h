@@ -214,12 +214,13 @@ public:
 // DataFlowGraph - 数据流图
 class DataFlowGraph {
 public:
-  explicit DataFlowGraph(ControlFlowGraph& cfg)
-      : cfg(cfg) {}
+  DataFlowGraph(ControlFlowGraph& cfg, AliasAnalysis& aliasAnalysis)
+      : cfg(cfg), aliasAnalysis(aliasAnalysis) {}
 
-  ~DataFlowGraph() = default;
+  ~DataFlowGraph();
 
-  // 构建完整的数据流信息
+  // Builds complete data-flow information once per DFG epoch. Subsequent calls
+  // or an unavailable AliasAnalysis borrow leave the graph unchanged.
   void build();
 
   // 查询Value的数据流信息（使用LLVM RTTI判断具体类型）
@@ -266,13 +267,13 @@ public:
 
 private:
   ControlFlowGraph& cfg;
+  AliasAnalysis& aliasAnalysis;
+
+  // The builder borrows this information, so it must outlive the builder.
+  DataFlowInfo dataFlowInfo;
 
   // 组件
-  std::unique_ptr<AliasAnalysis> aliasAnalysis;
   std::unique_ptr<MemorySSABuilder> memorySSABuilder;
-
-  // 数据流信息
-  DataFlowInfo dataFlowInfo;
 
   // 构建def-use图
   void buildDefUseGraph();

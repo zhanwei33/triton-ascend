@@ -19,11 +19,14 @@
 #include "ascend/include/TritonToHIVM/Passes.h"
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
+#include "ascend/include/TritonToGraph/GraphOptimization.h"
  #include "ascend/include/TritonAffinityOpt/Passes.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "ir.h" // TritonOpBuilder
 
+#include <cstdint>
+#include <limits>
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
@@ -352,6 +355,30 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
  	   
   m.def("add_dag_ssbuffer", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createDAGSSBufferPass());});
+
+  m.def("add_graph_optimize",
+        [](mlir::PassManager &pm, std::uint64_t ruleMask,
+           std::uint64_t maxRewritesPerFunction,
+           std::uint64_t ubCapacityBytes, bool emitRemarks) {
+          if (ruleMask > std::numeric_limits<std::uint8_t>::max())
+            throw py::value_error("rule_mask must fit in uint8_t");
+          if (maxRewritesPerFunction > std::numeric_limits<unsigned>::max())
+            throw py::value_error(
+                "max_rewrites_per_function must fit in unsigned");
+          if (ubCapacityBytes > std::numeric_limits<unsigned>::max())
+            throw py::value_error("ub_capacity_bytes must fit in unsigned");
+
+          mlir::triton::cfg::GraphOptimizationOptions options;
+          options.enabledRuleMask = static_cast<std::uint8_t>(ruleMask);
+          options.maxRewritesPerFunction =
+              static_cast<unsigned>(maxRewritesPerFunction);
+          options.ubCapacityBytes = static_cast<unsigned>(ubCapacityBytes);
+          options.emitRemarks = emitRemarks;
+          pm.addPass(mlir::triton::cfg::createGraphOptimizePass(options));
+        },
+        py::arg("pm"), py::arg("rule_mask") = 7,
+        py::arg("max_rewrites_per_function") = 64,
+        py::arg("ub_capacity_bytes") = 0, py::arg("emit_remarks") = false);
 }
 
 // Forward declaration for ascend_ir bindings (defined in ascend_ir.cc)

@@ -215,24 +215,42 @@ void DataFlowInfo::exportToJSON(llvm::raw_ostream& os) const {
 // DataFlowGraph
 //===----------------------------------------------------------------------===//
 
+DataFlowGraph::~DataFlowGraph() {
+  if (!memorySSABuilder)
+    return;
+
+  // MemorySSAInfo is stored on CFG instructions but refers to definitions
+  // owned by this graph's builder. Clear it before the builder is destroyed.
+  cfg.traverse([](BasicBlock& block) {
+    for (const auto& instruction : block.getInstructions()) {
+      instruction->getMemorySSAInfo().clear();
+    }
+  });
+  aliasAnalysis.endDataFlowGraphBorrow();
+}
+
 void DataFlowGraph::build() {
+  // Replacing the builder would free definitions still referenced by the CFG
+  // and DataFlowInfo. A DFG is immutable for its analysis epoch.
+  if (memorySSABuilder)
+    return;
+
   LLVM_DEBUG(llvm::dbgs() << "=== Starting Data Flow Graph Build ===" << "\n");
 
-  // 步骤1: 构建Alias分析
-  aliasAnalysis = std::make_unique<AliasAnalysis>();
-  aliasAnalysis->analyzePointerAliases(cfg);
-  //aliasAnalysis->print(llvm::outs());
+  // Alias analysis is built and owned by the caller so all graph analyses in
+  // one epoch share the same alias information.
 
-  LLVM_DEBUG(llvm::dbgs() << "Alias analysis complete" << "\n");
-
-  // 步骤2: 构建Memory SSA
-  memorySSABuilder = std::make_unique<MemorySSABuilder>(
-      cfg, *aliasAnalysis, dataFlowInfo);
+  // 步骤1: 构建Memory SSA
+  auto memorySsaBuilder = std::make_unique<MemorySSABuilder>(
+      cfg, aliasAnalysis, dataFlowInfo);
+  if (!aliasAnalysis.beginDataFlowGraphBorrow())
+    return;
+  memorySSABuilder = std::move(memorySsaBuilder);
   memorySSABuilder->build();
 
   LLVM_DEBUG(llvm::dbgs() << "Memory SSA build complete" << "\n");
 
-  // 步骤3: 构建def-use图
+  // 步骤2: 构建def-use图
   buildDefUseGraph();
 
   LLVM_DEBUG(llvm::dbgs()
