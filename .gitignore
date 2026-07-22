@@ -1,6 +1,7 @@
 # Triton builds
 build/
 build-*/
+.worktrees/
 
 # Triton Python module builds
 python/build/
