@@ -23,6 +23,7 @@
 #include "TritonToGraph/GraphOptimizationRule.h"
 #include "TritonToGraph/PermutationAnalysis.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -46,10 +47,12 @@ namespace {
 
 constexpr std::array<int32_t, 2> kSwapPermutation = {1, 0};
 
+using UnaryChain = SmallVector<Operation *, 8>;
+
 struct LoadStoreCandidate {
   triton::LoadOp load;
   Operation *loadOperation;
-  Operation *unaryOperation;
+  UnaryChain unaryChain;
   triton::StoreOp store;
   Operation *storeOperation;
   StaticAccess loadAccess;
@@ -71,8 +74,10 @@ bool isUnencodedStaticTensor(Value value) {
   return type && type.hasStaticShape() && !type.getEncoding();
 }
 
-bool isWhitelistedUnary(Operation *operation, Value input) {
-  if (!operation || !input || !isa<arith::NegFOp>(operation) ||
+bool isUnaryElementwisePermutationEquivariant(Operation *operation,
+                                              Value input) {
+  if (!operation || !input ||
+      !operation->hasTrait<OpTrait::Elementwise>() ||
       operation->getNumOperands() != 1 || operation->getNumResults() != 1 ||
       operation->getNumRegions() != 0 || operation->getOperand(0) != input ||
       !isMemoryEffectFree(operation))
@@ -183,21 +188,32 @@ std::optional<LoadStoreCandidate> matchCandidate(triton::LoadOp load) {
   if (!block || !loadedValue.hasOneUse())
     return std::nullopt;
 
-  Operation *unary = loadedValue.use_begin()->getOwner();
-  if (!hasOnlyExpectedUse(loadedValue, unary) ||
-      !isWhitelistedUnary(unary, loadedValue))
-    return std::nullopt;
+  UnaryChain unaryChain;
+  Value currentValue = loadedValue;
+  Operation *storeOperation = nullptr;
+  triton::StoreOp store;
+  while (true) {
+    if (!currentValue.hasOneUse())
+      return std::nullopt;
 
-  Value unaryResult = unary->getResult(0);
-  if (!unaryResult.hasOneUse())
-    return std::nullopt;
-  Operation *storeOperation = unaryResult.use_begin()->getOwner();
-  if (!hasOnlyExpectedUse(unaryResult, storeOperation))
-    return std::nullopt;
-  auto store = dyn_cast<triton::StoreOp>(storeOperation);
-  if (!store || store->getNumRegions() != 0 || store.getValue() != unaryResult ||
-      unary->getBlock() != block || store->getBlock() != block)
-    return std::nullopt;
+    Operation *user = currentValue.use_begin()->getOwner();
+    if (!hasOnlyExpectedUse(currentValue, user) || user->getBlock() != block)
+      return std::nullopt;
+
+    if (auto candidateStore = dyn_cast<triton::StoreOp>(user)) {
+      if (unaryChain.empty() || candidateStore->getNumRegions() != 0 ||
+          candidateStore.getValue() != currentValue)
+        return std::nullopt;
+      store = candidateStore;
+      storeOperation = user;
+      break;
+    }
+
+    if (!isUnaryElementwisePermutationEquivariant(user, currentValue))
+      return std::nullopt;
+    unaryChain.push_back(user);
+    currentValue = user->getResult(0);
+  }
 
   StaticAccessAnalysis accessAnalysis;
   StaticAccessProof loadProof = accessAnalysis.analyzeLoad(load);
@@ -229,8 +245,12 @@ std::optional<LoadStoreCandidate> matchCandidate(triton::LoadOp load) {
       containsExplicitTranspose(load.getOperation(), store.getOperation()))
     return std::nullopt;
 
-  return LoadStoreCandidate{load, load.getOperation(), unary, store,
-                            store.getOperation(), std::move(*loadProof.access),
+  return LoadStoreCandidate{load,
+                            load.getOperation(),
+                            std::move(unaryChain),
+                            store,
+                            storeOperation,
+                            std::move(*loadProof.access),
                             std::move(*storeProof.access)};
 }
 
@@ -373,7 +393,7 @@ class LoadStoreTransposePlan final : public RewritePlan {
 public:
   LoadStoreTransposePlan(LoadStoreCandidate candidate, unsigned epoch)
       : load(candidate.load), loadOperation(candidate.loadOperation),
-        unaryOperation(candidate.unaryOperation), store(candidate.store),
+        unaryChain(std::move(candidate.unaryChain)), store(candidate.store),
         storeOperation(candidate.storeOperation), epoch(epoch) {}
 
   GraphOptimizationRuleId getRuleId() const override {
@@ -397,7 +417,7 @@ public:
 
     std::optional<LoadStoreCandidate> current = matchCandidate(load);
     if (!current || current->loadOperation != loadOperation ||
-        current->unaryOperation != unaryOperation ||
+        !llvm::equal(current->unaryChain, unaryChain) ||
         current->storeOperation != storeOperation)
       return failure();
     return success();
@@ -406,7 +426,7 @@ public:
   LogicalResult apply(IRRewriter &rewriter) override {
     std::optional<LoadStoreCandidate> current = matchCandidate(load);
     if (!current || current->loadOperation != loadOperation ||
-        current->unaryOperation != unaryOperation ||
+        !llvm::equal(current->unaryChain, unaryChain) ||
         current->storeOperation != storeOperation)
       return failure();
 
@@ -470,7 +490,7 @@ public:
 private:
   triton::LoadOp load;
   Operation *loadOperation;
-  Operation *unaryOperation;
+  UnaryChain unaryChain;
   triton::StoreOp store;
   Operation *storeOperation;
   unsigned epoch;
