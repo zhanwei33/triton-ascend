@@ -68,14 +68,10 @@ namespace triton {
 
 enum class IndexMode : int { EVEN_MODE = 0, ODD_MODE = 1 };
 
-LogicalResult
-DeinterleaveStatusOptimization(triton::LoadOp op,
-                               triton::LoadOp::Adaptor adaptor,
-                               ConversionPatternRewriter &rewriter);
-
-LogicalResult DeinterleaveStatusWithMaskOptimization(
-    triton::LoadOp op, triton::LoadOp::Adaptor adaptor,
-    ConversionPatternRewriter &rewriter, MaskState &mstate, Value localMem);
+// Deinterleave is a pair optimization: only two stride-2 loads that read the
+// even and odd lanes of the same normalized source window are rewritten.
+// Unmatched loads retain their ordinary generic lowering.
+void DeinterleaveLoadPairOptimization(Operation *root);
 
 LogicalResult
 InterleaveStatusOptimization(SmallVector<Operation *> materializeVec);

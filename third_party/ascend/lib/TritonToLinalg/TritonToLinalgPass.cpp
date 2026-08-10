@@ -1098,6 +1098,12 @@ void TritonToLinalgPass::runOnOperation() {
     signalPassFailure();
   }
 
+  // Generic stride-2 load lowering retains enough source/view information to
+  // decide deinterleave only after both candidates are visible.  This avoids
+  // treating unrelated same-lane loads (for example +64 and +66) as two
+  // independent deinterleave operations.
+  DeinterleaveLoadPairOptimization(moduleOp.getOperation());
+
   // 7.1 Workaround: fold duplicated one-hot reconstruction emitted after
   // ArgMax lowering. The issue is not in triton::ReduceOp semantics themselves;
   // redundant value reconstruction is materialized later and can lower to

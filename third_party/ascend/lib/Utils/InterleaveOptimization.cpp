@@ -31,11 +31,13 @@
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
 
 #include "mlir/IR/Operation.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
@@ -177,6 +179,58 @@ normalizeDeinterleaveOffset(OpFoldResult originOffset) {
   return result;
 }
 
+// Conversion may duplicate a pure index expression while lowering two Triton
+// loads from the same program ID.  The resulting Values are distinct, e.g.
+// `%pid0 * 2` and `%pid1 * 2`, even though both casts originate from the same
+// scalar argument.  Permit that narrow structural equivalence here, but do
+// not try to prove arbitrary operation equivalence: unsupported expressions
+// stay distinct and therefore retain generic load lowering.
+static bool areEquivalentDeinterleaveBaseTerm(Value lhs, Value rhs,
+                                              unsigned depth = 0) {
+  constexpr unsigned kMaxStructuralDepth = 16;
+  if (lhs == rhs)
+    return true;
+  if (depth == kMaxStructuralDepth || lhs.getType() != rhs.getType())
+    return false;
+
+  auto lhsConstant = getConstantIntValue(lhs);
+  auto rhsConstant = getConstantIntValue(rhs);
+  if (lhsConstant || rhsConstant)
+    return lhsConstant && rhsConstant &&
+           lhsConstant.value() == rhsConstant.value();
+
+  if (auto lhsCast = lhs.getDefiningOp<arith::IndexCastOp>()) {
+    auto rhsCast = rhs.getDefiningOp<arith::IndexCastOp>();
+    return rhsCast && areEquivalentDeinterleaveBaseTerm(
+                          lhsCast.getIn(), rhsCast.getIn(), depth + 1);
+  }
+  if (auto lhsCast = lhs.getDefiningOp<arith::IndexCastUIOp>()) {
+    auto rhsCast = rhs.getDefiningOp<arith::IndexCastUIOp>();
+    return rhsCast && areEquivalentDeinterleaveBaseTerm(
+                          lhsCast.getIn(), rhsCast.getIn(), depth + 1);
+  }
+
+  auto areEquivalentCommutativeBinary = [&](auto lhsOp, auto rhsOp) {
+    if (!rhsOp || lhsOp->getAttrs() != rhsOp->getAttrs())
+      return false;
+    return (areEquivalentDeinterleaveBaseTerm(lhsOp.getLhs(), rhsOp.getLhs(),
+                                              depth + 1) &&
+            areEquivalentDeinterleaveBaseTerm(lhsOp.getRhs(), rhsOp.getRhs(),
+                                              depth + 1)) ||
+           (areEquivalentDeinterleaveBaseTerm(lhsOp.getLhs(), rhsOp.getRhs(),
+                                              depth + 1) &&
+            areEquivalentDeinterleaveBaseTerm(lhsOp.getRhs(), rhsOp.getLhs(),
+                                              depth + 1));
+  };
+  if (auto lhsAdd = lhs.getDefiningOp<arith::AddIOp>())
+    return areEquivalentCommutativeBinary(lhsAdd,
+                                          rhs.getDefiningOp<arith::AddIOp>());
+  if (auto lhsMul = lhs.getDefiningOp<arith::MulIOp>())
+    return areEquivalentCommutativeBinary(lhsMul,
+                                          rhs.getDefiningOp<arith::MulIOp>());
+  return false;
+}
+
 static bool hasEquivalentDeinterleaveBase(const DeinterleaveOffsetInfo &lhs,
                                           const DeinterleaveOffsetInfo &rhs) {
   if (lhs.baseConstant != rhs.baseConstant ||
@@ -189,7 +243,8 @@ static bool hasEquivalentDeinterleaveBase(const DeinterleaveOffsetInfo &lhs,
   for (Value lhsTerm : lhs.baseTerms) {
     bool found = false;
     for (auto [index, rhsTerm] : llvm::enumerate(rhs.baseTerms)) {
-      if (!matched[index] && lhsTerm == rhsTerm) {
+      if (!matched[index] &&
+          areEquivalentDeinterleaveBaseTerm(lhsTerm, rhsTerm)) {
         matched[index] = true;
         found = true;
         break;
@@ -221,202 +276,221 @@ materializeDeinterleaveBaseOffset(const DeinterleaveOffsetInfo &offsetInfo,
   return base;
 }
 
-LogicalResult
-DeinterleaveStatusOptimization(triton::LoadOp op,
-                               triton::LoadOp::Adaptor adaptor,
-                               ConversionPatternRewriter &rewriter) {
-  auto ptr = adaptor.getPtr();
-  if (auto reinterpretCast = ptr.getDefiningOp<memref::ReinterpretCastOp>()) {
-    auto loc = op.getLoc();
+struct DeinterleaveLoadCandidate {
+  bufferization::ToTensorOp toTensor;
+  memref::AllocOp alloc;
+  memref::CopyOp copy;
+  memref::ReinterpretCastOp reinterpretCast;
+  DeinterleaveOffsetInfo offsetInfo;
+};
 
-    // 1. Normalize the original view offset, then create the expanded cast.
-    auto originCastOffset = reinterpretCast.getConstifiedMixedOffset();
-    auto castSize = reinterpretCast.getConstifiedMixedSizes();
-    auto castStride = reinterpretCast.getConstifiedMixedStrides();
-    // Actually, `castSize` is always constant value as `MemRefType` result
-    if (auto lastDimSize = getConstantIntValue(castSize.back())) {
-      castSize.back() = rewriter.getIndexAttr(lastDimSize.value() * 2);
-    } else {
+// The generic unmasked load lowering has exactly this local chain:
+//
+//   reinterpret_cast(stride=2) -> memref.copy -> alloc -> to_tensor
+//
+// Do not recognize looser forms here.  In particular, a shared alloc, a fill,
+// or a subview belongs to another lowering contract and must stay generic.
+static FailureOr<DeinterleaveLoadCandidate>
+parseDeinterleaveLoadCandidate(bufferization::ToTensorOp toTensor) {
+  Value allocValue = toTensor->getOperand(0);
+  auto alloc = allocValue.getDefiningOp<memref::AllocOp>();
+  if (!alloc)
+    return failure();
+
+  memref::CopyOp copy = nullptr;
+  for (Operation *user : allocValue.getUsers()) {
+    if (user == toTensor.getOperation())
+      continue;
+    auto candidateCopy = dyn_cast<memref::CopyOp>(user);
+    if (!candidateCopy || candidateCopy.getTarget() != allocValue || copy)
       return failure();
-    }
-    // Last element of castStride is also constant value as prerequisite
-    // is that last dimension stride of casted memref type is always 2.
-    castStride.back() = rewriter.getIndexAttr(1);
-    auto offsetInfo = normalizeDeinterleaveOffset(originCastOffset);
-    if (failed(offsetInfo))
-      return failure();
-    OpFoldResult castOffset =
-        materializeDeinterleaveBaseOffset(*offsetInfo, rewriter, loc);
-    auto srcType =
-        expandInterleaveMemRefType(reinterpretCast.getType(), castOffset);
-    auto newCastOp = rewriter.create<memref::ReinterpretCastOp>(
-        loc, srcType, reinterpretCast.getViewSource(), castOffset, castSize,
-        castStride);
-
-    // 3. Create new memref allocOp
-    auto newAllocOp = rewriter.create<memref::AllocOp>(
-        loc, MemRefType::get(srcType.getShape(), srcType.getElementType()));
-
-    // 4. Implement memref copy and bufferization back to tensor
-    rewriter.create<memref::CopyOp>(loc, newCastOp.getResult(), newAllocOp);
-    Value newTensor = rewriter.create<bufferization::ToTensorOp>(
-        loc,
-        RankedTensorType::get(srcType.getShape(), srcType.getElementType()),
-        newAllocOp, true /* restrict */, true /* writable */);
-
-    // 5. Implement tensor extract_slice to represent deinterleave
-    // Here use `castOffset` to determine whether even index deinterleave or
-    // odd index.
-    SmallVector<OpFoldResult> extractOffsets(srcType.getRank(),
-                                             rewriter.getIndexAttr(0));
-    SmallVector<OpFoldResult> extractStrides(srcType.getRank(),
-                                             rewriter.getIndexAttr(1));
-    SmallVector<OpFoldResult> extractSizes = llvm::to_vector(
-        llvm::map_range(srcType.getShape(), [&](int64_t dim) -> OpFoldResult {
-          return rewriter.getIndexAttr(dim);
-        }));
-
-    // Adjust extract_slice shape
-    switch (offsetInfo->indexMode) {
-    case IndexMode::EVEN_MODE:
-      extractOffsets.back() = rewriter.getIndexAttr(0);
-      break;
-    case IndexMode::ODD_MODE:
-      extractOffsets.back() = rewriter.getIndexAttr(1);
-      break;
-    }
-    extractStrides.back() = rewriter.getIndexAttr(2);
-    extractSizes.back() = rewriter.getIndexAttr(srcType.getShape().back() / 2);
-
-    Value deinterleaveSlice = rewriter.create<tensor::ExtractSliceOp>(
-        loc, newTensor, extractOffsets, extractSizes, extractStrides);
-
-    rewriter.replaceOp(op, deinterleaveSlice);
-    return success();
+    copy = candidateCopy;
   }
+  if (!copy)
+    return failure();
 
-  return failure();
+  auto reinterpretCast =
+      copy.getSource().getDefiningOp<memref::ReinterpretCastOp>();
+  if (!reinterpretCast || copy.getSource() != reinterpretCast.getResult())
+    return failure();
+
+  MemRefType sourceType = reinterpretCast.getType();
+  if (sourceType.getRank() == 0 ||
+      sourceType.getShape().back() == ShapedType::kDynamic ||
+      sourceType.getShape().back() % 2 != 0)
+    return failure();
+  auto stridesAndOffset = sourceType.getStridesAndOffset();
+  if (stridesAndOffset.first.back() != 2)
+    return failure();
+
+  auto offsetInfo =
+      normalizeDeinterleaveOffset(reinterpretCast.getConstifiedMixedOffset());
+  if (failed(offsetInfo))
+    return failure();
+
+  return DeinterleaveLoadCandidate{toTensor, alloc, copy, reinterpretCast,
+                                   std::move(*offsetInfo)};
 }
 
-LogicalResult DeinterleaveStatusWithMaskOptimization(
-    triton::LoadOp op, triton::LoadOp::Adaptor adaptor,
-    ConversionPatternRewriter &rewriter, MaskState &mstate, Value localMem) {
-  auto ptr = adaptor.getPtr();
-  if (auto reinterpretCast = ptr.getDefiningOp<memref::ReinterpretCastOp>()) {
-    auto loc = op.getLoc();
+static bool isBetweenCopiesMemorySafe(Operation *first, Operation *second) {
+  if (first->getBlock() != second->getBlock() ||
+      !first->isBeforeInBlock(second))
+    return false;
 
-    // 1. Normalize the original view offset, then create the expanded cast.
-    auto originCastOffset = reinterpretCast.getConstifiedMixedOffset();
-    auto castSize = reinterpretCast.getConstifiedMixedSizes();
-    auto castStride = reinterpretCast.getConstifiedMixedStrides();
-
-    if (auto lastDimSize = getConstantIntValue(castSize.back())) {
-      castSize.back() = rewriter.getIndexAttr(lastDimSize.value() * 2);
-    } else {
-      return failure();
+  bool isBetween = false;
+  for (Operation &op : *first->getBlock()) {
+    if (&op == first) {
+      isBetween = true;
+      continue;
     }
-    castStride.back() = rewriter.getIndexAttr(1);
-    auto offsetInfo = normalizeDeinterleaveOffset(originCastOffset);
-    if (failed(offsetInfo))
-      return failure();
-    OpFoldResult castOffset =
-        materializeDeinterleaveBaseOffset(*offsetInfo, rewriter, loc);
-    auto srcType =
-        expandInterleaveMemRefType(reinterpretCast.getType(), castOffset);
+    if (&op == second)
+      return true;
+    if (!isBetween)
+      continue;
 
-    auto newCastOp = rewriter.create<memref::ReinterpretCastOp>(
-        loc, srcType, reinterpretCast.getViewSource(), castOffset, castSize,
-        castStride);
-
-    // 3. Create new memref allocOp
-    // To reuse existing linalg::fill, here need to change insertion point
-    auto savedInsertPoint = rewriter.saveInsertionPoint();
-    rewriter.setInsertionPointAfterValue(localMem);
-    auto newAllocOp = rewriter.create<memref::AllocOp>(
-        loc, MemRefType::get(srcType.getShape(), srcType.getElementType()));
-    rewriter.restoreInsertionPoint(savedInsertPoint);
-
-    // 4. Broadcast other value by linalg.fill if necessary
-    auto other = op.getOther();
-    // While deinterleave optimization will just adjust last dimension info
-    // and origin mask state wouldn't involve last dimension. Therefore in
-    // current `scf.if + linalg.fill` combination, condition of `if` could be
-    // kept and just replace linalg.fill'
-    if (other) {
-      assert(localMem.hasOneUse() &&
-             llvm::isa<linalg::FillOp>(*(localMem.getUsers().begin())));
-      auto originFillOp =
-          llvm::dyn_cast<linalg::FillOp>(*(localMem.getUsers().begin()));
-
-      assert(llvm::isa<scf::IfOp>(originFillOp->getParentOp()));
-      auto ifOp = llvm::dyn_cast<scf::IfOp>(originFillOp->getParentOp());
-
-      auto newFillOp = ifOp.getThenBodyBuilder().create<linalg::FillOp>(
-          originFillOp.getLoc(), originFillOp.getInputs(),
-          ValueRange{newAllocOp});
-      rewriter.replaceOp(originFillOp, newFillOp);
-    }
-
-    // 5. Implement new subview, memref copy and bufferization back to tensor
-    SmallVector<OpFoldResult> subviewStrides(srcType.getRank(),
-                                             rewriter.getIndexAttr(1));
-    SmallVector<OpFoldResult> subviewOffsets = mstate.offsets;
-    SmallVector<OpFoldResult> subviewSizes = mstate.dims;
-    // Just adjust last dimension size to double
-    std::optional<int64_t> originSubviewLastDim =
-        getConstantIntValue(subviewSizes.back());
-    assert(originSubviewLastDim.has_value());
-    subviewSizes.back() =
-        rewriter.getIndexAttr(originSubviewLastDim.value() * 2);
-
-    auto argSubviewType = memref::SubViewOp::inferResultType(
-        srcType, subviewOffsets, subviewSizes, subviewStrides);
-    // alloca subview type doesn't carry layout attribute
-    auto allocSubviewType = memref::SubViewOp::inferResultType(
-        newAllocOp.getType(), subviewOffsets, subviewSizes, subviewStrides);
-
-    memref::SubViewOp srcSubview = rewriter.create<memref::SubViewOp>(
-        loc, llvm::cast<MemRefType>(argSubviewType), newCastOp, subviewOffsets,
-        subviewSizes, subviewStrides);
-    memref::SubViewOp dstSubview = rewriter.create<memref::SubViewOp>(
-        loc, llvm::cast<MemRefType>(allocSubviewType), newAllocOp,
-        subviewOffsets, subviewSizes, subviewStrides);
-    rewriter.create<memref::CopyOp>(loc, srcSubview, dstSubview);
-    Value newTensor = rewriter.create<bufferization::ToTensorOp>(
-        loc,
-        RankedTensorType::get(srcType.getShape(), srcType.getElementType()),
-        newAllocOp, true /* restrict */, true /* writable */);
-
-    // 6. Implement tensor extract_slice to represent deinterleave
-    // Here use `castOffset` to determine whether even index deinterleave or
-    // odd index.
-    SmallVector<OpFoldResult> extractOffsets(srcType.getRank(),
-                                             rewriter.getIndexAttr(0));
-    SmallVector<OpFoldResult> extractStrides(srcType.getRank(),
-                                             rewriter.getIndexAttr(1));
-    SmallVector<OpFoldResult> extractSizes = llvm::to_vector(
-        llvm::map_range(srcType.getShape(), [&](int64_t dim) -> OpFoldResult {
-          return rewriter.getIndexAttr(dim);
-        }));
-
-    switch (offsetInfo->indexMode) {
-    case IndexMode::EVEN_MODE:
-      extractOffsets.back() = rewriter.getIndexAttr(0);
-      break;
-    case IndexMode::ODD_MODE:
-      extractOffsets.back() = rewriter.getIndexAttr(1);
-      break;
-    }
-    extractStrides.back() = rewriter.getIndexAttr(2);
-    extractSizes.back() = rewriter.getIndexAttr(srcType.getShape().back() / 2);
-
-    Value deinterleaveSlice = rewriter.create<tensor::ExtractSliceOp>(
-        loc, newTensor, extractOffsets, extractSizes, extractStrides);
-
-    rewriter.replaceOp(op, deinterleaveSlice);
-    return success();
+    // The second generic load allocates its private destination between the
+    // two copies.  Allocation and to_tensor do not alter the source window;
+    // every other memory-affecting or unknown operation is a barrier.
+    if (isa<memref::AllocOp, bufferization::ToTensorOp>(&op))
+      continue;
+    if (!isMemoryEffectFree(&op))
+      return false;
   }
-  return failure();
+  return false;
+}
+
+static bool arePairableDeinterleaveLoads(DeinterleaveLoadCandidate &first,
+                                         DeinterleaveLoadCandidate &second) {
+  if (first.reinterpretCast.getViewSource() !=
+          second.reinterpretCast.getViewSource() ||
+      first.toTensor.getResult().getType() !=
+          second.toTensor.getResult().getType() ||
+      !isEqualConstantIntOrValueArray(
+          first.reinterpretCast.getConstifiedMixedSizes(),
+          second.reinterpretCast.getConstifiedMixedSizes()) ||
+      !isEqualConstantIntOrValueArray(
+          first.reinterpretCast.getConstifiedMixedStrides(),
+          second.reinterpretCast.getConstifiedMixedStrides()) ||
+      !hasEquivalentDeinterleaveBase(first.offsetInfo, second.offsetInfo) ||
+      first.offsetInfo.indexMode == second.offsetInfo.indexMode)
+    return false;
+
+  return isBetweenCopiesMemorySafe(first.copy, second.copy) ||
+         isBetweenCopiesMemorySafe(second.copy, first.copy);
+}
+
+static Value createDeinterleaveSlice(Value source, MemRefType sourceType,
+                                     IndexMode indexMode, OpBuilder &builder,
+                                     Location loc) {
+  SmallVector<OpFoldResult> offsets(sourceType.getRank(),
+                                    builder.getIndexAttr(0));
+  SmallVector<OpFoldResult> strides(sourceType.getRank(),
+                                    builder.getIndexAttr(1));
+  SmallVector<OpFoldResult> sizes = llvm::to_vector(
+      llvm::map_range(sourceType.getShape(), [&](int64_t dim) -> OpFoldResult {
+        return builder.getIndexAttr(dim);
+      }));
+  offsets.back() =
+      builder.getIndexAttr(indexMode == IndexMode::ODD_MODE ? 1 : 0);
+  strides.back() = builder.getIndexAttr(2);
+  sizes.back() = builder.getIndexAttr(sourceType.getShape().back() / 2);
+  return builder
+      .create<tensor::ExtractSliceOp>(loc, source, offsets, sizes, strides)
+      .getResult();
+}
+
+static LogicalResult
+optimizeDeinterleaveLoadPair(DeinterleaveLoadCandidate &lhs,
+                             DeinterleaveLoadCandidate &rhs) {
+  if (!arePairableDeinterleaveLoads(lhs, rhs))
+    return failure();
+
+  DeinterleaveLoadCandidate *first = &lhs;
+  DeinterleaveLoadCandidate *second = &rhs;
+  if (second->copy->isBeforeInBlock(first->copy))
+    std::swap(first, second);
+
+  OpBuilder builder(first->copy);
+  Location loc = first->copy.getLoc();
+  auto castSizes = first->reinterpretCast.getConstifiedMixedSizes();
+  auto castStrides = first->reinterpretCast.getConstifiedMixedStrides();
+  auto lastDim = getConstantIntValue(castSizes.back());
+  if (!lastDim)
+    return failure();
+  castSizes.back() = builder.getIndexAttr(lastDim.value() * 2);
+  castStrides.back() = builder.getIndexAttr(1);
+
+  OpFoldResult baseOffset =
+      materializeDeinterleaveBaseOffset(first->offsetInfo, builder, loc);
+  MemRefType expandedType =
+      expandInterleaveMemRefType(first->reinterpretCast.getType(), baseOffset);
+  auto expandedCast = builder.create<memref::ReinterpretCastOp>(
+      loc, expandedType, first->reinterpretCast.getViewSource(), baseOffset,
+      castSizes, castStrides);
+  auto expandedAlloc = builder.create<memref::AllocOp>(
+      loc,
+      MemRefType::get(expandedType.getShape(), expandedType.getElementType()));
+  builder.create<memref::CopyOp>(loc, expandedCast, expandedAlloc);
+  auto expandedTensor = builder.create<bufferization::ToTensorOp>(
+      loc,
+      RankedTensorType::get(expandedType.getShape(),
+                            expandedType.getElementType()),
+      expandedAlloc, true /* restrict */, true /* writable */);
+
+  Value firstSlice = createDeinterleaveSlice(
+      expandedTensor, expandedType, first->offsetInfo.indexMode, builder, loc);
+  Value secondSlice = createDeinterleaveSlice(
+      expandedTensor, expandedType, second->offsetInfo.indexMode, builder, loc);
+  first->toTensor.getResult().replaceAllUsesWith(firstSlice);
+  second->toTensor.getResult().replaceAllUsesWith(secondSlice);
+
+  first->toTensor->erase();
+  second->toTensor->erase();
+  first->copy->erase();
+  second->copy->erase();
+  first->alloc->erase();
+  second->alloc->erase();
+
+  if (first->reinterpretCast == second->reinterpretCast) {
+    if (first->reinterpretCast->use_empty())
+      first->reinterpretCast->erase();
+  } else {
+    if (first->reinterpretCast->use_empty())
+      first->reinterpretCast->erase();
+    if (second->reinterpretCast->use_empty())
+      second->reinterpretCast->erase();
+  }
+  return success();
+}
+
+void DeinterleaveLoadPairOptimization(Operation *root) {
+  llvm::DenseMap<Value, SmallVector<DeinterleaveLoadCandidate>> candidates;
+  root->walk([&](bufferization::ToTensorOp toTensor) {
+    auto candidate = parseDeinterleaveLoadCandidate(toTensor);
+    if (succeeded(candidate)) {
+      candidates[candidate->reinterpretCast.getViewSource()].push_back(
+          std::move(*candidate));
+    }
+  });
+
+  for (auto &entry : candidates) {
+    auto &candidateVec = entry.second;
+    SmallVector<bool> consumed(candidateVec.size(), false);
+    for (size_t first = 0; first < candidateVec.size(); ++first) {
+      if (consumed[first])
+        continue;
+      for (size_t second = first + 1; second < candidateVec.size(); ++second) {
+        if (consumed[second])
+          continue;
+        if (succeeded(optimizeDeinterleaveLoadPair(candidateVec[first],
+                                                   candidateVec[second]))) {
+          consumed[first] = true;
+          consumed[second] = true;
+          break;
+        }
+      }
+    }
+  }
 }
 
 LogicalResult

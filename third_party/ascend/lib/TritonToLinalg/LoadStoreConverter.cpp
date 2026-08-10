@@ -442,13 +442,10 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
       op->emitError("meeting unexpected UCC in LoadConverter!");
       return failure();
     } else {
-      // If last dimension stride equals 2, try deinterleave optimization.
-      auto [ptrStrides, ptrOffsets] = memRefType.getStridesAndOffset();
-      if (ptrStrides.back() == 2 && (memRefShape.back() % 2 == 0) &&
-          mlir::triton::DeinterleaveStatusOptimization(op, adaptor, rewriter)
-              .succeeded()) {
-        return success();
-      }
+      // Deinterleave is selected after conversion, when both same-source load
+      // candidates are available for an EVEN/ODD pairing decision.  Keep this
+      // load generic here so unmatched stride-2 accesses do not each expand
+      // into an independent contiguous copy.
       auto copyOp = rewriter.create<memref::CopyOp>(loc, ptr, allocOp);
       propagateWasBoolToInt8Attr(op.getOperation(), copyOp.getOperation(),
                                  rewriter);
@@ -470,6 +467,9 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                                     rewriter);
   }
 
+  // Keep masked stride-2 loads on the generic path until a pair matcher can
+  // also prove equivalent mask/other contracts. A single masked load must not
+  // independently select deinterleave.
   MaskState mstate;
   auto isContMask = mstate.parse(mask, loc, rewriter);
   if (isContMask.failed()) {
@@ -486,24 +486,6 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
 
     fillTensorWithOtherForMaskScenario(scalarOther, allocOp, mstate.dims,
                                        rewriter);
-  }
-
-  // To enable deinterleave optimization with mask load, mask state along last
-  // dimension couldn't be split, which means `dims.back()` must be equal to
-  // origin type last dimension constant size and `offsets.back()` must be 0.
-  //
-  // The basis is that last dimension range comparison would generate
-  // unaccepted discontinuous mask.
-  if (mstate.getRank() == memRefType.getRank() &&
-      isConstantIntValue(mstate.offsets.back(), 0) &&
-      isConstantIntValue(mstate.dims.back(), memRefType.getShape().back())) {
-    auto [ptrStrides, ptrOffsets] = memRefType.getStridesAndOffset();
-    if (ptrStrides.back() == 2 && (memRefType.getShape().back() % 2 == 0) &&
-        DeinterleaveStatusWithMaskOptimization(op, adaptor, rewriter, mstate,
-                                               allocOp)
-            .succeeded()) {
-      return success();
-    }
   }
 
   if (auto unrealizedCastOp = ptr.getDefiningOp<UnrealizedConversionCastOp>()) {

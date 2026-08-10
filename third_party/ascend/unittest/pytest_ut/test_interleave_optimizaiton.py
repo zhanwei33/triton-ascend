@@ -60,6 +60,34 @@ def triton_interleave_load(q_ptr, k_ptr, head_dim_half: tl.constexpr, bias: tl.c
 
 
 @triton.jit
+def triton_interleave_load_runtime_bias(q_ptr, k_ptr, bias, head_dim_half: tl.constexpr):
+    d_indices = tl.program_id(0) + tl.arange(0, head_dim_half)
+    q_base = q_ptr + bias
+    q_real = tl.load(q_base + d_indices * 2)
+    q_imag = tl.load(q_base + d_indices * 2 + 1)
+    tl.store(k_ptr + d_indices, q_real)
+    tl.store(k_ptr + d_indices + head_dim_half, -q_imag)
+
+
+@triton.jit
+def triton_deinterleave_same_lane_static_load(q_ptr, out_ptr, head_dim_half: tl.constexpr):
+    d_indices = tl.program_id(0) + tl.arange(0, head_dim_half)
+    first = tl.load(q_ptr + d_indices * 2 + 64)
+    second = tl.load(q_ptr + d_indices * 2 + 66)
+    tl.store(out_ptr + d_indices, first)
+    tl.store(out_ptr + d_indices + head_dim_half, second)
+
+
+@triton.jit
+def triton_deinterleave_complementary_static_load(q_ptr, out_ptr, head_dim_half: tl.constexpr):
+    d_indices = tl.program_id(0) + tl.arange(0, head_dim_half)
+    even_lane = tl.load(q_ptr + d_indices * 2 + 64)
+    odd_lane = tl.load(q_ptr + d_indices * 2 + 65)
+    tl.store(out_ptr + d_indices, even_lane)
+    tl.store(out_ptr + d_indices + head_dim_half, odd_lane)
+
+
+@triton.jit
 def triton_interleave_load_with_mask(q_ptr, k_ptr, head_dim_half: tl.constexpr, bias: tl.constexpr,
                                      numel: tl.constexpr):
     d_indices = tl.program_id(0) + tl.arange(0, head_dim_half)
@@ -101,6 +129,53 @@ def test_interleave(para_type, data_type, head_dim_half, bias):
     triton_interleave_load[(1, )](q, k, head_dim_half, bias)
     k_ref = torch_interleave_load(q, k_ref, head_dim_half, bias)
     assert torch.allclose(k, k_ref)
+
+
+def test_interleave_runtime_bias_uses_deinterleave():
+    head_dim_half = 16
+    bias = 64
+    q = torch.randn((bias + head_dim_half * 2, ), dtype=torch.float32).npu()
+    k = torch.zeros((head_dim_half * 2, ), dtype=torch.float32).npu()
+
+    kernel = triton_interleave_load_runtime_bias[(1, )](q, k, bias, head_dim_half)
+
+    expected = torch.cat((q[bias::2][:head_dim_half], -q[bias + 1::2][:head_dim_half]))
+    assert torch.allclose(k, expected)
+    # The dynamic `bias` is an index SSA value rather than a tl.constexpr
+    # attribute. B and B + 1 form a complementary pair, so one expanded copy
+    # supplies the two tensor.extract_slice lane views.
+    assert kernel.asm['ttadapter'].count('tensor.extract_slice') == 2
+    assert kernel.asm['ttadapter'].count('memref.copy') == 1
+
+
+def test_interleave_same_lane_static_offsets_fall_back():
+    head_dim_half = 16
+    q = torch.randn((64 + head_dim_half * 2 + 2, ), dtype=torch.float32).npu()
+    out = torch.empty((head_dim_half * 2, ), dtype=torch.float32).npu()
+    expected = torch.cat((q[64::2][:head_dim_half], q[66::2][:head_dim_half]))
+
+    kernel = triton_deinterleave_same_lane_static_load[(1, )](q, out, head_dim_half)
+
+    assert torch.allclose(out, expected)
+    # 64 and 66 normalize to distinct EVEN bases, so the load pair must remain
+    # two ordinary stride-2 copies rather than two independent deinterleaves.
+    assert 'tensor.extract_slice' not in kernel.asm['ttadapter']
+    assert kernel.asm['ttadapter'].count('memref.copy') >= 2
+
+
+def test_interleave_complementary_static_offsets_use_deinterleave():
+    head_dim_half = 16
+    q = torch.randn((64 + head_dim_half * 2, ), dtype=torch.float32).npu()
+    out = torch.empty((head_dim_half * 2, ), dtype=torch.float32).npu()
+    expected = torch.cat((q[64::2][:head_dim_half], q[65::2][:head_dim_half]))
+
+    kernel = triton_deinterleave_complementary_static_load[(1, )](q, out, head_dim_half)
+
+    assert torch.allclose(out, expected)
+    # 64/65 share normalized base 64 and select the EVEN/ODD lanes, so one
+    # expanded copy is materialized and both original values become slices.
+    assert kernel.asm['ttadapter'].count('tensor.extract_slice') == 2
+    assert kernel.asm['ttadapter'].count('memref.copy') == 1
 
 
 @pytest.mark.parametrize('para_type,data_type,head_dim_half,bias,numel', [
