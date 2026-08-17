@@ -205,6 +205,30 @@ def fused_swiglu_bwd_b_graph_optimize_kernel(
     tl.store(db_fc_ptr + col_off, tl.sum(sum_b_fc, 1), mask=col_off < N)
 
 
+@triton.jit
+def transpose_pointwise_reorder_e2e_kernel(a_ptr, b_ptr, output_ptr, BLOCK: tl.constexpr):
+    """Runtime positive case: tt.trans -> fp32-to-fp16 -> tt.dot."""
+    row = tl.arange(0, BLOCK)[:, None]
+    col = tl.arange(0, BLOCK)[None, :]
+    a = tl.load(a_ptr + row * BLOCK + col)
+    b = tl.load(b_ptr + row * BLOCK + col)
+    transposed_a = tl.trans(a)
+    dot = tl.dot(transposed_a.to(tl.float16), b)
+    tl.store(output_ptr + row * BLOCK + col, dot)
+
+
+@triton.jit
+def store_coalescing_e2e_kernel(source_ptr, scale_ptr, output_ptr, HEAD_DIM: tl.constexpr):
+    """Runtime positive case: two adjacent bf16 stores need a 256-byte UB plan."""
+    first_offsets = tl.arange(0, HEAD_DIM)
+    second_offsets = tl.arange(HEAD_DIM, 2 * HEAD_DIM)
+    scale = tl.load(scale_ptr)
+    first = (tl.load(source_ptr + first_offsets).to(tl.float32) * scale).to(tl.bfloat16)
+    second = (tl.load(source_ptr + second_offsets).to(tl.float32) * scale).to(tl.bfloat16)
+    tl.store(output_ptr + first_offsets, first)
+    tl.store(output_ptr + second_offsets, second)
+
+
 def make_ast_ttir(options):
     source = ASTSource(
         graph_optimize_kernel,
@@ -484,6 +508,125 @@ def _require_npu():
     if not hasattr(torch, "npu") or not torch.npu.is_available():
         pytest.skip("Ascend NPU is unavailable")
     return torch
+
+
+def _assert_transpose_before_dot(ttir, *, trans_before_cast):
+    """Verify the runtime kernel's single trans/cast/dot chain, not just output."""
+    trans = ttir.index("tt.trans")
+    cast = ttir.index("arith.truncf")
+    dot = ttir.index("tt.dot")
+    if trans_before_cast:
+        assert trans < cast < dot
+    else:
+        assert cast < trans < dot
+
+
+def test_transpose_pointwise_reorder_e2e(monkeypatch, tmp_path):
+    """Rule 2 must hit a launched dot kernel and preserve its result.
+
+    The off/rule2/default matrix isolates the rule, checks that it moved the
+    transpose through the type cast, and compares actual NPU output.  The
+    structural assertion prevents a numerical pass caused by rule 2 not
+    matching at all from being accepted as coverage.
+    """
+    torch = _require_npu()
+    monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")
+    block = 16
+    torch.manual_seed(20260817)
+    a = torch.randn((block, block), dtype=torch.float32, device="npu")
+    b = torch.randn((block, block), dtype=torch.float16, device="npu")
+    modes = {
+        "off": {"enable_graph_optimize": False},
+        "rule2": {"enable_graph_optimize": True, "graph_optimize_rule_mask": 2},
+        "default": {},
+    }
+    outputs = {}
+    ttirs = {}
+
+    for mode, graph_options in modes.items():
+        transpose_pointwise_reorder_e2e_kernel.device_caches.clear()
+        output = torch.empty((block, block), dtype=torch.float32, device="npu")
+        compiled = transpose_pointwise_reorder_e2e_kernel[(1, )](
+            a,
+            b,
+            output,
+            BLOCK=block,
+            **graph_options,
+        )
+        torch.npu.synchronize()
+        assert torch.isfinite(output).all().item()
+        ttir = compiled.asm["ttir"]
+        assert_ttir_text_reparseable(ttir, tmp_path, f"transpose-pointwise-e2e-{mode}")
+        outputs[mode] = output.cpu()
+        ttirs[mode] = ttir
+
+    torch.testing.assert_close(outputs["rule2"], outputs["off"], rtol=0, atol=0)
+    torch.testing.assert_close(outputs["default"], outputs["off"], rtol=0, atol=0)
+    _assert_transpose_before_dot(ttirs["off"], trans_before_cast=True)
+    _assert_transpose_before_dot(ttirs["rule2"], trans_before_cast=False)
+    _assert_transpose_before_dot(ttirs["default"], trans_before_cast=False)
+
+
+def test_store_coalescing_e2e(monkeypatch, tmp_path):
+    """Rule 4 must coalesce an executing K/V-style pair of bf16 stores safely."""
+    torch = _require_npu()
+    monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")
+    head_dim = 64
+    sentinel = -17.0
+    source = torch.arange(1, 2 * head_dim + 1, dtype=torch.int32, device="npu").to(torch.uint8)
+    scale = torch.tensor([0.125], dtype=torch.float32, device="npu")
+    expected = (source.cpu().to(torch.float32) * 0.125).to(torch.bfloat16)
+    modes = {
+        "off": {"enable_graph_optimize": False},
+        "cap0": {
+            "enable_graph_optimize": True,
+            "graph_optimize_rule_mask": 4,
+            "graph_optimize_ub_capacity_bytes": 0,
+        },
+        "cap255": {
+            "enable_graph_optimize": True,
+            "graph_optimize_rule_mask": 4,
+            "graph_optimize_ub_capacity_bytes": 255,
+        },
+        "rule4": {
+            "enable_graph_optimize": True,
+            "graph_optimize_rule_mask": 4,
+            "graph_optimize_ub_capacity_bytes": 256,
+        },
+        "default": {},
+    }
+    stats = {}
+
+    for mode, graph_options in modes.items():
+        store_coalescing_e2e_kernel.device_caches.clear()
+        output = torch.full((4 * head_dim, ), sentinel, dtype=torch.bfloat16, device="npu")
+        compiled = store_coalescing_e2e_kernel[(1, )](
+            source,
+            scale,
+            output[2 * head_dim:],
+            HEAD_DIM=head_dim,
+            **graph_options,
+        )
+        torch.npu.synchronize()
+        torch.testing.assert_close(output[2 * head_dim:].cpu(), expected, rtol=0, atol=0)
+        torch.testing.assert_close(
+            output[:2 * head_dim].cpu(),
+            torch.full((2 * head_dim, ), sentinel, dtype=torch.bfloat16),
+            rtol=0,
+            atol=0,
+        )
+        ttir = compiled.asm["ttir"]
+        assert_ttir_text_reparseable(ttir, tmp_path, f"store-coalescing-e2e-{mode}")
+        stats[mode] = {
+            "tt.store": ttir.count("tt.store"),
+            "tensor.empty": ttir.count("tensor.empty"),
+            "tensor.insert_slice": ttir.count("tensor.insert_slice"),
+        }
+
+    assert stats["off"] == {"tt.store": 2, "tensor.empty": 0, "tensor.insert_slice": 0}
+    assert stats["cap0"] == stats["off"]
+    assert stats["cap255"] == stats["off"]
+    assert stats["rule4"] == {"tt.store": 1, "tensor.empty": 1, "tensor.insert_slice": 2}
 
 
 def test_graph_optimize_numerical_equivalence(monkeypatch, tmp_path):
