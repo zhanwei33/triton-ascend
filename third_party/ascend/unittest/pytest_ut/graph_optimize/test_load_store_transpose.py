@@ -12,6 +12,7 @@
 """Structural and NPU end-to-end regressions for GraphOptimize LoadStoreTranspose."""
 
 import json
+import math
 import subprocess
 
 import pytest
@@ -20,6 +21,7 @@ import triton.language as tl
 from triton._C.libtriton import ir
 from triton._C.libtriton.ascend import ir as ascend_ir
 from triton.backends.ascend.compiler import NPUOptions, make_ttir
+from triton.backends.ascend.testing import do_bench_npu
 from triton.compiler.code_generator import ast_to_ttir
 from triton.compiler.compiler import ASTSource
 from triton.errors import TritonError
@@ -149,6 +151,33 @@ def _require_npu():
     if not hasattr(torch, "npu") or not torch.npu.is_available():
         pytest.skip("Ascend NPU is unavailable")
     return torch
+
+
+def _profile_mode(tmp_path, mode, launch, target_kernel_name):
+    """Collect one device-side kernel latency and retain its profiler trace."""
+    assert target_kernel_name
+    warmup, active = 5, 30
+    profile_dir = tmp_path / "profiler" / mode
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    latency_ms = float(
+        do_bench_npu(
+            launch,
+            warmup=warmup,
+            active=active,
+            prof_dir=str(profile_dir),
+            keep_res=True,
+            target_kernel_name=target_kernel_name,
+        ))
+    assert math.isfinite(latency_ms) and latency_ms > 0.0
+    csv_files = sorted(profile_dir.rglob("kernel_details.csv"))
+    assert len(csv_files) == 1
+    return {
+        "latency_ms": latency_ms,
+        "target_kernel_name": target_kernel_name,
+        "warmup": warmup,
+        "active": active,
+        "kernel_details_csv": str(csv_files[0]),
+    }
 
 
 def test_load_store_transpose_256x32_structure(monkeypatch, tmp_path):
@@ -337,3 +366,87 @@ def test_load_store_transpose_e2e(monkeypatch, tmp_path):
     summary["device"] = (torch.npu.get_device_name(torch.npu.current_device())
                          if hasattr(torch.npu, "get_device_name") else "npu")
     write_summary()
+
+
+def test_load_store_transpose_profiler(monkeypatch, tmp_path):
+    """Profile the NPU kernel, separately retaining graph-off/on traces."""
+    torch = _require_npu()
+    monkeypatch.delenv("TRITON_ALWAYS_COMPILE", raising=False)
+    torch.manual_seed(20260818)
+    m = n = 2048
+    block_m, block_n = 64, 8
+    dtype = torch.bfloat16
+    dy = torch.randn((m, n), dtype=dtype, device="npu")
+    g = torch.randn((m, n), dtype=dtype, device="npu")
+    fc = torch.randn((m, n), dtype=dtype, device="npu")
+    modes = {
+        "off": {"enable_graph_optimize": False, "debug": True},
+        "on": {"enable_graph_optimize": True, "debug": True},
+    }
+    outputs = {}
+    ttirs = {}
+    launchers = {}
+    target_names = {}
+
+    load_store_transpose_e2e_kernel.device_caches.clear()
+    for mode, graph_options in modes.items():
+        dg = torch.empty((m, n), dtype=dtype, device="npu")
+        dfc = torch.empty((m, n), dtype=dtype, device="npu")
+        db_g = torch.empty((n, ), dtype=dtype, device="npu")
+        db_fc = torch.empty((n, ), dtype=dtype, device="npu")
+        kernel_outputs = (dg, dfc, db_g, db_fc)
+        compiled = load_store_transpose_e2e_kernel[(triton.cdiv(n, block_n), )](
+            dy,
+            g,
+            fc,
+            *kernel_outputs,
+            m,
+            n,
+            BLOCK_SIZE_M=block_m,
+            BLOCK_SIZE_N=block_n,
+            num_warps=4,
+            num_stages=2,
+            **graph_options,
+        )
+        torch.npu.synchronize()
+        outputs[mode] = tuple(value.cpu() for value in kernel_outputs)
+        ttirs[mode] = compiled.asm["ttir"]
+        target_names[mode] = compiled.metadata.name
+
+        def launch(graph_options=graph_options, kernel_outputs=kernel_outputs):
+            return load_store_transpose_e2e_kernel[(triton.cdiv(n, block_n), )](
+                dy,
+                g,
+                fc,
+                *kernel_outputs,
+                m,
+                n,
+                BLOCK_SIZE_M=block_m,
+                BLOCK_SIZE_N=block_n,
+                num_warps=4,
+                num_stages=2,
+                **graph_options,
+            )
+
+        launchers[mode] = launch
+
+    for off, on in zip(outputs["off"], outputs["on"]):
+        torch.testing.assert_close(on, off, rtol=3e-2, atol=1e-1)
+    old_pointer_type = f"tensor<{block_n}x{block_m}x!tt.ptr"
+    new_pointer_type = f"tensor<{block_m}x{block_n}x!tt.ptr"
+    assert old_pointer_type in ttirs["off"]
+    assert old_pointer_type not in ttirs["on"]
+    assert new_pointer_type in ttirs["on"]
+
+    profiles = {mode: _profile_mode(tmp_path, mode, launchers[mode], target_names[mode]) for mode in modes}
+    speedup = profiles["off"]["latency_ms"] / profiles["on"]["latency_ms"]
+    summary = {
+        "workload": {"M": m, "N": n, "BLOCK_SIZE_M": block_m, "BLOCK_SIZE_N": block_n},
+        "baseline": profiles["off"],
+        "optimized": profiles["on"],
+        "speedup": speedup,
+    }
+    summary_path = tmp_path / "load-store-transpose-profiler-summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
+    print(f"LoadStoreTranspose profiler summary: {summary_path}")
+    assert speedup > 0.0
