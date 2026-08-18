@@ -51,7 +51,7 @@ def _assert_ttir_text_reparseable(ttir, tmp_path, name):
 
 
 def test_store_coalescing_e2e(monkeypatch, tmp_path):
-    """Rule 4 must safely coalesce an executing K/V-style pair of bf16 stores."""
+    """Graph optimization must safely coalesce a K/V-style pair of bf16 stores."""
     torch = _require_npu()
     monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")
     head_dim = 64
@@ -63,20 +63,16 @@ def test_store_coalescing_e2e(monkeypatch, tmp_path):
         "off": {"enable_graph_optimize": False},
         "cap0": {
             "enable_graph_optimize": True,
-            "graph_optimize_rule_mask": 4,
             "graph_optimize_ub_capacity_bytes": 0,
         },
         "cap255": {
             "enable_graph_optimize": True,
-            "graph_optimize_rule_mask": 4,
             "graph_optimize_ub_capacity_bytes": 255,
         },
-        "rule4": {
+        "cap256": {
             "enable_graph_optimize": True,
-            "graph_optimize_rule_mask": 4,
             "graph_optimize_ub_capacity_bytes": 256,
         },
-        "default": {},
     }
     stats = {}
 
@@ -109,4 +105,4 @@ def test_store_coalescing_e2e(monkeypatch, tmp_path):
     assert stats["off"] == {"tt.store": 2, "tensor.empty": 0, "tensor.insert_slice": 0}
     assert stats["cap0"] == stats["off"]
     assert stats["cap255"] == stats["off"]
-    assert stats["rule4"] == {"tt.store": 1, "tensor.empty": 1, "tensor.insert_slice": 2}
+    assert stats["cap256"] == {"tt.store": 1, "tensor.empty": 1, "tensor.insert_slice": 2}

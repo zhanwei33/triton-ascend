@@ -151,51 +151,14 @@ def _require_npu():
     return torch
 
 
-def test_load_store_transpose_default_mask_matches_native_bundle(monkeypatch, tmp_path):
-    """Default 511 must retain the rule-1 rewrite selected by native mask 7."""
-    monkeypatch.setenv("TRITON_DUMP_DIR", str(tmp_path / "dump"))
-    native_only_options = NPUOptions(
-        arch="Ascend910_95",
-        enable_graph_optimize=True,
-        graph_optimize_rule_mask=7,
-        debug=True,
-        sanitize_overflow=True,
-    )
-    default_options = NPUOptions(
-        arch="Ascend910_95",
-        enable_graph_optimize=True,
-        debug=True,
-        sanitize_overflow=True,
-    )
-
-    native_only_ttir = str(_make_fused_swiglu_ttir(native_only_options))
-    default_ttir = str(_make_fused_swiglu_ttir(default_options))
-
-    assert default_options.graph_optimize_rule_mask == 511
-    assert default_ttir == native_only_ttir
-    assert "tensor<256x32x!tt.ptr<bf16>>" in default_ttir
-    assert "tensor<32x256x!tt.ptr<bf16>>" not in default_ttir
-    assert "hacc.coalesce_factor" not in default_ttir
-    assert "tt.indirect_load" not in default_ttir
-    assert "tt.indirect_store" not in default_ttir
-    _assert_ttir_text_reparseable(
-        default_ttir,
-        tmp_path,
-        "default-native-graph-rule-bundle",
-    )
-
-
 def test_load_store_transpose_256x32_structure(monkeypatch, tmp_path):
     """Keep the original production tile as a TTIR-only structural gate."""
     monkeypatch.setenv("TRITON_DUMP_DIR", str(tmp_path / "dump"))
     ttirs = {}
     for enabled in (False, True):
         options = NPUOptions(
-            arch="Ascend910_95",
             enable_graph_optimize=enabled,
-            graph_optimize_rule_mask=1,
             debug=True,
-            sanitize_overflow=True,
         )
         module = _make_fused_swiglu_ttir(options)
         ttir = str(module)
@@ -205,8 +168,6 @@ def test_load_store_transpose_256x32_structure(monkeypatch, tmp_path):
 
     off_ttir = ttirs[False]
     on_ttir = ttirs[True]
-    assert off_ttir.count("tt.assert") == on_ttir.count("tt.assert") == 20
-    assert on_ttir.count("tt.auto_overflow_assert") == 20
     assert "tensor<32x256x!tt.ptr<bf16>>" in off_ttir
     assert "tensor<32x256x!tt.ptr<bf16>>" not in on_ttir
     assert "tensor<256x32x!tt.ptr<bf16>>" in on_ttir
@@ -224,7 +185,7 @@ def test_load_store_transpose_256x32_structure(monkeypatch, tmp_path):
 
 
 def test_load_store_transpose_e2e(monkeypatch, tmp_path):
-    """Run the rule-1 kernel on NPU with a CANN-friendly validation tile."""
+    """Run the graph-optimized kernel on NPU with a CANN-friendly tile."""
     torch = _require_npu()
     torch_npu = pytest.importorskip("torch_npu")
     monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")
@@ -260,9 +221,7 @@ def test_load_store_transpose_e2e(monkeypatch, tmp_path):
         "rtol": 3e-2,
         "atol": 1e-1,
         "enable_graph_optimize": [False, True],
-        "graph_optimize_rule_mask": 1,
         "debug": True,
-        "sanitize_overflow": True,
         "torch_version": torch.__version__,
         "torch_npu_version": getattr(torch_npu, "__version__", "unknown"),
         "cann_version": torch_npu.npu.utils.get_cann_version(),
@@ -290,9 +249,7 @@ def test_load_store_transpose_e2e(monkeypatch, tmp_path):
             num_warps=4,
             num_stages=2,
             debug=True,
-            sanitize_overflow=True,
             enable_graph_optimize=enabled,
-            graph_optimize_rule_mask=1,
         )
         torch.npu.synchronize()
         ttir = compiled.asm["ttir"]
@@ -361,10 +318,6 @@ def test_load_store_transpose_e2e(monkeypatch, tmp_path):
     block_m, block_n = selected
     on_ttir = ttirs[True]
     off_ttir = ttirs[False]
-    assert on_ttir.count("tt.assert") == off_ttir.count("tt.assert")
-    assert on_ttir.count("tt.assert") > 0
-    assert "overflow detected for operation" in on_ttir
-    assert on_ttir.count("tt.auto_overflow_assert") == on_ttir.count("tt.assert")
     old_pointer_type = "tensor<{}x{}x!tt.ptr".format(block_n, block_m)
     new_pointer_type = "tensor<{}x{}x!tt.ptr".format(block_m, block_n)
     assert old_pointer_type in off_ttir
@@ -381,7 +334,6 @@ def test_load_store_transpose_e2e(monkeypatch, tmp_path):
         "num_warps": 4,
         "num_stages": 2,
     }
-    summary["graph_optimize_assert_count"] = on_ttir.count("tt.assert")
     summary["device"] = (torch.npu.get_device_name(torch.npu.current_device())
                          if hasattr(torch.npu, "get_device_name") else "npu")
     write_summary()

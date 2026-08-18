@@ -62,12 +62,12 @@ def _assert_transpose_before_dot(ttir, *, trans_before_cast):
 
 
 def test_transpose_pointwise_reorder_e2e(monkeypatch, tmp_path):
-    """Rule 2 must hit a launched dot kernel and preserve its result.
+    """Graph optimization must rewrite a launched dot kernel and preserve its result.
 
-    The off/rule2/default matrix isolates the rule, checks that it moved the
-    transpose through the type cast, and compares actual NPU output.  The
-    structural assertion prevents a numerical pass caused by rule 2 not
-    matching at all from being accepted as coverage.
+    The off/on matrix checks that graph optimization moved the transpose
+    through the type cast and compares actual NPU output. The structural
+    assertion prevents a numerical pass without the expected rewrite from
+    being accepted as coverage.
     """
     torch = _require_npu()
     monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")
@@ -77,8 +77,7 @@ def test_transpose_pointwise_reorder_e2e(monkeypatch, tmp_path):
     b = torch.randn((block, block), dtype=torch.float16, device="npu")
     modes = {
         "off": {"enable_graph_optimize": False},
-        "rule2": {"enable_graph_optimize": True, "graph_optimize_rule_mask": 2},
-        "default": {},
+        "on": {"enable_graph_optimize": True},
     }
     outputs = {}
     ttirs = {}
@@ -100,8 +99,6 @@ def test_transpose_pointwise_reorder_e2e(monkeypatch, tmp_path):
         outputs[mode] = output.cpu()
         ttirs[mode] = ttir
 
-    torch.testing.assert_close(outputs["rule2"], outputs["off"], rtol=0, atol=0)
-    torch.testing.assert_close(outputs["default"], outputs["off"], rtol=0, atol=0)
+    torch.testing.assert_close(outputs["on"], outputs["off"], rtol=0, atol=0)
     _assert_transpose_before_dot(ttirs["off"], trans_before_cast=True)
-    _assert_transpose_before_dot(ttirs["rule2"], trans_before_cast=False)
-    _assert_transpose_before_dot(ttirs["default"], trans_before_cast=False)
+    _assert_transpose_before_dot(ttirs["on"], trans_before_cast=False)
