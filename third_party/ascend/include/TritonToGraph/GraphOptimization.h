@@ -89,7 +89,6 @@ struct GraphOptimizationOptions {
   uint16_t enabledRuleMask = kAllGraphOptimizationRuleMask;
   unsigned maxRewritesPerFunction = 64;
   unsigned ubCapacityBytes = 0;
-  bool emitRemarks = false;
   // RowCoalescing changes the launch grid and is valid only for the
   // force_simt_only compilation route.  This must be an explicit per-pass
   // option rather than inferred from later pipeline state.

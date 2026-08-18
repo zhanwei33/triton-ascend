@@ -22,9 +22,6 @@ def TritonToLinalg : Pass<"triton-to-linalg", "mlir::ModuleOp"> {
         Option<"compileOn91095", "compile-on-910-95",
             "bool", /*default*/"false",
             "compile on 910_95">,
-        Option<"emitGraphOptimizeRemarks", "emit-graph-optimize-remarks",
-            "bool", /*default*/"false",
-            "emit graph optimization remarks for layout-memory compatibility rules">
     ];
 }
 

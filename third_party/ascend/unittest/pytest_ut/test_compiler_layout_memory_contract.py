@@ -522,7 +522,6 @@ def test_make_ttir_passes_force_simt_only_to_graph_optimize(compiler_module, mon
         graph_optimize_rule_mask=8,
         graph_optimize_max_rewrites_per_function=17,
         graph_optimize_ub_capacity_bytes=4096,
-        graph_optimize_emit_remarks=True,
         force_simt_only=True,
         debug=False,
     )
@@ -533,10 +532,14 @@ def test_make_ttir_passes_force_simt_only_to_graph_optimize(compiler_module, mon
         "rule_mask": 8,
         "max_rewrites_per_function": 17,
         "ub_capacity_bytes": 4096,
-        "emit_remarks": True,
         "force_simt_only": True,
     }]
     assert events[-1] == "run_row"
+
+
+def test_npu_options_do_not_expose_graph_remark_switch(compiler_module):
+    """Graph rewrite logging is controlled by LLVM DEBUG, not an NPU option."""
+    assert "graph_optimize_emit_remarks" not in compiler_module.NPUOptions.__dataclass_fields__
 
 
 @pytest.mark.parametrize(
@@ -555,7 +558,6 @@ def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypa
         graph_optimize_rule_mask=8,
         graph_optimize_max_rewrites_per_function=17,
         graph_optimize_ub_capacity_bytes=requested_capacity,
-        graph_optimize_emit_remarks=True,
         force_simt_only=True,
     )
 
@@ -565,13 +567,12 @@ def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypa
         "rule_mask": 8,
         "max_rewrites_per_function": 17,
         "ub_capacity_bytes": expected_capacity,
-        "emit_remarks": True,
         "force_simt_only": True,
     }]
     assert events[-1] == "run_row"
 
 
-def _run_ttir_to_linalg_with_recorded_graph_remarks(compiler, monkeypatch, emit_remarks):
+def _run_ttir_to_linalg_with_recorded_t2l_options(compiler, monkeypatch):
     """Record the final T2L binding arguments without loading the C++ extension."""
     events = []
     module = _FakeModule(events)
@@ -628,24 +629,20 @@ def _run_ttir_to_linalg_with_recorded_graph_remarks(compiler, monkeypatch, emit_
     options = SimpleNamespace(
         arch="Ascend910_9589",
         debug=False,
-        graph_optimize_emit_remarks=emit_remarks,
     )
 
     assert compiler.ttir_to_linalg(module, metadata, options) == "module {}"
     return t2l_calls
 
 
-@pytest.mark.parametrize("emit_remarks", (False, True))
-def test_ttir_to_linalg_forwards_graph_remarks_to_layout_memory_pass(compiler_module, monkeypatch,
-                                                                      emit_remarks):
-    """Compatibility rules share the native graph-remark compiler switch."""
-    t2l_calls = _run_ttir_to_linalg_with_recorded_graph_remarks(
+def test_ttir_to_linalg_keeps_the_five_argument_binding(compiler_module, monkeypatch):
+    """Compatibility rules use LLVM DEBUG rather than a compiler option."""
+    t2l_calls = _run_ttir_to_linalg_with_recorded_t2l_options(
         compiler_module,
         monkeypatch,
-        emit_remarks,
     )
 
-    assert t2l_calls == [(False, False, False, True, True, emit_remarks)]
+    assert t2l_calls == [(False, False, False, True, True)]
 
 
 def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):

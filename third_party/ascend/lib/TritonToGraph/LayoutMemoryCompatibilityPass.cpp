@@ -35,9 +35,12 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/Support/Debug.h"
 
 #include <memory>
 #include <utility>
+
+#define DEBUG_TYPE "graph-optimize"
 
 namespace mlir {
 namespace triton {
@@ -48,9 +51,8 @@ class LayoutMemoryCompatibilityPass final
     : public PassWrapper<LayoutMemoryCompatibilityPass,
                          OperationPass<ModuleOp>> {
 public:
-  explicit LayoutMemoryCompatibilityPass(LayoutMemoryCompatibilityPhase phase,
-                                         bool emitGraphOptimizeRemarks)
-      : phase(phase), emitGraphOptimizeRemarks(emitGraphOptimizeRemarks) {}
+  explicit LayoutMemoryCompatibilityPass(LayoutMemoryCompatibilityPhase phase)
+      : phase(phase) {}
 
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LayoutMemoryCompatibilityPass)
 
@@ -69,12 +71,12 @@ public:
       // phase intentionally has no cleanup pass.
       const bool wasCoalesced = moduleOp->hasAttr("hacc.coalesce_factor");
       StridedAxisCoalescing::rewriteStridedAxisCoalesce(moduleOp);
-      if (emitGraphOptimizeRemarks && !wasCoalesced &&
-          moduleOp->hasAttr("hacc.coalesce_factor")) {
-        moduleOp.emitRemark()
-            << "applied graph optimization rule "
-            << static_cast<unsigned>(
-                   GraphOptimizationRuleId::StridedAxisCoalescing);
+      if (!wasCoalesced && moduleOp->hasAttr("hacc.coalesce_factor")) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[" DEBUG_TYPE "] applied graph optimization rule "
+                   << static_cast<unsigned>(
+                          GraphOptimizationRuleId::StridedAxisCoalescing)
+                   << "\n");
       }
       return;
     }
@@ -101,16 +103,13 @@ public:
 
 private:
   LayoutMemoryCompatibilityPhase phase;
-  bool emitGraphOptimizeRemarks;
 };
 
 } // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createLayoutMemoryCompatibilityPass(LayoutMemoryCompatibilityPhase phase,
-                                    bool emitGraphOptimizeRemarks) {
-  return std::make_unique<LayoutMemoryCompatibilityPass>(
-      phase, emitGraphOptimizeRemarks);
+createLayoutMemoryCompatibilityPass(LayoutMemoryCompatibilityPhase phase) {
+  return std::make_unique<LayoutMemoryCompatibilityPass>(phase);
 }
 
 } // namespace cfg
