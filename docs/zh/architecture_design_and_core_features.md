@@ -82,10 +82,9 @@
 | 10  | set_workspace_multibuffer                     | NPU        | Autotune option: Enable or disable multi-buffering for the workspace. |
 | 11  | tile_mix_vector_loop                          | NPU        | Autotune option (CV-fused kernels only): Enable or disable tiling for vector loops. |
 | 12  | tile_mix_cube_loop                            | NPU        | Autotune option (CV-fused kernels only): Enable or disable tiling for cube loops. |
-| 13  | stream                                        | NPU        | Optional: Inform the compiler about the NPU stream to use. |
-| 14  | enable_linearize                              | NPU        | Autotune option: Enable or disable the linearization pass. |
-| 15  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only): Enable or disable the ND (n-dimensional) to NZ (non-zero) layout transformation. |
-| 16  | auto_blockify_size                            | NPU        | Autotune option: Configure the AutoBlockify expansion size. |
+| 13  | enable_linearize                              | NPU        | Autotune option: Enable or disable the linearization pass. |
+| 14  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only): Enable or disable the ND (n-dimensional) to NZ (non-zero) layout transformation. |
+| 15  | auto_blockify_size                            | NPU        | Autotune option: Configure the AutoBlockify expansion size. |
 
 #### 3.2.2 SIMD compiler
 
