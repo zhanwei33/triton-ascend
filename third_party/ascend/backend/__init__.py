@@ -39,11 +39,12 @@ def _apply_ascend_patch():
             _original_cg_init(self, *args, **kwargs)
             options = self.builder.options
             context = self.context
-            if hasattr(options, "arch") and options.arch:
+            target_arch = getattr(options, "_arch", getattr(options, "arch", ""))
+            if target_arch:
                 try:
-                    builder = ascend_ir.ascendnpu_ir_builder(context, options.arch)
+                    builder = ascend_ir.ascendnpu_ir_builder(context, target_arch)
 
-                    target_attr_str = f'#hacc.target<"{options.arch}">'
+                    target_attr_str = f'#hacc.target<"{target_arch}">'
                     self.module.set_attr("hacc.target", builder.parse_attr(target_attr_str))
                 except Exception as e:
                     logging.warning(f"[Ascend Patch] Failed to set hacc.target: {e}")
