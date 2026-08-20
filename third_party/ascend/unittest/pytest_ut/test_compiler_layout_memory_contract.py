@@ -598,6 +598,20 @@ def test_dynamic_cv_crosscore_buffer_slot_option_is_renamed(compiler_module):
     assert f'metadata.get("{removed_name}")' not in compiler_source
 
 
+def test_dynamic_cv_gm_buffer_slot_option_is_renamed(compiler_module):
+    option_name = "buf_slot_num_of_gm"
+    removed_name = "load_cache_num"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+
+    options = _parse_options(compiler_module, "Ascend910_9589", {option_name: 4})
+
+    assert option_name in compiler_module.NPUOptions.__dataclass_fields__
+    assert getattr(options, option_name) == 4
+    assert f'metadata.get("{option_name}")' in compiler_source
+    assert removed_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert f'metadata.get("{removed_name}")' not in compiler_source
+
+
 def test_graph_optimize_rule_mask_is_not_an_npu_option(compiler_module):
     option_name = "graph_optimize_rule_mask"
 
