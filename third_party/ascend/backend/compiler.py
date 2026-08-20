@@ -270,7 +270,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         if _inter_val is not None:
             ascend.passes.ttir.set_buffer_count(mod, "INTER", _inter_val)
 
-        _load_val = metadata.get("load_cache_num")
+        _load_val = metadata.get("buf_slot_num_of_gm")
         if _load_val is not None:
             ascend.passes.ttir.set_buffer_count(mod, "LOAD", _load_val)
 
@@ -1042,7 +1042,7 @@ class NPUOptions:
     enable_dynamic_cv_pipeline: bool = None
     buf_slot_num_of_veccore: int = None
     buf_slot_num_of_crosscore: int = None
-    load_cache_num: int = None
+    buf_slot_num_of_gm: int = None
 
     # plan memory strategy: "default" (default) or "largest-first"
     plan_memory_strategy: str = None
