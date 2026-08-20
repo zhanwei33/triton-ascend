@@ -435,6 +435,62 @@ def test_code_motion_is_not_an_npu_or_ubtuner_option(compiler_module):
         _parse_options(compiler_module, "Ascend910B1", {option_name: True})
 
 
+def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
+    option_name = "enable_select_analysis"
+    captured = {}
+    pass_manager = SimpleNamespace(enable_debug=lambda: None, run=lambda *_args: None)
+
+    def no_op(*_args, **_kwargs):
+        return None
+
+    def add_triton_to_linalg(*args):
+        captured[option_name] = args[4]
+
+    ttir_passes = SimpleNamespace(
+        add_triton_control_flow_opt=no_op,
+        add_triton_to_structure=no_op,
+        add_discrete_mask_access_conversion=no_op,
+        add_triton_to_annotation=no_op,
+        add_triton_to_unstructure=no_op,
+        add_triton_to_hivm=no_op,
+        add_triton_to_hfusion=no_op,
+        add_triton_to_llvm=no_op,
+        add_bubble_up_operation=no_op,
+        add_triton_to_linalg=add_triton_to_linalg,
+    )
+    monkeypatch.setattr(compiler_module, "ascend", SimpleNamespace(passes=SimpleNamespace(ttir=ttir_passes)))
+    monkeypatch.setattr(compiler_module, "distributed", None)
+    monkeypatch.setattr(
+        compiler_module,
+        "ir",
+        SimpleNamespace(pass_manager=lambda _context: pass_manager),
+    )
+    monkeypatch.setattr(compiler_module, "_is_auto_map_parallel_blocks_enabled", lambda: False)
+    monkeypatch.setattr(compiler_module, "_adjust_metadata_by_module_result", no_op)
+    monkeypatch.setattr(compiler_module, "_export_coalesce_metadata", no_op)
+
+    compiler_module.ttir_to_linalg(
+        _FakeModule([]),
+        {
+            "enable_nd2nz_on_vector": False,
+            "compile_on_910_95": False,
+            "force_simt_template": False,
+            "enable_mask_fallback_conversion": False,
+            "optimize_dynamic_offset": False,
+            "add_auto_scheduling": False,
+            "enable_dynamic_cv_pipeline": False,
+        },
+        SimpleNamespace(debug=False),
+    )
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert captured[option_name] is True
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: False})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910B1", {option_name: False})
+
+
 def _make_opt(
     *,
     force_simt_only,
