@@ -99,6 +99,19 @@ def compiler_module():
     def return_false(*_args, **_kwargs):
         return False
 
+    def remove_deprecated_npu_options(options, *, protected=(), in_place=False):
+        normalized = options if in_place else dict(options)
+        for name, replacement in (
+            ("force_simt_only", "simt_only"),
+            ("force_simt_template", "unstructured_in_simt"),
+        ):
+            if name in normalized and name not in protected:
+                if normalized.pop(name):
+                    normalized.setdefault("compile_mode", replacement)
+        if "compile_on_910_95" not in protected:
+            normalized.pop("compile_on_910_95", None)
+        return normalized
+
     utils_stub = types.ModuleType(utils_name)
     for name in (
             "_check_bishengir_api_change",
@@ -124,7 +137,7 @@ def compiler_module():
     utils_stub._get_npucompiler_path = lambda *_args, **_kwargs: ("", {})
     utils_stub._get_auto_blockify_blacklist_reasons = lambda *_args, **_kwargs: []
     utils_stub._warn_auto_blockify_disabled = lambda *_args, **_kwargs: None
-    utils_stub._remove_deprecated_npu_options = lambda options, **_kwargs: options
+    utils_stub._remove_deprecated_npu_options = remove_deprecated_npu_options
     utils_stub._warn_deprecated_ascend_env_vars = lambda: None
     utils_stub.downgrade_llir = lambda llir: llir
     utils_stub.get_cann_version_file_hash = lambda: ""
@@ -233,12 +246,13 @@ def test_npu_arch_is_target_injected_internal_state(compiler_module):
 def test_auto_block_mapping_is_fixed_backend_policy():
     utils_path = Path(__file__).resolve().parents[2] / "backend" / "utils.py"
     utils_source = utils_path.read_text(encoding="utf-8")
-    removed_env = "TRITON_ALL" + "_BLOCKS_PARALLEL"
 
-    assert removed_env not in utils_source
     module = ast.parse(utils_source)
     function = next(node for node in module.body
                     if isinstance(node, ast.FunctionDef) and node.name == "_is_auto_map_parallel_blocks_enabled")
+    assert not any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os" and node.func.attr == "getenv" for node in ast.walk(function))
     returns = [node for node in function.body if isinstance(node, ast.Return)]
     assert len(returns) == 1
     assert isinstance(returns[0].value, ast.Constant)
@@ -331,8 +345,7 @@ def test_stream_is_not_an_npu_compile_option(compiler_module):
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: 0})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910_9589", {option_name: 0})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910_9589", option_name, 0)
 
 
 def test_parallel_mode_is_internal_metadata_derived_from_mode_and_linalg_ir(compiler_module):
@@ -341,8 +354,7 @@ def test_parallel_mode_is_internal_metadata_derived_from_mode_and_linalg_ir(comp
     assert compiler_module.NPUOptions.__dataclass_fields__[option_name].init is False
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: "simt"})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910_9589", {option_name: "simt"})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910_9589", option_name, "simt")
 
     assert _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simd"}).parallel_mode == "simd"
     assert _parse_options(compiler_module, "Ascend910_9589",
@@ -360,8 +372,7 @@ def test_force_simt_only_is_replaced_by_compile_mode(compiler_module):
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: True})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+    assert _parse_options(compiler_module, "Ascend910_9589", {option_name: True}).is_pure_simt is True
 
     pure_simt = _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simt_only"})
     assert pure_simt.is_pure_simt is True
@@ -375,8 +386,7 @@ def test_force_simt_template_is_replaced_by_compile_mode(compiler_module):
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: True})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+    assert _parse_options(compiler_module, "Ascend910_9589", {option_name: True}).use_simt_template is True
 
     default = compiler_module.NPUOptions()
     assert default.compile_mode == "simd"

@@ -192,10 +192,16 @@ def test_legacy_msprof_register_env_does_not_skip_launcher(monkeypatch):
 
     launcher = types.SimpleNamespace()
     launcher.compile_only = False
+    launcher.global_scratch_size = 0
     launcher.launch = MagicMock(return_value=1)
-    launch_args = (1, 2, 3, 4, 5, {})
+    packed_metadata = {}
+    launch_metadata = object()
+    launch_enter_hook = object()
+    launch_exit_hook = object()
+    launch_args = (1, 2, 3, 4, 5, packed_metadata, launch_metadata, launch_enter_hook, launch_exit_hook)
 
     namespace["__call__"](launcher, *launch_args)
 
-    launcher.launch.assert_called_once_with(*launch_args)
+    launcher.launch.assert_called_once_with(1, 2, 3, 4, 5, None, None, packed_metadata, launch_metadata,
+                                            launch_enter_hook, launch_exit_hook)
     assert namespace["_ascend_utils"].TRITON_PROFILER_REGISTERED is True
