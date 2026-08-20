@@ -102,7 +102,6 @@ The following table describes the options.
 | **Synchronization** | `unit_flag` | `None`, `True`, `False` | Cube-output synchronization option. | `triton.Config` or autotune parameter |
 | **Synchronization** | `inject_barrier_all` | `None`, `True`, `False` | Enables or disables automatic barrier synchronization injection. | `triton.Config` or launch meta-parameter |
 | **Synchronization** | `inject_block_all` | `None`, `True`, `False` | Enables or disables automatic block synchronization injection. | `triton.Config` or launch meta-parameter |
-| **Multibuffer scope** | `limit_auto_multi_buffer_only_for_local_buffer` | `None`, `True`, `False` | Restricts automatic multi-buffering to local buffers. | `triton.Config` or autotune parameter |
 | **Multibuffer scope** | `limit_auto_multi_buffer_of_local_buffer` | `None`, `"no-limit"`, `"no-l0c"` | Configures the local-buffer automatic multi-buffering scope. | `triton.Config` or autotune parameter |
 | **Workspace** | `set_workspace_multibuffer` | `None`, `2`, `4` | Configures workspace multi-buffering. | `triton.Config` or autotune parameter |
 | **CV fusion tiling** | `tile_mix_vector_loop` | `None`, `2`, `4`, `8` | Configures the Vector loop split count. | `triton.Config` or autotune parameter |

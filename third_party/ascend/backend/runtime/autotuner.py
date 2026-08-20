@@ -2643,7 +2643,6 @@ _ALL_PARAMS = {
     "num_stages",
     "unit_flag",
     "multibuffer",
-    "limit_auto_multi_buffer_only_for_local_buffer",
     "limit_auto_multi_buffer_of_local_buffer",
     "set_workspace_multibuffer",
     "enable_hivm_auto_cv_balance",
@@ -2655,7 +2654,6 @@ _ALL_PARAMS = {
 _DEFAULTS = {
     "num_stages": [2],
     "unit_flag": [False],
-    "limit_auto_multi_buffer_only_for_local_buffer": [False],
     "limit_auto_multi_buffer_of_local_buffer": ["no-l0c"],
     "set_workspace_multibuffer": [2, 4],
     "enable_hivm_auto_cv_balance": [True],
@@ -2677,7 +2675,6 @@ _CUBE_PARAMS = {"num_stages", "unit_flag", "limit_auto_multi_buffer_of_local_buf
 _MIXCV_PARAMS = {
     "num_stages",
     "unit_flag",
-    "limit_auto_multi_buffer_only_for_local_buffer",
     "limit_auto_multi_buffer_of_local_buffer",
     "set_workspace_multibuffer",
     "enable_hivm_auto_cv_balance",
@@ -2710,8 +2707,6 @@ _VALIDATION_RULES = {
         lambda val, p: _check_int_in_set(val, _VALID_VALUES['num_stages'], p)
     },
     "unit_flag": {"desc": "must be non-empty list/tuple of boolean values", "check": _check_boolean_list},
-    "limit_auto_multi_buffer_only_for_local_buffer":
-    {"desc": "must be non-empty list/tuple of boolean values", "check": _check_boolean_list},
     "limit_auto_multi_buffer_of_local_buffer": {
         "desc": f"must be one or more of: {_VALID_VALUES['limit_auto_multi_buffer_of_local_buffer']}", "check":
         lambda val, p: _check_string_in_set(val, _VALID_VALUES['limit_auto_multi_buffer_of_local_buffer'], p)
@@ -2822,8 +2817,8 @@ def get_autotune_cube_config(**kwargs: Any) -> List[triton.Config]:
 def get_autotune_cv_config(**kwargs: Any) -> List[triton.Config]:
     """
     Generate autotune configuration for the mixcv operator.
-    Supported parameters: num_stages, unit_flag, limit_auto_multi_buffer_only_for_local_buffer,
-                limit_auto_multi_buffer_of_local_buffer, set_workspace_multibuffer,
+    Supported parameters: num_stages, unit_flag, limit_auto_multi_buffer_of_local_buffer,
+                set_workspace_multibuffer,
                 enable_hivm_auto_cv_balance, tile_mix_vector_loop, tile_mix_cube_loop, enable_ubuf_saving
     """
     import triton

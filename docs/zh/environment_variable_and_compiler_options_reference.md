@@ -104,7 +104,6 @@ if __name__ == "__main__":
 | **同步** | `unit_flag` | `None`、`True`、`False` | Cube 搬出相关同步优化项。 | `triton.Config` 或 Autotune 参数 |
 | **同步** | `inject_barrier_all` | `None`、`True`、`False` | 启用或禁用自动注入 barrier 同步。 | `triton.Config` 或 launch meta-parameter |
 | **同步** | `inject_block_all` | `None`、`True`、`False` | 启用或禁用自动注入 block 同步。 | `triton.Config` 或 launch meta-parameter |
-| **多缓冲范围** | `limit_auto_multi_buffer_only_for_local_buffer` | `None`、`True`、`False` | 限制自动 multi-buffer 只作用于 local buffer。 | `triton.Config` 或 Autotune 参数 |
 | **多缓冲范围** | `limit_auto_multi_buffer_of_local_buffer` | `None`、`"no-limit"`、`"no-l0c"` | 配置 local buffer 自动 multi-buffer 的 scope。 | `triton.Config` 或 Autotune 参数 |
 | **Workspace** | `set_workspace_multibuffer` | `None`、`2`、`4` | 配置 workspace multi-buffer 档位。 | `triton.Config` 或 Autotune 参数 |
 | **CV 融合 tiling** | `tile_mix_vector_loop` | `None`、`2`、`4`、`8` | 配置 Vector loop 的切分份数。 | `triton.Config` 或 Autotune 参数 |

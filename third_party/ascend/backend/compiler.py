@@ -666,11 +666,6 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--enable-hivm-inject-block-all-sync={inject_block_all}"]
 
-        limit_auto_multi_buffer_only_for_local_buffer = metadata["limit_auto_multi_buffer_only_for_local_buffer"]
-        if limit_auto_multi_buffer_only_for_local_buffer is not None:
-            _compile_option_list += \
-                [f"--limit-auto-multi-buffer-only-for-local-buffer={limit_auto_multi_buffer_only_for_local_buffer}"]
-
         set_workspace_multibuffer = metadata["set_workspace_multibuffer"]
         if set_workspace_multibuffer is not None:
             _compile_option_list += \
@@ -898,11 +893,6 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--enable-hivm-inject-block-all-sync={inject_block_all}"]
 
-        limit_auto_multi_buffer_only_for_local_buffer = metadata["limit_auto_multi_buffer_only_for_local_buffer"]
-        if limit_auto_multi_buffer_only_for_local_buffer is not None:
-            _compile_option_list += \
-                [f"--limit-auto-multi-buffer-only-for-local-buffer={limit_auto_multi_buffer_only_for_local_buffer}"]
-
         set_workspace_multibuffer = metadata["set_workspace_multibuffer"]
         if set_workspace_multibuffer is not None:
             _compile_option_list += \
@@ -1050,7 +1040,6 @@ class NPUOptions:
     prevec_max_fused_ops_num: int = None
     inject_barrier_all: bool = None
     inject_block_all: bool = None
-    limit_auto_multi_buffer_only_for_local_buffer: bool = None
     limit_auto_multi_buffer_of_local_buffer: str = None
     limit_auto_multi_buffer_buffer: str = None
     set_workspace_multibuffer: int = None
@@ -1151,6 +1140,7 @@ _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "bisheng_options",
     "code_motion",
     "disable_size_align_for_cast",
+    "limit_auto_multi_buffer_only_for_local_buffer",
     "enable_cce_vf_auto_sync",
     "enable_cce_vf_remove_membar",
     "enable_drop_unit_dims",

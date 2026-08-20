@@ -77,16 +77,15 @@
 | 5   | unit_flag                                     | NPU        | Autotune option: Enable or disable the sync unit flag. |
 | 6   | inject_barrier_all                            | NPU        | Autotune option: Enable or disable automatic injection of barriers for all operations. |
 | 7   | inject_block_all                              | NPU        | Autotune option: Enable or disable automatic injection of blocks for all operations. |
-| 8   | limit_auto_multi_buffer_only_for_local_buffer | NPU        | Autotune option: Restrict automatic multi-buffering only to local buffers. |
-| 9   | limit_auto_multi_buffer_of_local_buffer       | NPU        | Autotune option: Enable or disable automatic multi-buffering for local buffers. |
-| 10  | set_workspace_multibuffer                     | NPU        | Autotune option: Enable or disable multi-buffering for the workspace. |
-| 11  | tile_mix_vector_loop                          | NPU        | Autotune option (CV-fused kernels only): Enable or disable tiling for vector loops. |
-| 12  | tile_mix_cube_loop                            | NPU        | Autotune option (CV-fused kernels only): Enable or disable tiling for cube loops. |
-| 13  | disable_auto_inject_block_sync                | NPU        | Autotune option (CV-fused kernels only): Enable or disable automatic injection of block synchronizations. |
-| 14  | stream                                        | NPU        | Optional: Inform the compiler about the NPU stream to use. |
-| 15  | enable_linearize                              | NPU        | Autotune option: Enable or disable the linearization pass. |
-| 16  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only): Enable or disable the ND (n-dimensional) to NZ (non-zero) layout transformation. |
-| 17  | auto_blockify_size                            | NPU        | Autotune option: Enable or disable AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
+| 8   | limit_auto_multi_buffer_of_local_buffer       | NPU        | Autotune option: Enable or disable automatic multi-buffering for local buffers. |
+| 9   | set_workspace_multibuffer                     | NPU        | Autotune option: Enable or disable multi-buffering for the workspace. |
+| 10  | tile_mix_vector_loop                          | NPU        | Autotune option (CV-fused kernels only): Enable or disable tiling for vector loops. |
+| 11  | tile_mix_cube_loop                            | NPU        | Autotune option (CV-fused kernels only): Enable or disable tiling for cube loops. |
+| 12  | disable_auto_inject_block_sync                | NPU        | Autotune option (CV-fused kernels only): Enable or disable automatic injection of block synchronizations. |
+| 13  | stream                                        | NPU        | Optional: Inform the compiler about the NPU stream to use. |
+| 14  | enable_linearize                              | NPU        | Autotune option: Enable or disable the linearization pass. |
+| 15  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only): Enable or disable the ND (n-dimensional) to NZ (non-zero) layout transformation. |
+| 16  | auto_blockify_size                            | NPU        | Autotune option: Enable or disable AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
 
 #### 3.2.2 SIMD compiler
 

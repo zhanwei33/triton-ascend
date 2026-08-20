@@ -162,7 +162,6 @@ For example, to enable the `multibuffer` option, pass `'multibuffer': True` to `
 | ----------------- | ------------ | ----------------- |
 | multibuffer                                   | Data transfer through parallel pipelines. | Default: **true**. Options: **true** and **false**. It is configurable during autotune.                    |
 | unit_flag                                     | Optimization item for cube-out.                                        | Default: None. Options: **true** and **false**.  It is configurable during autotune.                    |
-| limit_auto_multi_buffer_only_for_local_buffer | Optimization item for CV operators and cube-out.                        | Default: None. Options: **true** and **false**. It is configurable during autotune.|
 | limit_auto_multi_buffer_of_local_buffer       | Scope of enabling double buffer for cube operators.                        | Default: None. Value: "no-limit" or "no-l0c". It is configurable during autotune.          |
 | set_workspace_multibuffer                     | Configures workspace multi-buffer levels to enable multi-buffering for workspace-related data movement.| Default: None. Use a single value, for example 2 or 4. Candidate values can be configured during autotune.                           |
 | enable_hivm_auto_cv_balance                   | Enables or disables automatic CV balance to balance Cube and Vector execution in CV fusion scenarios.| Default: None. Options: **true** and **false**. It is configurable during autotune.|

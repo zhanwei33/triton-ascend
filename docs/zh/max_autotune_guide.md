@@ -82,7 +82,6 @@ from triton.backends.ascend.runtime import max_autotune
 | `num_stages` | ✅ | ✅ | ✅ | `[2]` | `[1, 2]` | pipeline stages 数量 |
 | `unit_flag` | ✅ | ✅ | ❌ | `[False]` | 布尔列表 | Cube 搬出相关同步优化项 |
 | `limit_auto_multi_buffer_of_local_buffer` | ✅ | ✅ | ❌ | `["no-l0c"]` | `["no-limit", "no-l0c"]` | 配置 local buffer 自动 multi-buffer 的 scope |
-| `limit_auto_multi_buffer_only_for_local_buffer` | ❌ | ✅ | ❌ | `[False]` | 布尔列表 | 限制自动 multi-buffer 只作用于 local buffer |
 | `set_workspace_multibuffer` | ❌ | ✅ | ❌ | `[2, 4]` | `[2, 4]` | 配置 workspace multi-buffer 档位 |
 | `enable_hivm_auto_cv_balance` | ❌ | ✅ | ❌ | `[True]` | 布尔列表 | 启用或禁用自动 CV balance |
 | `tile_mix_vector_loop` | ❌ | ✅ | ❌ | `[2, 4]` | `[2, 4, 8]` | 配置 Vector loop 的切分份数 |
