@@ -1618,27 +1618,11 @@ def test_autoparse_reduction_axes_rejects_prefixed_parser_output():
 
 
 def test_inject_grid_num_tiles_uses_only_static_grid_and_preserves_explicit_value():
-    namespace = _load_autotuner_methods("_inject_grid_num_tiles")
-    inject_grid_num_tiles = _normalize_loaded_method(namespace["_inject_grid_num_tiles"])
+    """The removed hint must not be reintroduced by the autotuner."""
+    source = ast.parse(AUTOTUNER_PATH.read_text(encoding="utf-8"), filename=str(AUTOTUNER_PATH))
+    tuner = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "AutoTilingTuner")
 
-    static_grid = {"grid": (2, 16)}
-    inject_grid_num_tiles(static_grid)
-    assert static_grid["grid_num_tiles"] == 16
-    assert isinstance(static_grid["grid_num_tiles"], ascend_autotuner._InternalNPUOptionInt)
-
-    # Only the first three launch dimensions are visible to the compiler; use
-    # the outermost one among those, matching the ChunkCoalescing contract.
-    four_dim_grid = {"grid": [2, 3, 32, 64]}
-    inject_grid_num_tiles(four_dim_grid)
-    assert four_dim_grid["grid_num_tiles"] == 32
-
-    callable_grid = {"grid": lambda _: (2, 16)}
-    inject_grid_num_tiles(callable_grid)
-    assert "grid_num_tiles" not in callable_grid
-
-    explicit_hint = {"grid": (2, 16), "grid_num_tiles": 99}
-    inject_grid_num_tiles(explicit_hint)
-    assert explicit_hint["grid_num_tiles"] == 99
+    assert "_inject_grid_num_tiles" not in {node.name for node in tuner.body if isinstance(node, ast.FunctionDef)}
 
 
 def test_make_kernel_call_extracts_name_from_jit_run():
