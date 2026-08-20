@@ -100,6 +100,7 @@ using namespace triton;
 int nd2nzFlag = 0;
 bool compileOn91095Flag = false;
 bool existDotFlag = false;
+triton::ascend::CompileMode compileModeFlag = triton::ascend::CompileMode::Simd;
 
 static bool containsTritonPointer(Type type) {
   if (isa<triton::PointerType>(type))
@@ -624,7 +625,9 @@ static bool isSIMTOp(Operation *op) {
   return isa<triton::ascend::IndexPutOp, triton::ascend::GatherOutToUbOp,
              triton::ascend::ScatterUbToOutOp, triton::ascend::IndirectLoadOp,
              triton::ascend::StrideLoadOp, triton::ascend::StrideStoreOp,
-             triton::ascend::IndirectStoreOp>(op);
+             triton::ascend::IndirectStoreOp,
+             triton::ascend::UnstructuredLoadOp,
+             triton::ascend::UnstructuredStoreOp>(op);
 }
 
 TritonTypeConverter::TritonTypeConverter() {
@@ -948,7 +951,7 @@ void TritonToLinalgPass::convertTTFunc(triton::FuncOp func, const bool existDot,
   funcFunc->setAttr(kernelMixModeName, builder.getStringAttr(kernelMixMode));
 
   std::string parallelMode = "simd";
-  if (existSIMTOp) {
+  if (existSIMTOp || compileModeFlag == triton::ascend::CompileMode::SimdSimt) {
     parallelMode = "mix_simd_simt";
   }
   funcFunc->setAttr(kernelParallelModeName,
@@ -1232,9 +1235,13 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
                                                   patterns.getContext());
 
   patterns.add<TTOpConverters::IndirectLoadConverter>(patterns.getContext());
+  patterns.add<TTOpConverters::UnstructuredLoadConverter>(
+      patterns.getContext());
   patterns.add<TTOpConverters::StrideLoadConverter>(patterns.getContext());
   patterns.add<TTOpConverters::StrideStoreConverter>(patterns.getContext());
   patterns.add<TTOpConverters::IndirectStoreConverter>(patterns.getContext());
+  patterns.add<TTOpConverters::UnstructuredStoreConverter>(
+      patterns.getContext());
   patterns.add<TTOpConverters::GatherOutToUbConverter>(patterns.getContext());
   patterns.add<TTOpConverters::ScatterUbToOutConverter>(patterns.getContext());
   patterns.add<TTOpConverters::IndexSelectSimdConverter>(patterns.getContext());
@@ -1373,7 +1380,8 @@ LogicalResult TritonToLinalgPass::processStridedLoadStoreRewriteOperations(
     ModuleOp moduleOp) {
   // The strided-axis rewrites below only apply in 950 SIMT mode. On other
   // targets we leave strided loads to the legacy strided DMA lowering.
-  if (!(compileOn91095Flag && forceSimtTemplateFlag)) {
+  if (!(compileOn91095Flag &&
+        triton::ascend::isSimtTemplateMode(compileModeFlag))) {
     return success();
   }
 
@@ -1432,6 +1440,14 @@ TritonToLinalgPass::processLegalStrideOperations(ModuleOp moduleOp) {
 
 void TritonToLinalgPass::runOnOperation() {
   compileOn91095Flag = this->compileOn91095;
+  auto compileMode = triton::ascend::parseCompileMode(this->compileMode);
+  if (!compileMode) {
+    getOperation().emitError()
+        << "triton-to-linalg compile-mode is invalid: " << this->compileMode;
+    signalPassFailure();
+    return;
+  }
+  compileModeFlag = *compileMode;
 
   auto moduleOp = getOperation();
 
@@ -2048,12 +2064,14 @@ void TritonToLinalgPass::runOnOperation() {
   });
 }
 
-std::unique_ptr<OperationPass<ModuleOp>> triton::createTritonToLinalgPass(
-    bool globalKernel, bool namedOps, bool enableNd2nzOnVector,
-    bool enableSelectAnalysis, bool compileOn91095) {
+std::unique_ptr<OperationPass<ModuleOp>>
+triton::createTritonToLinalgPass(bool globalKernel, bool namedOps,
+                                 bool enableNd2nzOnVector,
+                                 bool enableSelectAnalysis, bool compileOn91095,
+                                 const std::string &compileMode) {
   return std::make_unique<TritonToLinalgPass>(
       globalKernel, namedOps, enableNd2nzOnVector, enableSelectAnalysis,
-      compileOn91095);
+      compileOn91095, compileMode);
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> triton::createTritonToLinalgPass() {
