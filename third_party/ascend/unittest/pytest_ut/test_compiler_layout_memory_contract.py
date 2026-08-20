@@ -289,7 +289,7 @@ def test_npu_options_rejects_invalid_graph_ub_budget_requests(compiler_module, r
 
 def _make_opt(
     *,
-    force_simt_only,
+    is_pure_simt,
     superblock_factor=0,
     enable_bishengir_simt_optimization=0,
     simt_stack_limit=None,
@@ -298,7 +298,7 @@ def _make_opt(
     disable_fma=False,
 ):
     return SimpleNamespace(
-        force_simt_only=force_simt_only,
+        is_pure_simt=is_pure_simt,
         num_warps=4,
         warp_size=32,
         enable_bishengir_simt_optimization=enable_bishengir_simt_optimization,
@@ -314,7 +314,7 @@ def _run_ttir_to_npubin(
     compiler,
     monkeypatch,
     *,
-    force_simt_only=True,
+    is_pure_simt=True,
     auto_map_enabled=False,
     has_blacklist_op=False,
     row_coalescing_applied=False,
@@ -383,7 +383,7 @@ def _run_ttir_to_npubin(
         module,
         {},
         _make_opt(
-            force_simt_only=force_simt_only,
+            is_pure_simt=is_pure_simt,
             superblock_factor=superblock_factor,
             enable_bishengir_simt_optimization=enable_bishengir_simt_optimization,
             simt_stack_limit=simt_stack_limit,
@@ -397,14 +397,14 @@ def _run_ttir_to_npubin(
     return events, commands[0]
 
 
-@pytest.mark.parametrize("force_simt_only", (False, True))
-def test_ttir_to_npubin_global_scratch_allocation_flag(compiler_module, monkeypatch, force_simt_only):
+@pytest.mark.parametrize("is_pure_simt", (False, True))
+def test_ttir_to_npubin_global_scratch_allocation_flag(compiler_module, monkeypatch, is_pure_simt):
     _events, command = _run_ttir_to_npubin(
         compiler_module,
         monkeypatch,
-        force_simt_only=force_simt_only,
+        is_pure_simt=is_pure_simt,
     )
-    assert ("--enable-global-scratch-allocation" in command) is force_simt_only
+    assert ("--enable-global-scratch-allocation" in command) is is_pure_simt
 
 
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
@@ -500,7 +500,7 @@ def test_ttir_to_npubin_exports_make_ttir_row_contract_only_for_pure_simt(compil
     events, _command = _run_ttir_to_npubin(
         compiler_module,
         monkeypatch,
-        force_simt_only=True,
+        is_pure_simt=True,
     )
     assert events == [
         "str:0",
@@ -513,7 +513,7 @@ def test_ttir_to_npubin_exports_make_ttir_row_contract_only_for_pure_simt(compil
         events, _command = _run_ttir_to_npubin(
             compiler_module,
             pure_simt_off,
-            force_simt_only=False,
+            is_pure_simt=False,
         )
     assert events == ["str:0", "parse"]
 
@@ -688,8 +688,8 @@ def test_default_compile_mode_keeps_the_91095_layout_memory_gate_prepared(compil
     default_options = compiler_module.NPUOptions()
     assert default_options.compile_mode == "unstructured_in_simt"
     assert default_options.force_simt_template is True
-    assert default_options.force_simt_only is False
+    assert default_options.is_pure_simt is False
 
     simd_options = compiler_module.NPUOptions(compile_mode="simd")
     assert simd_options.force_simt_template is False
-    assert simd_options.force_simt_only is False
+    assert simd_options.is_pure_simt is False
