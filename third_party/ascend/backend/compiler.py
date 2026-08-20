@@ -1152,30 +1152,6 @@ def _normalize_bishengir_simt_optimization_for_context(options: NPUOptions, raw_
     object.__setattr__(options, option_name, 0)
 
 
-_REMOVED_NPU_COMPILE_OPTIONS = frozenset({
-    "allow_fp8e4nv",
-    "auto_tile_and_bind_subblock",
-    "graph_optimize_rule_mask",
-    "graph_optimize_max_rewrites_per_function",
-    "graph_optimize_ub_capacity_bytes",
-    "graph_optimize_emit_remarks",
-    "bisheng_options",
-    "code_motion",
-    "disable_size_align_for_cast",
-    "disable_auto_inject_block_sync",
-    "enable_select_analysis",
-    "force_simt_only",
-    "force_simt_template",
-    "ops_reorder",
-    "parallel_mode",
-    "storage_align",
-    "mix_mode",
-    "use_bytecode",
-    "grid_num_tiles",
-    "stream",
-})
-
-
 def ttir_to_npubin(mod, metadata, opt):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
