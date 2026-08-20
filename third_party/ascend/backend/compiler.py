@@ -218,17 +218,6 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         enable_mixed_cv = metadata.get("enable_mixed_cv")
         set_workspace_multibuffer = metadata.get("set_workspace_multibuffer")
 
-        # Inject grid tile-count hint for ChunkCoalescing. When the kernel
-        # has no boundary mask but grid[axis] is known at compile time (e.g.
-        # from constexpr nchunks), the pass uses this to safely choose H.
-        grid_num_tiles = metadata.get("grid_num_tiles")
-        if isinstance(grid_num_tiles, int) and grid_num_tiles > 0:
-            try:
-                _builder = ascend.ir.ascendnpu_ir_builder(mod.context, opt.target_arch)
-                mod.set_attr("hacc.grid_num_tiles", _builder.parse_attr(f"{grid_num_tiles} : i32"))
-            except Exception:
-                pass  # graceful fallback: pass runs without hint
-
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         if distributed is not None:
@@ -1034,11 +1023,6 @@ class NPUOptions:
     # superblocking factor
     superblock_factor: int = 1
 
-    # ChunkCoalescing: number of tiles along the outermost grid axis.
-    # Auto-injected from static grid tuples; enables safe coalescing for
-    # unmasked kernels whose grid dims are compile-time known.
-    grid_num_tiles: int = None
-
     def __post_init__(self, arch):
         from triton.backends.ascend import _apply_ascend_patch
 
@@ -1104,6 +1088,7 @@ _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "storage_align",
     "mix_mode",
     "use_bytecode",
+    "grid_num_tiles",
 })
 
 def ttir_to_npubin(mod, metadata, opt):
