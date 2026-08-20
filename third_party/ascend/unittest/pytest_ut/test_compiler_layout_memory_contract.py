@@ -454,6 +454,17 @@ def test_enable_cube_block_merge_is_fixed_lowering_policy(compiler_module):
     assert option_name not in options.__dict__
 
 
+def test_enable_ub_refine_opt_is_silently_ignored(compiler_module):
+    option_name = "enable_ub_refine_opt"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert f'metadata["{option_name}"]' not in compiler_source
+    assert "set_enable_ub_refine_opt" not in compiler_source
+    options = _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+    assert option_name not in options.__dict__
+
+
 def test_disable_size_align_for_cast_is_not_an_npu_option(compiler_module):
     option_name = "disable_size_align_for_cast"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
