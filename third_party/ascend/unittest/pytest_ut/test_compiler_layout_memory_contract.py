@@ -344,6 +344,19 @@ def test_bisheng_options_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_enable_cce_vf_auto_sync_is_not_an_npu_option(compiler_module):
+    option_name = "enable_cce_vf_auto_sync"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert f'metadata["{option_name}"]' not in compiler_source
+    assert "--cce-vf-auto-sync" not in compiler_source
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: True})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+
+
 def test_storage_align_is_not_an_npu_or_ubtuner_option(compiler_module):
     option_name = "storage_align"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
