@@ -32,7 +32,7 @@ def _make_metadata():
         shared=0,
         compile_on_910_95=False,
         parallel_mode="",
-        force_simt_only=False,
+        is_pure_simt=False,
         debug=False,
         coalesce_factor=1,
         coalesce_axis=-1,
