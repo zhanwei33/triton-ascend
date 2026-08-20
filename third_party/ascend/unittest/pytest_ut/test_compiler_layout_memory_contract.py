@@ -202,6 +202,13 @@ def _parse_options(compiler, arch, opts=None):
     return backend.parse_options({} if opts is None else opts)
 
 
+def _assert_deprecated_npu_option_is_ignored(compiler, arch, option_name, value):
+    default = _parse_options(compiler, arch)
+    requested = _parse_options(compiler, arch, {option_name: value})
+
+    assert requested.hash() == default.hash()
+
+
 def test_llvm_version_is_not_an_npu_option(compiler_module):
     assert "llvm_version" not in compiler_module.NPUOptions.__dataclass_fields__
     assert "llvm_version" not in compiler_module.NPUOptions().__dict__
@@ -309,8 +316,7 @@ def test_mix_mode_is_ir_derived_metadata_not_an_npu_option(compiler_module):
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: "aic"})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910_9589", {option_name: "aic"})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910_9589", option_name, "aic")
 
     _linalg, metadata = compiler_module._parse_linalg_metadata(
         'mix_mode = "mix" parallel_mode = "simd" func.func @derived_kernel()', {})
@@ -326,11 +332,22 @@ def test_use_bytecode_is_fixed_pipeline_not_an_npu_option(compiler_module):
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: False})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910_9589", {option_name: False})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910_9589", option_name, False)
 
     backend.add_stages(stages, options, language=None)
     assert {"ttadapter", "mlirbc", "bcmlir", "npubin"}.issubset(stages)
+
+
+def test_grid_num_tiles_uses_chunk_coalescing_default_not_an_npu_option(compiler_module):
+    option_name = "grid_num_tiles"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8")
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: 16})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910_9589", option_name, 16)
+    assert 'metadata.get("grid_num_tiles")' not in compiler_source
+    assert 'hacc.grid_num_tiles' not in compiler_source
 
 
 def test_simt_stack_limit_explicit_value_overrides_acl_config(compiler_module, monkeypatch, tmp_path):
@@ -576,8 +593,7 @@ def test_disable_size_align_for_cast_is_not_an_npu_option(compiler_module):
     assert "--disable-size-align-for-cast" not in compiler_source
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: True})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910B1", {option_name: True})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, True)
 
 
 def test_limit_auto_multi_buffer_only_for_local_buffer_is_not_an_npu_or_autotune_option(compiler_module):
@@ -592,8 +608,7 @@ def test_limit_auto_multi_buffer_only_for_local_buffer_is_not_an_npu_or_autotune
     assert option_name not in autotuner_source
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: True})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910B1", {option_name: True})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, True)
 
 
 def test_limit_auto_multi_buffer_of_local_buffer_is_not_an_npu_or_autotune_option(compiler_module):
@@ -608,8 +623,7 @@ def test_limit_auto_multi_buffer_of_local_buffer_is_not_an_npu_or_autotune_optio
     assert option_name not in autotuner_source
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: "no-limit"})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910B1", {option_name: "no-limit"})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, "no-limit")
 
 
 def test_disable_auto_inject_block_sync_is_not_an_npu_option(compiler_module):
@@ -621,8 +635,7 @@ def test_disable_auto_inject_block_sync_is_not_an_npu_option(compiler_module):
     assert "--disable-auto-inject-block-sync" not in compiler_source
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: True})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910B1", {option_name: True})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, True)
 
 
 def test_storage_align_is_not_an_npu_or_ubtuner_option(compiler_module):
@@ -655,8 +668,7 @@ def test_ops_reorder_is_not_an_npu_or_ubtuner_option(compiler_module):
     assert "enable_ops_reorder" not in ubtuner_source
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: True})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910B1", {option_name: True})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, True)
 
 
 def test_code_motion_is_not_an_npu_or_ubtuner_option(compiler_module):
@@ -671,8 +683,7 @@ def test_code_motion_is_not_an_npu_or_ubtuner_option(compiler_module):
     assert "enable_code_motion" not in ubtuner_source
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: True})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910B1", {option_name: True})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, True)
 
 
 def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
@@ -730,8 +741,7 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
     assert structure_flags == [(False, False), (False, False)]
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: False})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910B1", {option_name: False})
+    _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, False)
 
 
 def _make_opt(

@@ -665,48 +665,11 @@ def test_895_launcher_keeps_mixed_simt_sls_marker_in_both_paths(source_pairs):
         assert "cfgInfo.localMemorySize = 221184;" in target_path
 
 
-def _load_inject_grid_num_tiles(source):
-    tree = ast.parse(source)
-    candidates = [
-        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_inject_grid_num_tiles"
-    ]
-    assert len(candidates) == 1
-    function = copy.deepcopy(candidates[0])
-    # Execute the method as a stand-alone function.  Supply a local equivalent
-    # of the backend's int marker so this verifies the source behavior rather
-    # than importing whichever Triton wheel happens to be installed.
-    function.decorator_list = []
-    module = ast.Module(body=[function], type_ignores=[])
-    ast.fix_missing_locations(module)
-    internal_npu_option_int = type("_InternalNPUOptionInt", (int, ), {})
-    namespace = {"_InternalNPUOptionInt": internal_npu_option_int}
-    exec(compile(module, "<grid-num-tiles-closure>", "exec"), namespace)
-    return namespace["_inject_grid_num_tiles"]
+def test_grid_num_tiles_is_not_auto_injected(source_pairs):
+    target_source = source_pairs["autotuner"][1]
 
-
-def test_895_grid_num_tiles_ast_closure_differential(source_pairs):
-    """Static, callable, and explicit-grid paths remain byte-for-byte semantic peers."""
-    baseline_inject = _load_inject_grid_num_tiles(source_pairs["autotuner"][0])
-    target_inject = _load_inject_grid_num_tiles(source_pairs["autotuner"][1])
-    dynamic_grid = lambda _meta: (2, 16)
-    cases = (
-        ("static", {"grid": (2, 16)}, {"grid": (2, 16), "grid_num_tiles": 16}),
-        ("callable", {"grid": dynamic_grid}, {"grid": dynamic_grid}),
-        (
-            "explicit",
-            {"grid": (2, 16), "grid_num_tiles": 99},
-            {"grid": (2, 16), "grid_num_tiles": 99},
-        ),
-    )
-
-    for name, initial, expected in cases:
-        baseline_kwargs = dict(initial)
-        target_kwargs = dict(initial)
-        baseline_inject(baseline_kwargs)
-        target_inject(target_kwargs)
-        assert baseline_kwargs == expected, name
-        assert target_kwargs == expected, name
-        assert baseline_kwargs == target_kwargs, name
+    assert "_inject_grid_num_tiles" not in target_source
+    assert "grid_num_tiles" not in target_source
 
 
 def _baseline_source(root, relative_path):
