@@ -82,3 +82,28 @@ def test_graph_ub_budget_resolves_from_explicit_arch(arch, raw_ub_kib, graph_bud
 
     assert utils.ub_size_in_kbytes_for_arch(arch) == raw_ub_kib
     assert utils.graph_ub_budget_bytes_for_arch(arch) == graph_budget_bytes
+
+
+@pytest.mark.parametrize(
+    ("arch", "expected"),
+    (
+        ("Ascend910B4", True),
+        ("Ascend910_9589", False),
+        ("Ascend910A", False),
+        ("Ascend310B4", False),
+        ("", False),
+        (None, False),
+    ),
+)
+def test_ffts_support_resolves_from_explicit_target_arch(arch, expected):
+    utils = _load_utils_module()
+
+    assert utils.is_ffts_supported(arch) is expected
+
+
+def test_force_disable_ffts_uses_explicit_target_arch(monkeypatch):
+    utils = _load_utils_module()
+    monkeypatch.delenv("TRITON_DISABLE_FFTS", raising=False)
+
+    assert utils.force_disable_ffts("Ascend910_9589") is True
+    assert utils.force_disable_ffts("Ascend910B4") is False
