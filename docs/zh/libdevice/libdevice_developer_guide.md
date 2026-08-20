@@ -5,7 +5,7 @@
 使用 SIMT 编译的 triton kernel 示例
 
 ```python
-# Enable libdevice SIMT compilation
+# Libdevice SIMT is selected automatically for an A5 compilation target.
 import triton
 import triton.language as tl
 import triton.language.extra.cann.libdevice as libdevice

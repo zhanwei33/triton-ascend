@@ -691,6 +691,11 @@ def graph_ub_budget_bytes_for_arch(arch: str) -> int:
     return ub_size_in_kbytes_for_arch(arch) * 1024 // 2
 
 
+def is_ascend_910_95(arch: str) -> bool:
+    """Return whether an explicit target belongs to the Ascend 910_95/A5 generation."""
+    return isinstance(arch, str) and arch.startswith(("Ascend910_95", "Ascend950"))
+
+
 def is_ffts_supported(arch: str):
     """Return whether the specified compilation target supports FFTS."""
     if not isinstance(arch, str) or not arch:
@@ -709,11 +714,6 @@ def force_disable_ffts(arch: str = None):
         return True
     _warn_deprecated_ascend_env_var("TRITON_DISABLE_FFTS")
     return False
-
-
-def triton_enable_libdevice_simt():
-    enable_libdevice_simt = os.getenv("TRITON_ENABLE_LIBDEVICE_SIMT", False)
-    return enable_libdevice_simt and is_compile_on_910_95()
 
 
 def get_cann_version_file_hash():
