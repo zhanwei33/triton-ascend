@@ -15,7 +15,7 @@ This intentionally uses the original T2L eligibility shape instead of forcing
 an option in the test: a one-dimensional block pointer has ``stride=S`` and a
 base of ``ptr + (pid % S)``; ``pid // S`` selects the T tile.  The default NPU
 compile mode is ``unstructured_in_simt``, which supplies the historical
-``force_simt_template`` half of the T2L gate on a real 910_95/A5 target.
+``use_simt_template`` half of the T2L gate on a real 910_95/A5 target.
 
 Do not run this test on a generic/B4 machine.  Pretending that such a machine
 is 910_95 would exercise a different compiler/toolchain contract and would not
@@ -132,12 +132,12 @@ def test_strided_axis_coalescing_gate_on_e2e():
     assert torch.equal(dst.cpu(), src.cpu())
 
     # These fields are compiler output, not test-supplied options: together
-    # they prove the original compile_on_910_95 && force_simt_template slot
+    # they prove the original compile_on_910_95 && use_simt_template slot
     # actually ran StridedAxisCoalescing and exported the launch contract.
     metadata = kernel.metadata
     assert metadata.compile_mode == "unstructured_in_simt"
     assert metadata.compile_on_910_95 is True
-    assert metadata.force_simt_template is True
+    assert metadata.use_simt_template is True
     assert metadata.coalesce_factor == s
     assert metadata.coalesce_axis == 0
     assert metadata.coalesce_grid_ceil_div is False

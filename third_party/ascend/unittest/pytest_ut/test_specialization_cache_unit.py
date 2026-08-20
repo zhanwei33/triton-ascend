@@ -59,7 +59,7 @@ def bind_and_key(binder, cache, value, address, options):
 SIMD_OPTIONS = [
     pytest.param({"compile_mode": "simd"}, id="simd"),
     pytest.param({"compile_mode": "unstructured_in_simt"}, id="unstructured-in-simt"),
-    pytest.param({"force_simt_template": True}, id="legacy-unstructured-in-simt"),
+    pytest.param({"compile_mode": "simt_template"}, id="simt-template"),
     pytest.param({}, id="default-unstructured-in-simt"),
 ]
 

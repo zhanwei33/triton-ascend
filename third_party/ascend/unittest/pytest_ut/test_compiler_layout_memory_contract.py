@@ -368,6 +368,25 @@ def test_force_simt_only_is_replaced_by_compile_mode(compiler_module):
     assert compiler_module.AscendBackend.use_alignment_specialization({"compile_mode": "simd"}) is False
 
 
+def test_force_simt_template_is_replaced_by_compile_mode(compiler_module):
+    option_name = "force_simt_template"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: True})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+
+    default = compiler_module.NPUOptions()
+    assert default.compile_mode == "unstructured_in_simt"
+    assert default.use_simt_template is True
+
+    template = _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simt_template"})
+    assert template.use_simt_template is True
+    assert template.is_pure_simt is False
+    assert _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simd"}).use_simt_template is False
+
+
 def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     option_name = "allow_fp8e4nv"
 
@@ -806,7 +825,7 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
         _FakeModule([]),
         {
             "compile_on_910_95": False,
-            "force_simt_template": False,
+            "use_simt_template": False,
             "enable_dynamic_cv_pipeline": False,
         },
         SimpleNamespace(debug=False),
@@ -819,6 +838,53 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: False})
     _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, False)
+
+
+def test_simt_template_mode_drives_template_lowering_passes(compiler_module, monkeypatch):
+    captured = {}
+    pass_manager = SimpleNamespace(enable_debug=lambda: None, run=lambda *_args: None)
+
+    def no_op(*_args, **_kwargs):
+        return None
+
+    def record(name):
+        return lambda *_args: captured.__setitem__(name, _args[-1])
+
+    ttir_passes = SimpleNamespace(
+        add_triton_control_flow_opt=no_op,
+        add_triton_to_structure=no_op,
+        add_discrete_mask_access_conversion=record("discrete_mask"),
+        add_triton_to_annotation=no_op,
+        add_triton_to_unstructure=record("unstructure"),
+        add_triton_to_hivm=no_op,
+        add_triton_to_hfusion=no_op,
+        add_triton_to_llvm=no_op,
+        add_bubble_up_operation=no_op,
+        add_triton_to_linalg=no_op,
+        add_merge_concat_load_buffer=no_op,
+    )
+    monkeypatch.setattr(compiler_module, "ascend", SimpleNamespace(passes=SimpleNamespace(ttir=ttir_passes)))
+    monkeypatch.setattr(compiler_module, "distributed", None)
+    monkeypatch.setattr(compiler_module, "ir", SimpleNamespace(pass_manager=lambda _context: pass_manager))
+    monkeypatch.setattr(compiler_module, "_is_auto_map_parallel_blocks_enabled", lambda: False)
+    monkeypatch.setattr(compiler_module, "_adjust_metadata_by_module_result", no_op)
+    monkeypatch.setattr(compiler_module, "_export_coalesce_metadata", no_op)
+
+    compiler_module.ttir_to_linalg(
+        _FakeModule([]),
+        {
+            "enable_nd2nz_on_vector": False,
+            "compile_on_910_95": True,
+            "use_simt_template": True,
+            "enable_mask_fallback_conversion": False,
+            "optimize_dynamic_offset": False,
+            "add_auto_scheduling": False,
+            "enable_dynamic_cv_pipeline": False,
+        },
+        SimpleNamespace(debug=False),
+    )
+
+    assert captured == {"discrete_mask": True, "unstructure": True}
 
 
 def _make_opt(
@@ -1214,18 +1280,18 @@ def test_default_compile_mode_keeps_the_91095_layout_memory_gate_prepared(compil
     """The normal compiler default supplies the second half of the T2L gate.
 
     Axis/Chunk/SLS must remain controlled by the original
-    ``compile_on_910_95 && force_simt_template`` predicate.  The first half
+    ``compile_on_910_95 && use_simt_template`` predicate.  The first half
     comes only from real hardware detection; this source-level contract makes
     sure the normal 91095 path does not accidentally lose its historical
-    ``unstructured_in_simt``/``force_simt_template`` default while tests run
+    ``unstructured_in_simt``/``use_simt_template`` default while tests run
     on a non-91095 host.
     """
 
     default_options = compiler_module.NPUOptions()
     assert default_options.compile_mode == "unstructured_in_simt"
-    assert default_options.force_simt_template is True
+    assert default_options.use_simt_template is True
     assert default_options.is_pure_simt is False
 
     simd_options = compiler_module.NPUOptions(compile_mode="simd")
-    assert simd_options.force_simt_template is False
+    assert simd_options.use_simt_template is False
     assert simd_options.is_pure_simt is False
