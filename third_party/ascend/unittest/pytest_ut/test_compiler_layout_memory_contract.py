@@ -240,6 +240,13 @@ def test_auto_blockify_size_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_add_auto_scheduling_is_not_an_npu_option(compiler_module):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"add_auto_scheduling": True})
+
+    assert "add_auto_scheduling" not in compiler_module.NPUOptions.__dataclass_fields__
+    assert "add_auto_scheduling" not in options.__dict__
+
+
 def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     option_name = "allow_fp8e4nv"
 
@@ -535,7 +542,6 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
             "force_simt_template": False,
             "enable_mask_fallback_conversion": False,
             "optimize_dynamic_offset": False,
-            "add_auto_scheduling": False,
             "enable_dynamic_cv_pipeline": False,
         },
         SimpleNamespace(debug=False),
