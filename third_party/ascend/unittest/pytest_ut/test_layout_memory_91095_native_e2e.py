@@ -128,7 +128,7 @@ def _assert_real_91095_gate(compiled, *, pure_simt: bool) -> None:
     assert compiled.metadata.compile_on_910_95 is True
     assert compiled.metadata.is_pure_simt is pure_simt
     if not pure_simt:
-        assert compiled.metadata.force_simt_template is True
+        assert compiled.metadata.use_simt_template is True
 
 
 @triton.jit
@@ -239,10 +239,10 @@ def test_chunk_91095_native_metadata_launcher_and_ir(monkeypatch):
         dst,
         N=n,
         BLOCK=block,
-        # This selects the legacy T2L template precondition only.  It does
+        # This selects the T2L template precondition only.  It does
         # not set compile_on_910_95; _assert_real_91095_gate below proves the
         # device-derived gate remained true for the actual compiled kernel.
-        force_simt_template=True,
+        compile_mode="simt_template",
         # Keep covering the uninstrumented form; the default instrumented one
         # is covered by test_chunk_coalesces_through_overflow_sanitizer_91095.
         sanitize_overflow=False,
@@ -281,7 +281,7 @@ def test_chunk_axis2_91095_native_metadata_launcher_and_ir(monkeypatch):
         BLOCK=block,
         # Preserve the original T2L template prerequisite only; the hardware
         # detection assertion below proves this is not a forged 910_95 result.
-        force_simt_template=True,
+        compile_mode="simt_template",
         sanitize_overflow=False,
     )
 
@@ -317,7 +317,7 @@ def test_chunk_coalesces_through_overflow_sanitizer_91095(monkeypatch):
         dst,
         N=n,
         BLOCK=block,
-        force_simt_template=True,
+        compile_mode="simt_template",
         # Do not pass sanitize_overflow: the JIT default instruments every
         # pid-derived index with compares that can only trap.
     )
@@ -354,7 +354,7 @@ def test_chunk_rejects_data_reaching_pid_predicate_91095(monkeypatch):
         dst,
         N=n,
         BLOCK=block,
-        force_simt_template=True,
+        compile_mode="simt_template",
     )
 
     expected = src.clone()
@@ -387,7 +387,7 @@ def test_sls_91095_native_ir_metadata_and_mixed_simt_launcher(monkeypatch):
         BLOCK=n,
         # Same as Chunk: retain the original template condition but never
         # override the device-derived compile_on_910_95 gate.
-        force_simt_template=True,
+        compile_mode="simt_template",
     )
 
     assert torch.equal(dst.cpu(), src.cpu()[::4])
