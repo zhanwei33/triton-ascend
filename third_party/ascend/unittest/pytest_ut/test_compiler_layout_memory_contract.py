@@ -210,6 +210,14 @@ def test_llvm_version_is_not_an_npu_option(compiler_module):
     assert "llvm_version" not in compiler_module.NPUOptions().__dict__
 
 
+def test_kernel_name_is_derived_metadata_not_an_npu_option(compiler_module):
+    metadata = compiler_module._parse_ttir_metadata("tt.func public @derived_kernel()", {})
+
+    assert "kernel_name" not in compiler_module.NPUOptions.__dataclass_fields__
+    assert metadata["kernel_name"] == "derived_kernel"
+    assert metadata["name"] == "derived_kernel"
+
+
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 @pytest.mark.parametrize(
     ("arch", "requested_capacity", "expected_capacity"),
