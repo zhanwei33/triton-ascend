@@ -498,6 +498,21 @@ def test_enable_cross_if_fusion_is_silently_ignored(compiler_module):
     assert option_name not in options.__dict__
 
 
+def test_auto_blockify_blacklist_is_ir_derived_internal_state(compiler_module, monkeypatch):
+    option_name = "has_auto_blockify_blacklist_op"
+
+    monkeypatch.setattr(compiler_module, "_get_auto_blockify_blacklist_reasons", lambda _ttir: ["atomic op"])
+    metadata = compiler_module._parse_ttir_metadata(
+        "tt.func public @unsafe_kernel()",
+        {option_name: False},
+    )
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert metadata[option_name] is True
+    options = _parse_options(compiler_module, "Ascend910_9589", {option_name: False})
+    assert option_name not in options.__dict__
+
+
 def test_disable_size_align_for_cast_is_not_an_npu_option(compiler_module):
     option_name = "disable_size_align_for_cast"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
@@ -979,7 +994,6 @@ def test_make_ttir_uses_arch_derived_graph_ub_budget(compiler_module, monkeypatc
     assert events[-1] == "run_row"
 
 
-@pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
     """Keep the env-and-safety-only pure-SIMT auto-blockify argv contract."""
     common_options = ["--common-before-pure-simt", "--common-after-pure-simt"]

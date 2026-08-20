@@ -137,13 +137,12 @@ def _load_compiler_closure(source):
     return namespace
 
 
-def test_895_compiler_closure_ast_is_identical_outside_row_migration(source_pairs):
-    """Keep compiler helpers unchanged outside the intentional Row migration."""
+def test_895_compiler_closure_ast_is_identical_outside_intentional_migrations(source_pairs):
+    """Keep compiler helpers unchanged outside the intentional migrations."""
 
     baseline_source, target_source = source_pairs["compiler"]
     for name in (
             "_get_then_remove_rc",
-            "_parse_ttir_metadata",
             "get_common_bishengir_compile_options",
     ):
         baseline = _normalised_function_ast(baseline_source, name)
