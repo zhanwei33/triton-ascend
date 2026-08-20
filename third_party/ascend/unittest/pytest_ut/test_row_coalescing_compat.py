@@ -127,7 +127,7 @@ module {{
 """
 
 
-def _run_row(text, tmp_path, *, force_simt_only=True, rule_mask=8):
+def _run_row(text, tmp_path, *, compile_mode="simt_only", rule_mask=8):
     context = ir.context()
     ir.load_dialects(context)
     ascend_ir.load_dialects(context)
@@ -138,7 +138,7 @@ def _run_row(text, tmp_path, *, force_simt_only=True, rule_mask=8):
     ascend.passes.ttir.add_graph_optimize(
         pm,
         rule_mask=rule_mask,
-        force_simt_only=force_simt_only,
+        compile_mode=compile_mode,
     )
     pm.run(module, "row-coalescing-graph-rule-test")
     return str(module)

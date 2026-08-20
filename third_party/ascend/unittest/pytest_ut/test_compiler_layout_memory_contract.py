@@ -566,7 +566,7 @@ def test_make_ttir_passes_force_simt_only_to_graph_optimize(compiler_module, mon
     options = SimpleNamespace(
         enable_graph_optimize=True,
         _arch="Ascend910B1",
-        force_simt_only=True,
+        compile_mode="simt_only",
         debug=False,
     )
 
@@ -574,7 +574,7 @@ def test_make_ttir_passes_force_simt_only_to_graph_optimize(compiler_module, mon
 
     assert graph_calls == [{
         "ub_capacity_bytes": 96 * 1024,
-        "force_simt_only": True,
+        "compile_mode": "simt_only",
     }]
     assert events[-1] == "run_row"
 
@@ -586,28 +586,20 @@ def test_npu_options_do_not_expose_graph_remark_switch(compiler_module):
 
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 @pytest.mark.parametrize(
-    ("requested_capacity", "expected_capacity"),
+    ("arch", "expected_capacity"),
     (
-        (None, 96 * 1024),
-        (0, 0),
-        (4096, 4096),
-        (96 * 1024 + 1, 96 * 1024),
+        ("Ascend910B1", 96 * 1024),
+        ("Ascend910_9581", 128 * 1024),
+        ("Ascend950A3", 128 * 1024),
+        ("unknown-arch", 0),
     ),
 )
-def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypatch, requested_capacity,
-                                                       expected_capacity):
-    options = compiler_module.NPUOptions(
-        arch="Ascend910B1",
-        graph_optimize_ub_capacity_bytes=requested_capacity,
-        force_simt_only=True,
-    )
+def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypatch, arch, expected_capacity):
+    options = compiler_module.NPUOptions(arch=arch)
 
     events, graph_calls = _run_make_ttir_with_recorded_graph_options(compiler_module, monkeypatch, options)
 
-    assert graph_calls == [{
-        "ub_capacity_bytes": expected_capacity,
-        "force_simt_only": True,
-    }]
+    assert graph_calls[0]["ub_capacity_bytes"] == expected_capacity
     assert events[-1] == "run_row"
 
 
