@@ -227,6 +227,13 @@ def test_npu_arch_is_target_injected_internal_state(compiler_module):
     assert "arch" not in options.__dict__
 
 
+def test_warp_size_is_fixed_npu_backend_capability(compiler_module):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"warp_size": 64})
+
+    assert options.warp_size == 32
+    assert compiler_module.NPUOptions.__dataclass_fields__["warp_size"].init is False
+
+
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 @pytest.mark.parametrize(
     ("arch", "requested_capacity", "expected_capacity"),
