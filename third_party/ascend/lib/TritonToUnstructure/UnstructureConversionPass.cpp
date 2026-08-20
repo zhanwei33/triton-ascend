@@ -48,7 +48,8 @@ using namespace triton;
 
 #include "llvm/Support/Debug.h"
 
-bool forceSimtTemplateFlag = false;
+static triton::ascend::CompileMode unstructureCompileMode =
+    triton::ascend::CompileMode::Simd;
 
 namespace {
 
@@ -58,9 +59,6 @@ static bool isTensorOfPointers(Type type) {
 }
 
 constexpr int64_t kBitsPerByte = 8;
-
-static constexpr const char *kRouteDiscreteMaskToSimtAttrName =
-    "route_discrete_mask_to_simt";
 
 static triton::PointerType getScalarPointerType(Type type) {
   if (auto tensorType = dyn_cast<RankedTensorType>(type))
@@ -368,13 +366,11 @@ void normalizeDiscreteMaskAccessForFallback(MemAccOpTy &op,
   ptrOffsetInfo.setUnstructured(ptrOffsetInfo.getRank());
 }
 
-// ======================== 950 SIMT Indirect Fast-Path Lowering
+// ======================== 950 mixed-mode Fast-Path Lowering
 // ========================
-// 1. SIMT Fast-Path Gate
-//    The SIMT indirect lowering path is enabled only when:
-//      - compileOn91095Flag && forceSimtTemplateFlag
-//      - and the access is either:
-//          * unstructured, or has tag with 'route_discrete_mask_to_simt'
+// Mixed modes keep their route selection in compile_mode.  simt_template uses
+// the established indirect-template ABI; simd_simt emits an explicit
+// unstructured operation that TritonToLinalg lowers to HFusion gather/scatter.
 //
 // 2. Op-Specific Lowering
 //    (1) tt.load / tt.store
@@ -410,6 +406,67 @@ static bool canUseIndirectFastPath(Value srcPtr, Value ptrOffset) {
   if (!ptrTy || isa<ShapedType>(ptrTy.getPointeeType()))
     return false;
   return isa<RankedTensorType>(ptrOffset.getType());
+}
+
+// Wrap an int_to_ptr result with addptr(src, 0) so that the later
+// AddPtrConverter can lower it to a hivm::PointerCastOp (memref type), which
+// the indirect load/store lowering needs to materialize its pointer operand.
+// Return the original source pointer when it is not an int_to_ptr result.
+static Value wrapIntToPtrWithAddPtr(Value srcPtr, Location loc,
+                                    PatternRewriter &rewriter) {
+  if (auto *defOp = srcPtr.getDefiningOp()) {
+    if (auto intToPtrOp = dyn_cast<triton::IntToPtrOp>(defOp)) {
+      auto zeroOffset = rewriter.create<arith::ConstantOp>(
+          loc, rewriter.getZeroAttr(intToPtrOp.getSrc().getType()));
+      return rewriter.create<triton::AddPtrOp>(loc, srcPtr.getType(), srcPtr,
+                                               zeroOffset);
+    }
+  }
+  return srcPtr;
+}
+
+template <typename MemAccOpTy>
+LogicalResult tryRewriteUnstructuredMixedFastPath(
+    MemAccOpTy op, Location loc, Value srcPtr, Value ptrOffset,
+    ArrayRef<int64_t> unstructuredDims, PatternRewriter &rewriter) {
+  if (!canUseIndirectFastPath(srcPtr, ptrOffset)) {
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "Skip mixed unstructured fast path: base must be a scalar "
+             "element pointer and indices must be an integer tensor\n";
+    });
+    return failure();
+  }
+
+  if constexpr (std::is_same_v<MemAccOpTy, triton::LoadOp>) {
+    Value base = wrapIntToPtrWithAddPtr(srcPtr, loc, rewriter);
+    auto unstructuredLoad = rewriter.create<triton::ascend::UnstructuredLoadOp>(
+        loc, op.getType(), base, ptrOffset,
+        rewriter.getDenseI64ArrayAttr(unstructuredDims), op.getMask(),
+        op.getOther(), op.getCacheAttr(), op.getEvictAttr(),
+        rewriter.getBoolAttr(
+            ConverterUtils::requiresVolatileIndirectLoad(op.getPtr(), op)));
+    rewriter.replaceOp(op, unstructuredLoad.getResult());
+    return success();
+  } else if constexpr (std::is_same_v<MemAccOpTy, triton::StoreOp>) {
+    Value base = wrapIntToPtrWithAddPtr(srcPtr, loc, rewriter);
+    if (auto bitcastOp = base.getDefiningOp<triton::BitcastOp>()) {
+      auto srcPtrTy =
+          dyn_cast<triton::PointerType>(bitcastOp.getSrc().getType());
+      auto dstPtrTy = dyn_cast<triton::PointerType>(bitcastOp.getType());
+      if (srcPtrTy && dstPtrTy && srcPtrTy.getPointeeType().isInteger(1) &&
+          dstPtrTy.getPointeeType().isInteger(8)) {
+        base = bitcastOp.getSrc();
+      }
+    }
+    rewriter.create<triton::ascend::UnstructuredStoreOp>(
+        loc, base, ptrOffset, op.getValue(),
+        rewriter.getDenseI64ArrayAttr(unstructuredDims), op.getMask(),
+        op.getCacheAttr(), op.getEvictAttr());
+    rewriter.eraseOp(op);
+    return success();
+  }
+  return failure();
 }
 
 template <typename MemAccOpTy>
@@ -774,7 +831,8 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
 
   auto ptr = op.getPtr();
   auto ptrType = resolvePtrTensorType(ptr);
-  auto routeDiscreteMaskToSimt = op->hasAttr(kRouteDiscreteMaskToSimtAttrName);
+  auto mixCompileDiscreteMask =
+      op->hasAttr(ConverterUtils::mixCompileDiscreteMaskAttrName);
 
   if (!ptrType || op->hasAttr(ConverterUtils::discreteAttrName))
     return failure();
@@ -786,7 +844,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
   if (checkUnstructureAnnotated(op, rewriter))
     ptrOffsetInfo.setUnstructured(ptrOffsetInfo.getRank());
 
-  if (ptrOffsetInfo.isStructured() && !routeDiscreteMaskToSimt &&
+  if (ptrOffsetInfo.isStructured() && !mixCompileDiscreteMask &&
       (!ptrOffsetInfo.isScalarLike() ||
        llvm::all_of(ptrType.getShape(), [](int64_t dim) { return dim == 1; })))
     return failure();
@@ -852,30 +910,46 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
     os << "ptrOffsetInfo.isStructured: " << ptrOffsetInfo.isStructured()
        << "\n";
     os << "compileOn91095Flag: " << compileOn91095Flag << "\n";
-    os << "forceSimtTemplateFlag: " << forceSimtTemplateFlag << "\n";
+    os << "compileMode: " << static_cast<int>(unstructureCompileMode) << "\n";
   });
 
-  // SIMT Indirect Fast-Path Lowering in 950 seiries
-  bool indirectFastPathEnabled =
-      compileOn91095Flag && forceSimtTemplateFlag &&
+  bool templateIndirectFastPathEnabled =
+      compileOn91095Flag &&
+      triton::ascend::isSimtTemplateMode(unstructureCompileMode) &&
       ((!ptrOffsetInfo.isStructured() && sizeInByte < 64) ||
-       routeDiscreteMaskToSimt);
+       mixCompileDiscreteMask);
   bool rankWithinIndirectLoadStoreFastPathLimit = resultShape.size() <= 5;
-  if (indirectFastPathEnabled &&
+  if constexpr (std::is_same_v<MemAccOpTy, triton::LoadOp> ||
+                std::is_same_v<MemAccOpTy, triton::StoreOp>) {
+    bool mixedUnstructuredFastPathEnabled =
+        compileOn91095Flag &&
+        unstructureCompileMode == triton::ascend::CompileMode::SimdSimt &&
+        (ptrOffsetInfo.hasUnstructuredDim() || mixCompileDiscreteMask);
+    if (mixedUnstructuredFastPathEnabled &&
+        succeeded(tryRewriteUnstructuredMixedFastPath(
+            op, loc, srcPtr, ptrOffset, ptrOffsetInfo.getUnstructuredDims(),
+            rewriter))) {
+      return success();
+    }
+  }
+
+  if (templateIndirectFastPathEnabled &&
       succeeded(tryRewriteIndirectFastPath(op, loc, srcPtr, ptrOffset,
                                            resultShape, rewriter))) {
     return success();
   }
 
   LLVM_DEBUG({
-    if (sizeInByte >= 64) {
+    if (triton::ascend::isSimtTemplateMode(unstructureCompileMode) &&
+        sizeInByte >= 64) {
       auto &os = llvm::dbgs();
-      os << "Skip SIMT indirect fast path because continuous shape product is "
+      os << "Skip template-SIMT indirect fast path because continuous shape "
+            "product is "
          << sizeInByte << " (>=64)\n";
     }
     if constexpr (std::is_same_v<MemAccOpTy, triton::LoadOp> ||
                   std::is_same_v<MemAccOpTy, triton::StoreOp>) {
-      if (indirectFastPathEnabled &&
+      if (templateIndirectFastPathEnabled &&
           !rankWithinIndirectLoadStoreFastPathLimit) {
         auto &os = llvm::dbgs();
         os << "Skip tt.indirect_load/store fast path because rank is "
@@ -1181,13 +1255,21 @@ TritonToUnstructurePass::TritonToUnstructurePass(
 
 void TritonToUnstructurePass::runOnOperation() {
   compileOn91095Flag = this->compileOn91095;
-  forceSimtTemplateFlag = this->forceSimtTemplate;
+  auto compileMode = triton::ascend::parseCompileMode(this->compileMode);
+  if (!compileMode) {
+    getOperation().emitError()
+        << "triton-to-unstructure compile-mode is invalid: "
+        << this->compileMode;
+    signalPassFailure();
+    return;
+  }
+  unstructureCompileMode = *compileMode;
 
   LLVM_DEBUG({
     auto &os = llvm::dbgs();
     os << "TritonToUnstructurePass started with options:\n";
     os << "  compileOn91095: " << compileOn91095Flag << "\n";
-    os << "  forceSimtTemplate: " << forceSimtTemplateFlag << "\n";
+    os << "  compileMode: " << this->compileMode << "\n";
   });
 
   ModuleOp moduleOp = getOperation();
