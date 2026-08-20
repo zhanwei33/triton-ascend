@@ -317,6 +317,22 @@ def test_mix_mode_is_ir_derived_metadata_not_an_npu_option(compiler_module):
     assert metadata[option_name] == "mix"
 
 
+def test_use_bytecode_is_fixed_pipeline_not_an_npu_option(compiler_module):
+    option_name = "use_bytecode"
+    backend = compiler_module.AscendBackend(SimpleNamespace(backend="npu", arch="Ascend910_9589"))
+    options = _parse_options(compiler_module, "Ascend910_9589")
+    stages = {}
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: False})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910_9589", {option_name: False})
+
+    backend.add_stages(stages, options, language=None)
+    assert {"ttadapter", "mlirbc", "bcmlir", "npubin"}.issubset(stages)
+
+
 def test_simt_stack_limit_explicit_value_overrides_acl_config(compiler_module, monkeypatch, tmp_path):
     (tmp_path / "acl_default.json").write_text(
         '{"StackSize": {"simt_stack_size": 2048}}', encoding="utf-8")
