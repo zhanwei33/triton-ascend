@@ -519,7 +519,7 @@ def make_launcher(constants, signature, metadata):
     mix_mode = metadata.mix_mode
     compile_on_910_95 = metadata.compile_on_910_95
     parallel_mode = metadata.parallel_mode
-    enable_simt = ("simt" in parallel_mode) or metadata.force_simt_only
+    enable_simt = ("simt" in parallel_mode) or metadata.is_pure_simt
 
     def _expand_signature(signature):
         output = []
@@ -677,7 +677,7 @@ def make_launcher(constants, signature, metadata):
     sync_lock_fail_code = 'fprintf(stderr, "Error: syncBlockLock allocation failed\\n"); return;'
     workspace_fail_code = 'fprintf(stderr, "Error: workspace allocation failed\\n"); return;'
     exported_scratch_guard = ""
-    if metadata.force_simt_only and global_scratch_size > 0:
+    if metadata.is_pure_simt and global_scratch_size > 0:
         exported_scratch_guard = (
             'fprintf(stderr, "Error: triton_launch_kernel does not support nonzero global scratch\\n");\n'
             '  return;')
@@ -1057,7 +1057,7 @@ void triton_launch_kernel(const char* kernelName, aclrtFuncHandle func, aclrtStr
   std::string name(kernelName);
   void *workspace_addr_ptr = NULL;
   void *workspace_handle = NULL;
-  {'void *global_scratch = nullptr; void *profile_scratch = nullptr;' if metadata.force_simt_only else ''}
+  {'void *global_scratch = nullptr; void *profile_scratch = nullptr;' if metadata.is_pure_simt else ''}
   {coalesce_grid_div}
   uint32_t blockNum4Workspace = gridX * gridY * gridZ;
   {get_backend_func("pre_launch", True)}
@@ -1115,8 +1115,8 @@ void triton_launch_kernel(const char* kernelName, aclrtFuncHandle func, aclrtStr
       return current_offset;
     }};
     {'size_t ffts_offset = reserve_slot(sizeof(void*), 8);' if target_support_ffts else ''}
-    {'size_t sync_block_lock_offset = reserve_slot(sizeof(void*), 8);' if not metadata.force_simt_only else ''}
-    {'size_t workspace_offset = reserve_slot(sizeof(void*), 8);' if not metadata.force_simt_only else ''}
+    {'size_t sync_block_lock_offset = reserve_slot(sizeof(void*), 8);' if not metadata.is_pure_simt else ''}
+    {'size_t workspace_offset = reserve_slot(sizeof(void*), 8);' if not metadata.is_pure_simt else ''}
     size_t kernel_args_offset = args_offset;
     for (int arg_idx = 0; arg_idx < num_args; ++arg_idx) {{
       size_t alignment = launch_arg_sizes[arg_idx] >= 8 ? 8 : (launch_arg_sizes[arg_idx] >= 4 ? 4 : 1);
@@ -1126,15 +1126,15 @@ void triton_launch_kernel(const char* kernelName, aclrtFuncHandle func, aclrtStr
     size_t grid_offset = reserve_slot(sizeof(int32_t), 4);
     reserve_slot(sizeof(int32_t), 4);
     reserve_slot(sizeof(int32_t), 4);
-    {'size_t global_scratch_offset = reserve_slot(sizeof(void*), 8);' if metadata.force_simt_only else ''}
-    {'size_t profile_scratch_offset = reserve_slot(sizeof(void*), 8);' if metadata.force_simt_only else ''}
+    {'size_t global_scratch_offset = reserve_slot(sizeof(void*), 8);' if metadata.is_pure_simt else ''}
+    {'size_t profile_scratch_offset = reserve_slot(sizeof(void*), 8);' if metadata.is_pure_simt else ''}
     {'size_t dtdata_offset = reserve_slot(sizeof(void*), 8);' if enable_device_print else ''}
     size_t total_size = args_offset;
 
     std::vector<char> launch_args(total_size, 0);
     {'memcpy(launch_args.data() + ffts_offset, &ffts_addr, sizeof(void*));' if target_support_ffts else ''}
-    {f'memcpy(launch_args.data() + sync_block_lock_offset, &syncBlockLock_ptr, sizeof(void*));' if not metadata.force_simt_only else ''}
-    {f'memcpy(launch_args.data() + workspace_offset, &workspace_addr_ptr, sizeof(void*));' if not metadata.force_simt_only else ''}
+    {f'memcpy(launch_args.data() + sync_block_lock_offset, &syncBlockLock_ptr, sizeof(void*));' if not metadata.is_pure_simt else ''}
+    {f'memcpy(launch_args.data() + workspace_offset, &workspace_addr_ptr, sizeof(void*));' if not metadata.is_pure_simt else ''}
     size_t kernel_arg_offset = kernel_args_offset;
     for (int arg_idx = 0; arg_idx < num_args; ++arg_idx) {{
       size_t alignment = launch_arg_sizes[arg_idx] >= 8 ? 8 : (launch_arg_sizes[arg_idx] >= 4 ? 4 : 1);
@@ -1145,8 +1145,8 @@ void triton_launch_kernel(const char* kernelName, aclrtFuncHandle func, aclrtStr
     memcpy(launch_args.data() + grid_offset, &gridX, sizeof(int32_t));
     memcpy(launch_args.data() + grid_offset + sizeof(int32_t), &gridY, sizeof(int32_t));
     memcpy(launch_args.data() + grid_offset + 2 * sizeof(int32_t), &gridZ, sizeof(int32_t));
-    {'memcpy(launch_args.data() + global_scratch_offset, &global_scratch, sizeof(void*));' if metadata.force_simt_only else ''}
-    {'memcpy(launch_args.data() + profile_scratch_offset, &profile_scratch, sizeof(void*));' if metadata.force_simt_only else ''}
+    {'memcpy(launch_args.data() + global_scratch_offset, &global_scratch, sizeof(void*));' if metadata.is_pure_simt else ''}
+    {'memcpy(launch_args.data() + profile_scratch_offset, &profile_scratch, sizeof(void*));' if metadata.is_pure_simt else ''}
     {'memcpy(launch_args.data() + dtdata_offset, &DTData, sizeof(void*));' if enable_device_print else ''}
 
     {cpp_msprof_call_before_launch}
@@ -1223,23 +1223,23 @@ static void _launch(
     {'if (ret != ACL_SUCCESS) return ret;' if (workspace_size > 0 and enable_taskqueue) else 'if (ret != ACL_SUCCESS) return;' if (workspace_size > 0 and not enable_taskqueue) else ''}
     struct __attribute__((packed)) {{
       {'void* ffts_addr __attribute__((aligned(8)));' if target_support_ffts else ''}
-      {'void* syncBlockLock __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
-      {'void* workspace_addr __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
+      {'void* syncBlockLock __attribute__((aligned(8)));' if not metadata.is_pure_simt else ''}
+      {'void* workspace_addr __attribute__((aligned(8)));' if not metadata.is_pure_simt else ''}
       {' '.join(f'{ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if ty != "constexpr")}
       {' '.join(f'{ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
-      {'void* global_scratch __attribute__((aligned(8)));' if metadata.force_simt_only else ''}
-      {'void* profile_scratch __attribute__((aligned(8)));' if metadata.force_simt_only else ''}
+      {'void* global_scratch __attribute__((aligned(8)));' if metadata.is_pure_simt else ''}
+      {'void* profile_scratch __attribute__((aligned(8)));' if metadata.is_pure_simt else ''}
       {'void* DTData __attribute__((aligned(8)));' if enable_device_print else ''}
     }} args = {{
       {'static_cast<void*>(ffts_addr),' if target_support_ffts else ''}
-      {('static_cast<void*>(syncBlockLock_ptr),' if lock_num > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
-      {('static_cast<void*>(workspace_addr_ptr),' if workspace_size > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
+      {('static_cast<void*>(syncBlockLock_ptr),' if lock_num > 0 else 'nullptr,') if not metadata.is_pure_simt else ''}
+      {('static_cast<void*>(workspace_addr_ptr),' if workspace_size > 0 else 'nullptr,') if not metadata.is_pure_simt else ''}
       {(lambda _rt: (', '.join(_rt) + ',') if _rt else '')(
         [f'static_cast<{ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if ty != "constexpr"]
       )}
       {', '.join(f'static_cast<{ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
-      {', static_cast<void*>(global_scratch)' if metadata.force_simt_only else ''}
-      {', static_cast<void*>(profile_scratch)' if metadata.force_simt_only else ''}
+      {', static_cast<void*>(global_scratch)' if metadata.is_pure_simt else ''}
+      {', static_cast<void*>(profile_scratch)' if metadata.is_pure_simt else ''}
       {', static_cast<void*>(DTData)' if enable_device_print else ''}
     }};
     {cpp_msprof_call_before_launch}
