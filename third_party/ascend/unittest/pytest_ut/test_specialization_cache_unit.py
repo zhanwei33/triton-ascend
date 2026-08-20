@@ -58,9 +58,8 @@ def bind_and_key(binder, cache, value, address, options):
 
 SIMD_OPTIONS = [
     pytest.param({"compile_mode": "simd"}, id="simd"),
-    pytest.param({"compile_mode": "unstructured_in_simt"}, id="unstructured-in-simt"),
     pytest.param({"compile_mode": "simt_template"}, id="simt-template"),
-    pytest.param({}, id="default-unstructured-in-simt"),
+    pytest.param({}, id="default-simd"),
 ]
 
 SIMT_OPTIONS = [
@@ -135,7 +134,7 @@ def test_simd_integer_alignment_reuses_cache_key(options, values):
 
 @pytest.mark.parametrize("options", [
     pytest.param({"compile_mode": "simd"}, id="simd"),
-    pytest.param({"compile_mode": "unstructured_in_simt"}, id="unstructured-in-simt"),
+    pytest.param({"compile_mode": "simt_template"}, id="simt-template"),
 ])
 @pytest.mark.parametrize(
     "values, expected_type",

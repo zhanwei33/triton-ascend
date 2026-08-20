@@ -178,7 +178,7 @@ def make_ttir(mod, metadata, opt):
         ascend.passes.ttir.add_graph_optimize(
             pm,
             ub_capacity_bytes=graph_ub_budget_bytes_for_arch(opt._arch),
-            force_simt_only=opt.is_pure_simt,
+            compile_mode=opt.compile_mode,
         )
     pm.run(mod, 'make_ttir')
     if opt.debug:
@@ -212,7 +212,11 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         # Select analysis is a fixed lowering policy, not a user compile option.
         enable_select_analysis = True
         compile_on_910_95 = metadata["compile_on_910_95"]
-        use_simt_template = metadata["use_simt_template"]
+        # ``compile_mode`` is normalized once when NPUOptions is constructed.
+        # Thread that canonical value through every lowering pass instead of
+        # rebuilding separate force/template booleans at each boundary.
+        compile_mode = getattr(opt, "compile_mode", metadata.get("compile_mode", "simd"))
+        metadata["compile_mode"] = compile_mode
         enable_mixed_cv = metadata.get("enable_mixed_cv")
         set_workspace_multibuffer = metadata.get("set_workspace_multibuffer")
 
@@ -223,16 +227,16 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
 
         ascend.passes.ttir.add_triton_control_flow_opt(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, False, False)
-        ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, use_simt_template)
+        ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, compile_mode)
         ascend.passes.ttir.add_triton_to_annotation(pm)
-        ascend.passes.ttir.add_triton_to_unstructure(pm, compile_on_910_95, use_simt_template)
+        ascend.passes.ttir.add_triton_to_unstructure(pm, compile_on_910_95, compile_mode)
         ascend.passes.ttir.add_triton_to_hivm(pm)
         ascend.passes.ttir.add_triton_to_hfusion(pm, compile_on_910_95)
         ascend.passes.ttir.add_triton_to_llvm(pm)
         ascend.passes.ttir.add_bubble_up_operation(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, False, False)
-        ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, False, enable_select_analysis,
-                                                compile_on_910_95)
+        ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, False, enable_select_analysis, compile_on_910_95,
+                                                compile_mode)
         # Restricted to 910_95/950. The merged buffer is written by two disjoint
         # memref.copy ops, and on 910_9362 the generated code only makes the
         # copy next to the surviving to_tensor visible, so the other half of the
@@ -686,6 +690,15 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         if opt.debug:
             _compile_option_list += ["--bishengir-print-ir-after=hivm-graph-sync-solver"]
 
+        if opt.compile_mode == "simd_simt":
+            # Mixed SIMD/SIMT code generation needs both the compiler switch
+            # and the launch geometry used by the generated SIMT region.
+            _compile_option_list += ["--enable-simd-simt-mix-compile"]
+            _compile_option_list += [f"--num-warps={opt.num_warps}"]
+            _compile_option_list += [f"--threads-per-warp={opt.warp_size}"]
+            if opt.shared_mem_dynamic_size is not None:
+                _compile_option_list += [f"--shared-mem-dynamic-size={opt.shared_mem_dynamic_size}"]
+
         vf_merge_level = metadata["vf_merge_level"]
         if vf_merge_level is not None:
             _compile_option_list += [f"--enable-vf-merge-level={vf_merge_level}"]
@@ -915,6 +928,42 @@ def _is_a5_target_arch(arch: str) -> bool:
     return isinstance(arch, str) and arch.startswith(("Ascend910_95", "Ascend950"))
 
 
+_CANONICAL_COMPILE_MODES = ("simd", "simd_simt", "simt_template", "simt_only")
+_LEGACY_COMPILE_MODE_ALIASES = {
+    "unstructured_in_simt": "simt_template",
+}
+
+
+def _normalize_compile_mode(compile_mode, arch: str) -> str:
+    """Validate and canonicalize the public compile-mode contract.
+
+    SIMD is portable.  The three modes that introduce SIMT behavior are A5
+    only, so reject them before they can silently become cache-key-only
+    strings on A2/A3.  ``unstructured_in_simt`` remains a temporary explicit
+    compatibility alias for the template route.
+    """
+    if not isinstance(compile_mode, str):
+        raise ValueError("compile_mode must be a string; expected one of: " + ", ".join(_CANONICAL_COMPILE_MODES))
+
+    canonical_mode = _LEGACY_COMPILE_MODE_ALIASES.get(compile_mode, compile_mode)
+    if canonical_mode not in _CANONICAL_COMPILE_MODES:
+        raise ValueError(f"invalid compile_mode={compile_mode!r}; expected one of: " +
+                         ", ".join(_CANONICAL_COMPILE_MODES))
+
+    if canonical_mode != compile_mode:
+        warnings.warn(
+            'compile_mode="unstructured_in_simt" is deprecated; '
+            'use compile_mode="simt_template" instead.',
+            FutureWarning,
+            stacklevel=3,
+        )
+
+    if canonical_mode != "simd" and not _is_a5_target_arch(arch):
+        raise ValueError(f'compile_mode="{canonical_mode}" is supported only on A5 targets; '
+                         'A2/A3 supports only compile_mode="simd".')
+    return canonical_mode
+
+
 @dataclass(frozen=True)
 class NPUOptions:
     debug: bool = False
@@ -988,10 +1037,9 @@ class NPUOptions:
     # A5 pure-SIMT-only option passed as -enable-bishengir-simt-optimization
     # to bishengir-compile. Its value grammar belongs to the toolchain.
     enable_bishengir_simt_optimization: int = 000
-    # compile_mode: "simd", "unstructured_in_simt" (legacy template alias),
-    # "simt_template", or "simt_only"
-    # When compile_mode is provided, it automatically sets other fields
-    compile_mode: str = "unstructured_in_simt"
+    # Canonical modes: SIMD (D), mixed SIMD/SIMT (X), template-SIMT (P), and
+    # pure-SIMT (T).  ``unstructured_in_simt`` is a deprecated P alias.
+    compile_mode: str = "simd"
     simt_stack_limit: int = None
     # take effect on the reorder instruction pattern for SIMT. The pattern is disabled by default.
     enable_simt_reorder_instruction: bool = False
@@ -1016,12 +1064,17 @@ class NPUOptions:
         if self.simt_stack_limit is not None:
             _validate_simt_stack_limit(self.simt_stack_limit)
 
-        # Parse compile_mode and set related fields
-        if self.compile_mode == "simd":
+        compile_mode = _normalize_compile_mode(self.compile_mode, arch)
+        object.__setattr__(self, "compile_mode", compile_mode)
+
+        # Derive all internal mode state from the single canonical selector.
+        if compile_mode == "simd":
             object.__setattr__(self, "parallel_mode", "simd")
-        elif self.compile_mode in ("unstructured_in_simt", "simt_template"):
+        elif compile_mode == "simd_simt":
+            object.__setattr__(self, "parallel_mode", "mix_simd_simt")
+        elif compile_mode == "simt_template":
             object.__setattr__(self, "use_simt_template", True)
-        elif self.compile_mode == "simt_only":
+        elif compile_mode == "simt_only":
             object.__setattr__(self, "is_pure_simt", True)
             object.__setattr__(self, "parallel_mode", "simt")
 
@@ -1043,7 +1096,7 @@ def _normalize_bishengir_simt_optimization_for_context(options: NPUOptions, raw_
     if option_name not in raw_options:
         return
 
-    if _is_a5_target_arch(options._arch) and options.is_pure_simt:
+    if (_is_a5_target_arch(options._arch) and options.compile_mode == "simt_only"):
         # The BiShengIR toolchain owns the option's value grammar; keep the
         # Python boundary free of numeric or range validation.
         return
@@ -1081,6 +1134,7 @@ _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "grid_num_tiles",
     "stream",
 })
+
 
 def ttir_to_npubin(mod, metadata, opt):
     # Get Triton-MLIR as string
@@ -1195,7 +1249,8 @@ class AscendBackend(BaseBackend):
         if self.target.backend == "npu":
             _warn_deprecated_ascend_env_vars()
             option_names = {
-                name for name, option_field in NPUOptions.__dataclass_fields__.items()
+                name
+                for name, option_field in NPUOptions.__dataclass_fields__.items()
                 if option_field.init and name != "arch"
             }
             # JIT and AOT hand the complete, already-normalized dataclass back to

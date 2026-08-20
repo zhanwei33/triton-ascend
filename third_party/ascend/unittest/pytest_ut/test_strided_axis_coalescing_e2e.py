@@ -12,10 +12,11 @@
 """Native gate-on regression for ``StridedAxisCoalescing``.
 
 This intentionally uses the original T2L eligibility shape instead of forcing
-an option in the test: a one-dimensional block pointer has ``stride=S`` and a
-base of ``ptr + (pid % S)``; ``pid // S`` selects the T tile.  The default NPU
-compile mode is ``unstructured_in_simt``, which supplies the historical
-``use_simt_template`` half of the T2L gate on a real 910_95/A5 target.
+an internal pass option in the test: a one-dimensional block pointer has
+``stride=S`` and a base of ``ptr + (pid % S)``; ``pid // S`` selects the T
+tile.  The test explicitly selects ``compile_mode="simt_template"``, which
+supplies the historical template half of the T2L gate on a real 910_95/A5
+target.
 
 Do not run this test on a generic/B4 machine.  Pretending that such a machine
 is 910_95 would exercise a different compiler/toolchain contract and would not
@@ -115,8 +116,8 @@ def test_strided_axis_coalescing_gate_on_e2e():
     dst = torch.empty_like(src)
 
     # Compile first through the normal JIT API, then retain its real metadata
-    # for the ABI checks below.  No target/compile-mode override is supplied:
-    # this must be the target's default 91095 gate-on configuration.
+    # for the ABI checks below.  Template-SIMT is explicit because the public
+    # default is now SIMD.
     kernel = strided_axis_coalescing_copy.warmup(
         src,
         dst,
@@ -124,9 +125,10 @@ def test_strided_axis_coalescing_gate_on_e2e():
         T=t,
         S=s,
         BLOCK=block,
+        compile_mode="simt_template",
     )
     assert kernel is not None
-    strided_axis_coalescing_copy[(grid_x, )](src, dst, T=t, S=s, BLOCK=block)
+    strided_axis_coalescing_copy[(grid_x, )](src, dst, T=t, S=s, BLOCK=block, compile_mode="simt_template")
     torch.npu.synchronize()
 
     assert torch.equal(dst.cpu(), src.cpu())
@@ -135,7 +137,7 @@ def test_strided_axis_coalescing_gate_on_e2e():
     # they prove the original compile_on_910_95 && use_simt_template slot
     # actually ran StridedAxisCoalescing and exported the launch contract.
     metadata = kernel.metadata
-    assert metadata.compile_mode == "unstructured_in_simt"
+    assert metadata.compile_mode == "simt_template"
     assert metadata.compile_on_910_95 is True
     assert metadata.use_simt_template is True
     assert metadata.coalesce_factor == s

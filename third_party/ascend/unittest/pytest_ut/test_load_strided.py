@@ -21,7 +21,7 @@
 # Tests for SIMT IndirectLoad fast-path (TritonToLinalg / StridedLoadStoreRewrite).
 #
 # What each parameter row exercises against the V1 trigger condition
-# (compileOn91095 + forceSimtTemplate, last-axis stride statically > 1,
+# (compileOn91095 + compile_mode=simt_template, last-axis stride statically > 1,
 #  non-permuted layout, rank <= 5, not stride==2-even-size):
 #
 #   * STRIDE > 2 / odd       -> V1 should rewrite tt.load -> tt.indirect_load

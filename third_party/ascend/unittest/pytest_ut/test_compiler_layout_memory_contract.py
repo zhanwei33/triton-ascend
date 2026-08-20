@@ -30,6 +30,7 @@ import pytest
 
 pytestmark = pytest.mark.backend("none")
 
+
 def _stub_graph_ub_budget_bytes_for_arch(arch):
     """Mirror the documented architecture table for the compiler import shim.
 
@@ -236,9 +237,8 @@ def test_auto_block_mapping_is_fixed_backend_policy():
 
     assert removed_env not in utils_source
     module = ast.parse(utils_source)
-    function = next(
-        node for node in module.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_is_auto_map_parallel_blocks_enabled")
+    function = next(node for node in module.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "_is_auto_map_parallel_blocks_enabled")
     returns = [node for node in function.body if isinstance(node, ast.Return)]
     assert len(returns) == 1
     assert isinstance(returns[0].value, ast.Constant)
@@ -345,11 +345,12 @@ def test_parallel_mode_is_internal_metadata_derived_from_mode_and_linalg_ir(comp
         _parse_options(compiler_module, "Ascend910_9589", {option_name: "simt"})
 
     assert _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simd"}).parallel_mode == "simd"
+    assert _parse_options(compiler_module, "Ascend910_9589",
+                          {"compile_mode": "simd_simt"}).parallel_mode == "mix_simd_simt"
     assert _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simt_only"}).parallel_mode == "simt"
 
     _linalg, metadata = compiler_module._parse_linalg_metadata(
-        'mix_mode = "aiv" parallel_mode = "mix_simd_simt" func.func @derived_kernel()', {}
-    )
+        'mix_mode = "aiv" parallel_mode = "mix_simd_simt" func.func @derived_kernel()', {})
     assert metadata[option_name] == "mix_simd_simt"
 
 
@@ -378,13 +379,55 @@ def test_force_simt_template_is_replaced_by_compile_mode(compiler_module):
         _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
 
     default = compiler_module.NPUOptions()
-    assert default.compile_mode == "unstructured_in_simt"
-    assert default.use_simt_template is True
+    assert default.compile_mode == "simd"
+    assert default.use_simt_template is False
 
     template = _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simt_template"})
     assert template.use_simt_template is True
     assert template.is_pure_simt is False
     assert _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simd"}).use_simt_template is False
+
+
+@pytest.mark.parametrize(
+    ("compile_mode", "parallel_mode", "use_simt_template", "is_pure_simt"),
+    (
+        ("simd", "simd", False, False),
+        ("simd_simt", "mix_simd_simt", False, False),
+        ("simt_template", "simd", True, False),
+        ("simt_only", "simt", False, True),
+    ),
+)
+def test_compile_mode_centralizes_all_canonical_routes(compiler_module, compile_mode, parallel_mode, use_simt_template,
+                                                       is_pure_simt):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": compile_mode})
+
+    assert options.compile_mode == compile_mode
+    assert options.parallel_mode == parallel_mode
+    assert options.use_simt_template is use_simt_template
+    assert options.is_pure_simt is is_pure_simt
+
+
+def test_compile_mode_legacy_alias_warns_and_normalizes(compiler_module):
+    with pytest.warns(FutureWarning, match="unstructured_in_simt"):
+        options = _parse_options(
+            compiler_module,
+            "Ascend910_9589",
+            {"compile_mode": "unstructured_in_simt"},
+        )
+
+    assert options.compile_mode == "simt_template"
+    assert options.use_simt_template is True
+
+
+@pytest.mark.parametrize("compile_mode", ("simd_simt", "simt_template", "simt_only"))
+def test_compile_mode_rejects_simt_routes_on_a3(compiler_module, compile_mode):
+    with pytest.raises(ValueError, match="A2/A3"):
+        _parse_options(compiler_module, "Ascend910B1", {"compile_mode": compile_mode})
+
+
+def test_compile_mode_rejects_unknown_values(compiler_module):
+    with pytest.raises(ValueError, match="invalid compile_mode"):
+        _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "unknown"})
 
 
 @pytest.mark.parametrize("value", (17, -1, "toolchain-defined"))
@@ -404,8 +447,8 @@ def test_bishengir_simt_optimization_keeps_any_value_on_a5_pure_simt(compiler_mo
 @pytest.mark.parametrize(
     ("arch", "compile_mode"),
     (
-        ("Ascend910B1", "simt_only"),
         ("Ascend910_9589", "simd"),
+        ("Ascend910_9589", "simd_simt"),
         ("Ascend910_9589", "simt_template"),
     ),
 )
@@ -476,8 +519,7 @@ def test_grid_num_tiles_uses_chunk_coalescing_default_not_an_npu_option(compiler
 
 
 def test_simt_stack_limit_explicit_value_overrides_acl_config(compiler_module, monkeypatch, tmp_path):
-    (tmp_path / "acl_default.json").write_text(
-        '{"StackSize": {"simt_stack_size": 2048}}', encoding="utf-8")
+    (tmp_path / "acl_default.json").write_text('{"StackSize": {"simt_stack_size": 2048}}', encoding="utf-8")
     torch_npu = types.ModuleType("torch_npu")
     torch_npu.__file__ = str(tmp_path / "__init__.py")
     monkeypatch.setitem(sys.modules, "torch_npu", torch_npu)
@@ -511,12 +553,12 @@ def test_auto_tile_and_bind_subblock_is_ir_derived_metadata_not_an_npu_option(co
 
     base_linalg = 'mix_mode = "aiv" parallel_mode = "simd" func.func @derived_kernel()'
     for marker, expected in (
-            ("", True),
-            ("hivm.disable_auto_tile_and_bind_subblock", False),
-            ("sync_block_lock_unordered", False),
+        ("", True),
+        ("hivm.disable_auto_tile_and_bind_subblock", False),
+        ("sync_block_lock_unordered", False),
     ):
-        _linalg, metadata = compiler_module._parse_linalg_metadata(
-            f"{base_linalg} {marker}", {"enable_auto_bind_sub_block": None})
+        _linalg, metadata = compiler_module._parse_linalg_metadata(f"{base_linalg} {marker}",
+                                                                   {"enable_auto_bind_sub_block": None})
         assert metadata[option_name] is expected
         assert compiler_module.get_auto_bind_sub_block_option(metadata) is expected
 
@@ -731,8 +773,8 @@ def test_disable_size_align_for_cast_is_not_an_npu_option(compiler_module):
 def test_limit_auto_multi_buffer_only_for_local_buffer_is_not_an_npu_or_autotune_option(compiler_module):
     option_name = "limit_auto_multi_buffer_only_for_local_buffer"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
-    autotuner_source = (Path(compiler_module.__file__).parent / "runtime" / "autotuner.py").read_text(
-        encoding="utf-8-sig")
+    autotuner_source = (Path(compiler_module.__file__).parent / "runtime" /
+                        "autotuner.py").read_text(encoding="utf-8-sig")
 
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     assert f'metadata["{option_name}"]' not in compiler_source
@@ -746,8 +788,8 @@ def test_limit_auto_multi_buffer_only_for_local_buffer_is_not_an_npu_or_autotune
 def test_limit_auto_multi_buffer_of_local_buffer_is_not_an_npu_or_autotune_option(compiler_module):
     option_name = "limit_auto_multi_buffer_of_local_buffer"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
-    autotuner_source = (Path(compiler_module.__file__).parent / "runtime" / "autotuner.py").read_text(
-        encoding="utf-8-sig")
+    autotuner_source = (Path(compiler_module.__file__).parent / "runtime" /
+                        "autotuner.py").read_text(encoding="utf-8-sig")
 
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     assert f'metadata["{option_name}"]' not in compiler_source
@@ -773,8 +815,7 @@ def test_disable_auto_inject_block_sync_is_not_an_npu_option(compiler_module):
 def test_storage_align_is_not_an_npu_or_ubtuner_option(compiler_module):
     option_name = "storage_align"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
-    ubtuner_source = (Path(compiler_module.__file__).parent / "runtime" / "ubtuner.py").read_text(
-        encoding="utf-8-sig")
+    ubtuner_source = (Path(compiler_module.__file__).parent / "runtime" / "ubtuner.py").read_text(encoding="utf-8-sig")
 
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     assert 'metadata["storage_align"]' not in compiler_source
@@ -791,8 +832,7 @@ def test_storage_align_is_not_an_npu_or_ubtuner_option(compiler_module):
 def test_ops_reorder_is_not_an_npu_or_ubtuner_option(compiler_module):
     option_name = "ops_reorder"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
-    ubtuner_source = (Path(compiler_module.__file__).parent / "runtime" / "ubtuner.py").read_text(
-        encoding="utf-8-sig")
+    ubtuner_source = (Path(compiler_module.__file__).parent / "runtime" / "ubtuner.py").read_text(encoding="utf-8-sig")
 
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     assert 'metadata["ops_reorder"]' not in compiler_source
@@ -806,8 +846,7 @@ def test_ops_reorder_is_not_an_npu_or_ubtuner_option(compiler_module):
 def test_code_motion_is_not_an_npu_or_ubtuner_option(compiler_module):
     option_name = "code_motion"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
-    ubtuner_source = (Path(compiler_module.__file__).parent / "runtime" / "ubtuner.py").read_text(
-        encoding="utf-8-sig")
+    ubtuner_source = (Path(compiler_module.__file__).parent / "runtime" / "ubtuner.py").read_text(encoding="utf-8-sig")
 
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     assert 'metadata["code_motion"]' not in compiler_source
@@ -864,7 +903,7 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
             "use_simt_template": False,
             "enable_dynamic_cv_pipeline": False,
         },
-        SimpleNamespace(debug=False),
+        SimpleNamespace(debug=False, compile_mode="simd"),
     )
 
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
@@ -876,7 +915,7 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
     _assert_deprecated_npu_option_is_ignored(compiler_module, "Ascend910B1", option_name, False)
 
 
-def test_simt_template_mode_drives_template_lowering_passes(compiler_module, monkeypatch):
+def test_simt_template_mode_drives_all_template_lowering_passes(compiler_module, monkeypatch):
     captured = {}
     pass_manager = SimpleNamespace(enable_debug=lambda: None, run=lambda *_args: None)
 
@@ -896,7 +935,7 @@ def test_simt_template_mode_drives_template_lowering_passes(compiler_module, mon
         add_triton_to_hfusion=no_op,
         add_triton_to_llvm=no_op,
         add_bubble_up_operation=no_op,
-        add_triton_to_linalg=no_op,
+        add_triton_to_linalg=record("linalg"),
         add_merge_concat_load_buffer=no_op,
     )
     monkeypatch.setattr(compiler_module, "ascend", SimpleNamespace(passes=SimpleNamespace(ttir=ttir_passes)))
@@ -911,16 +950,73 @@ def test_simt_template_mode_drives_template_lowering_passes(compiler_module, mon
         {
             "enable_nd2nz_on_vector": False,
             "compile_on_910_95": True,
-            "use_simt_template": True,
             "enable_mask_fallback_conversion": False,
             "optimize_dynamic_offset": False,
             "add_auto_scheduling": False,
             "enable_dynamic_cv_pipeline": False,
         },
-        SimpleNamespace(debug=False),
+        SimpleNamespace(debug=False, compile_mode="simt_template"),
     )
 
-    assert captured == {"discrete_mask": True, "unstructure": True}
+    assert captured == {
+        "discrete_mask": "simt_template",
+        "unstructure": "simt_template",
+        "linalg": "simt_template",
+    }
+
+
+def test_simd_simt_mode_drives_all_mixed_lowering_passes(compiler_module, monkeypatch):
+    captured = {}
+    pass_manager = SimpleNamespace(enable_debug=lambda: None, run=lambda *_args: None)
+
+    def no_op(*_args, **_kwargs):
+        return None
+
+    def record(name):
+        return lambda *_args: captured.__setitem__(name, _args[-1])
+
+    ttir_passes = SimpleNamespace(
+        add_triton_control_flow_opt=no_op,
+        add_triton_to_structure=no_op,
+        add_discrete_mask_access_conversion=record("discrete_mask"),
+        add_triton_to_annotation=no_op,
+        add_triton_to_unstructure=record("unstructure"),
+        add_triton_to_hivm=no_op,
+        add_triton_to_hfusion=no_op,
+        add_triton_to_llvm=no_op,
+        add_bubble_up_operation=no_op,
+        add_triton_to_linalg=record("linalg"),
+        add_merge_concat_load_buffer=no_op,
+    )
+    monkeypatch.setattr(compiler_module, "ascend", SimpleNamespace(passes=SimpleNamespace(ttir=ttir_passes)))
+    monkeypatch.setattr(compiler_module, "distributed", None)
+    monkeypatch.setattr(
+        compiler_module,
+        "ir",
+        SimpleNamespace(pass_manager=lambda _context: pass_manager),
+    )
+    monkeypatch.setattr(compiler_module, "_is_auto_map_parallel_blocks_enabled", lambda: False)
+    monkeypatch.setattr(compiler_module, "_adjust_metadata_by_module_result", no_op)
+    monkeypatch.setattr(compiler_module, "_export_coalesce_metadata", no_op)
+
+    compiler_module.ttir_to_linalg(
+        _FakeModule([]),
+        {
+            "enable_nd2nz_on_vector": False,
+            "compile_on_910_95": True,
+            "enable_mask_fallback_conversion": False,
+            "optimize_dynamic_offset": False,
+            "add_auto_scheduling": False,
+            "enable_dynamic_cv_pipeline": False,
+        },
+        SimpleNamespace(debug=False, compile_mode="simd_simt"),
+    )
+
+    assert captured == {
+        "discrete_mask": "simd_simt",
+        "unstructure": "simd_simt",
+        "linalg": "simd_simt",
+    }
 
 
 def _make_opt(
@@ -1006,6 +1102,7 @@ def _run_ttir_to_npubin(
         "_is_auto_map_parallel_blocks_enabled",
         lambda: auto_map_enabled,
     )
+
     # Keep this argv matrix independent of the host torch_npu configuration
     # while checking that Pure-SIMT passes the explicit option to the resolver.
     def get_simt_stack_limit(user_stack_limit):
@@ -1209,11 +1306,11 @@ def _run_make_ttir_with_recorded_graph_options(compiler, monkeypatch, options):
     return events, graph_calls
 
 
-def test_make_ttir_passes_pure_simt_state_to_graph_optimize(compiler_module, monkeypatch):
+def test_make_ttir_passes_compile_mode_to_graph_optimize(compiler_module, monkeypatch):
     options = SimpleNamespace(
         enable_graph_optimize=True,
         _arch="Ascend910B1",
-        is_pure_simt=True,
+        compile_mode="simt_only",
         debug=False,
     )
 
@@ -1221,7 +1318,7 @@ def test_make_ttir_passes_pure_simt_state_to_graph_optimize(compiler_module, mon
 
     assert graph_calls == [{
         "ub_capacity_bytes": 96 * 1024,
-        "force_simt_only": True,
+        "compile_mode": "simt_only",
     }]
     assert events[-1] == "run_row"
 
@@ -1311,23 +1408,77 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
         assert Path(command[-1]).name == "kernel", case
 
 
-@pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
-def test_default_compile_mode_keeps_the_91095_layout_memory_gate_prepared(compiler_module, ):
-    """The normal compiler default supplies the second half of the T2L gate.
+def test_simd_simt_mode_emits_mixed_bishengir_argv(compiler_module, monkeypatch):
+    commands = []
 
-    Axis/Chunk/SLS must remain controlled by the original
-    ``compile_on_910_95 && use_simt_template`` predicate.  The first half
-    comes only from real hardware detection; this source-level contract makes
-    sure the normal 91095 path does not accidentally lose its historical
-    ``unstructured_in_simt``/``use_simt_template`` default while tests run
-    on a non-91095 host.
-    """
+    class FakeNPUUtils:
+
+        def has_device_limit(self):
+            return False
+
+    def run_bisheng(command, **_kwargs):
+        commands.append(list(command))
+        Path(command[command.index("-o") + 1] + "_reloc.o").write_bytes(b"npubin")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    metadata = {
+        "multibuffer": None,
+        "num_stages": None,
+        "vf_fusion_mode": None,
+        "enable_preload": None,
+        "disable_tightly_coupled_buffer_reuse": False,
+        "enable_hivm_auto_cv_balance": None,
+        "sync_solver": None,
+        "unit_flag": None,
+        "inject_barrier_all": None,
+        "inject_block_all": None,
+        "set_workspace_multibuffer": None,
+        "limit_auto_multi_buffer_buffer": None,
+        "enable_mixed_cv": None,
+        "enable_flatten": None,
+        "enable_auto_vectorize_v2": None,
+        "auto_vectorize_v2_max_fused_ops_num": None,
+        "prevec_max_fused_ops_num": None,
+        "bitcodes": None,
+        "vf_merge_level": None,
+        "plan_memory_strategy": None,
+    }
+    options = SimpleNamespace(
+        use_bytecode=True,
+        compile_mode="simd_simt",
+        _arch="Ascend910_9589",
+        num_warps=4,
+        warp_size=32,
+        shared_mem_dynamic_size=4096,
+        mix_mode="",
+        debug=False,
+    )
+
+    monkeypatch.setattr(compiler_module, "_parse_linalg_metadata", lambda linalg, metadata: (linalg, metadata))
+    monkeypatch.setattr(compiler_module, "get_common_bishengir_compile_options", lambda _metadata: ["--base"])
+    monkeypatch.setattr(compiler_module, "get_auto_bind_sub_block_option", lambda _metadata: False)
+    monkeypatch.setattr(compiler_module, "NPUUtils", FakeNPUUtils)
+    monkeypatch.setattr(compiler_module, "_get_npucompiler_path", lambda: ("/fake/bishengir-compile", {}))
+    monkeypatch.setattr(compiler_module.subprocess, "run", run_bisheng)
+
+    assert compiler_module.linalg_to_bin_enable_npu_compile_910_95("module {}", metadata, options) == b"npubin"
+    assert len(commands) == 1
+    command = commands[0]
+    assert "--enable-simd-simt-mix-compile" in command
+    assert "--num-warps=4" in command
+    assert "--threads-per-warp=32" in command
+    assert "--shared-mem-dynamic-size=4096" in command
+    assert "--pure-simt" not in command
+
+
+def test_default_compile_mode_is_simd_and_template_mode_is_explicit(compiler_module):
+    """The normal route is SIMD; template-SIMT is selected explicitly."""
 
     default_options = compiler_module.NPUOptions()
-    assert default_options.compile_mode == "unstructured_in_simt"
-    assert default_options.use_simt_template is True
+    assert default_options.compile_mode == "simd"
+    assert default_options.use_simt_template is False
     assert default_options.is_pure_simt is False
 
-    simd_options = compiler_module.NPUOptions(compile_mode="simd")
-    assert simd_options.use_simt_template is False
-    assert simd_options.is_pure_simt is False
+    template_options = compiler_module.NPUOptions(arch="Ascend910_9589", compile_mode="simt_template")
+    assert template_options.use_simt_template is True
+    assert template_options.is_pure_simt is False

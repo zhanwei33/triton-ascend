@@ -96,7 +96,7 @@ if __name__ == "__main__":
 | 类别 | 编译选项 | 默认值/可选值 | 功能说明 | 配置说明 |
 |------|----------|----------------|----------|----------|
 | **通用流水** | `multibuffer` | `True`（默认）、`False` | 启用或禁用 ping-pong/double buffer 流水。默认开启。 | `triton.Config` 或 launch meta-parameter |
-| **编译模式** | `compile_mode` | `unstructured_in_simt`（默认）、`simd`、`simt_template`、`simt_only` | 选择编译模式。`simt_template` 是 template-SIMT 入口，用于替代已删除的 `force_simt_template`；`unstructured_in_simt` 保持既有 template 行为。 | `triton.Config` 或 launch meta-parameter |
+| **编译模式** | `compile_mode` | `simd`（默认）；A5 还支持 `simd_simt`、`simt_template`、`simt_only` | 选择唯一的编译路径：SIMD、SIMD/SIMT 混合 gather/scatter、template-SIMT 或 Pure-SIMT。 | `triton.Config` 或 launch meta-parameter |
 | **Pure-SIMT 优化** | `enable_bishengir_simt_optimization` | `0`（默认）或 BiShengIR 工具链值 | 仅在 A5 `compile_mode="simt_only"` 时生效；其他模式或产品显式传入时告警并忽略。该值直接透传，不在 Python 侧做数值或范围校验。 | `triton.Config` 或 launch meta-parameter |
 | **CV 融合** | `enable_auto_bind_sub_block` | `None`、`True`、`False` | 启用或禁用自动绑定 sub-block。 | `triton.Config` 或 launch meta-parameter |
 | **CV 融合** | `enable_hivm_auto_cv_balance` | `None`、`True`、`False` | 启用或禁用自动 CV balance。 | `triton.Config` 或 Autotune 参数 |
@@ -110,3 +110,9 @@ if __name__ == "__main__":
 | **编译 Pass** | `enable_linearize` | 版本相关 | 启用或禁用 linearization pass。 | `triton.Config` 或 launch meta-parameter |
 | **CV 融合/layout** | `enable_nd2nz_on_vector` | 默认 `False` | 启用或禁用 Vector 路径上的 ND 到 NZ 布局转换。 | `triton.Config` 或 launch meta-parameter |
 | **大 grid 优化** | `auto_blockify_size` | 默认 `1` | 配置 AutoBlockify pass 的扩展大小。 | launch meta-parameter 或 `triton.Config` |
+
+#### 编译模式兼容性
+
+所有产品默认使用 `simd`。A2/A3 仅接受 `simd`；A5 支持全部四个规范取值。`simd_simt` 开启混合编译器路径并传递 warp 几何参数，`simt_template` 驱动 discrete-mask、unstructure 与 template lowering，`simt_only` 驱动 Pure-SIMT 图优化、编译器、launcher 和 autotuner 路径。
+
+`compile_mode="unstructured_in_simt"` 是到 `simt_template` 的临时兼容别名，会产生 `FutureWarning`；请迁移为 `simt_template`。已删除的 `force_simt_template`、`force_simt_only` 不再接受。原先依赖 template-SIMT 默认值的调用方需显式设置 `compile_mode="simt_template"`。

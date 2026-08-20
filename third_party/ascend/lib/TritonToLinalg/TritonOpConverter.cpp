@@ -3494,6 +3494,84 @@ LogicalResult IndirectStoreConverter::matchAndRewrite(
   return success();
 }
 
+static int64_t
+computeUnstructuredBurstLength(ArrayRef<int64_t> shape,
+                               ArrayRef<int64_t> unstructuredDims) {
+  int64_t firstStructuredDimension = 0;
+  if (!unstructuredDims.empty()) {
+    firstStructuredDimension =
+        *std::max_element(unstructuredDims.begin(), unstructuredDims.end()) + 1;
+  }
+
+  int64_t burstLength = 1;
+  for (int64_t i = firstStructuredDimension;
+       i < static_cast<int64_t>(shape.size()); ++i) {
+    if (ShapedType::isDynamic(shape[i]))
+      return 1;
+    burstLength *= shape[i];
+  }
+  return burstLength;
+}
+
+LogicalResult UnstructuredLoadConverter::matchAndRewrite(
+    triton::ascend::UnstructuredLoadOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  if (compileModeFlag != triton::ascend::CompileMode::SimdSimt) {
+    return rewriter.notifyMatchFailure(
+        op, "unstructured load requires compile_mode=simd_simt");
+  }
+
+  auto loc = op.getLoc();
+  Value base = adaptor.getBase();
+  Value indices = adaptor.getIndices();
+  Value mask = adaptor.getMask();
+  Value other = adaptor.getOther();
+  if (!isa<MemRefType>(base.getType()))
+    return rewriter.notifyMatchFailure(op, "expected MemRefType for base");
+
+  auto resultType = cast<RankedTensorType>(op.getResult().getType());
+  int64_t burstLength = computeUnstructuredBurstLength(
+      resultType.getShape(), op.getUnstructuredDims());
+  Value burstLengthValue =
+      rewriter.create<arith::ConstantIntOp>(loc, burstLength, 32);
+  Value destination = rewriter.create<tensor::EmptyOp>(
+      loc, resultType.getShape(), resultType.getElementType());
+  auto gather = rewriter.create<hfusion::GatherLoadOp>(
+      loc, base, indices, burstLengthValue, mask, other, destination,
+      hfusion::CacheModifierAttr{}, hfusion::EvictionPolicyAttr{},
+      op.getIsVolatileAttr());
+  rewriter.replaceOp(op, gather.getResult());
+  return success();
+}
+
+LogicalResult UnstructuredStoreConverter::matchAndRewrite(
+    triton::ascend::UnstructuredStoreOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  if (compileModeFlag != triton::ascend::CompileMode::SimdSimt) {
+    return rewriter.notifyMatchFailure(
+        op, "unstructured store requires compile_mode=simd_simt");
+  }
+
+  auto loc = op.getLoc();
+  Value base = adaptor.getBase();
+  Value indices = adaptor.getIndices();
+  Value value = adaptor.getValue();
+  Value mask = adaptor.getMask();
+  if (!isa<MemRefType>(base.getType()))
+    return rewriter.notifyMatchFailure(op, "expected MemRefType for base");
+
+  auto valueType = cast<RankedTensorType>(value.getType());
+  int64_t burstLength = computeUnstructuredBurstLength(
+      valueType.getShape(), op.getUnstructuredDims());
+  Value burstLengthValue =
+      rewriter.create<arith::ConstantIntOp>(loc, burstLength, 32);
+  rewriter.create<hfusion::ScatterStoreOp>(
+      loc, TypeRange{}, indices, value, burstLengthValue, mask, base,
+      hfusion::CacheModifierAttr{}, hfusion::EvictionPolicyAttr{});
+  rewriter.eraseOp(op);
+  return success();
+}
+
 IndexSelectSimdConverter::IndexSelectSimdConverter(MLIRContext *context)
     : OpConversionPattern<triton::ascend::IndexSelectSimdOp>(context) {}
 
