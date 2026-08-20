@@ -387,6 +387,42 @@ def test_force_simt_template_is_replaced_by_compile_mode(compiler_module):
     assert _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simd"}).use_simt_template is False
 
 
+@pytest.mark.parametrize("value", (17, -1, "toolchain-defined"))
+def test_bishengir_simt_optimization_keeps_any_value_on_a5_pure_simt(compiler_module, value):
+    options = _parse_options(
+        compiler_module,
+        "Ascend910_9589",
+        {
+            "compile_mode": "simt_only",
+            "enable_bishengir_simt_optimization": value,
+        },
+    )
+
+    assert options.enable_bishengir_simt_optimization == value
+
+
+@pytest.mark.parametrize(
+    ("arch", "compile_mode"),
+    (
+        ("Ascend910B1", "simt_only"),
+        ("Ascend910_9589", "simd"),
+        ("Ascend910_9589", "simt_template"),
+    ),
+)
+def test_bishengir_simt_optimization_is_ignored_outside_a5_pure_simt(compiler_module, arch, compile_mode):
+    with pytest.warns(UserWarning, match="enable_bishengir_simt_optimization"):
+        options = _parse_options(
+            compiler_module,
+            arch,
+            {
+                "compile_mode": compile_mode,
+                "enable_bishengir_simt_optimization": "toolchain-defined",
+            },
+        )
+
+    assert options.enable_bishengir_simt_optimization == 0
+
+
 def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     option_name = "allow_fp8e4nv"
 
