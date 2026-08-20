@@ -212,7 +212,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         # Select analysis is a fixed lowering policy, not a user compile option.
         enable_select_analysis = True
         compile_on_910_95 = metadata["compile_on_910_95"]
-        force_simt_template = metadata["force_simt_template"]
+        use_simt_template = metadata["use_simt_template"]
         enable_mixed_cv = metadata.get("enable_mixed_cv")
         set_workspace_multibuffer = metadata.get("set_workspace_multibuffer")
 
@@ -223,9 +223,9 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
 
         ascend.passes.ttir.add_triton_control_flow_opt(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, False, False)
-        ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, force_simt_template)
+        ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, use_simt_template)
         ascend.passes.ttir.add_triton_to_annotation(pm)
-        ascend.passes.ttir.add_triton_to_unstructure(pm, compile_on_910_95, force_simt_template)
+        ascend.passes.ttir.add_triton_to_unstructure(pm, compile_on_910_95, use_simt_template)
         ascend.passes.ttir.add_triton_to_hivm(pm)
         ascend.passes.ttir.add_triton_to_hfusion(pm, compile_on_910_95)
         ascend.passes.ttir.add_triton_to_llvm(pm)
@@ -1000,13 +1000,15 @@ class NPUOptions:
     parallel_mode: str = field(default="simd", init=False)
     # Internal pure-SIMT state, derived exclusively from compile_mode.
     is_pure_simt: bool = field(default=False, init=False)
-    force_simt_template: bool = False
+    # Internal template-SIMT state, derived exclusively from compile_mode.
+    use_simt_template: bool = field(default=False, init=False)
     # only take effect on the simt-only & simd-simt-mix scenarios
     shared_mem_dynamic_size: int = None
     # enable_bishengir_simt_optimization is passed as
     # -enable-bishengir-simt-optimization flag to bishengir-compile.
     enable_bishengir_simt_optimization: int = 000
-    # compile_mode: "simd" (default), "unstructured_in_simt", "simt_only"
+    # compile_mode: "simd", "unstructured_in_simt" (legacy template alias),
+    # "simt_template", or "simt_only"
     # When compile_mode is provided, it automatically sets other fields
     compile_mode: str = "unstructured_in_simt"
     simt_stack_limit: int = None
@@ -1046,9 +1048,8 @@ class NPUOptions:
         # Parse compile_mode and set related fields
         if self.compile_mode == "simd":
             object.__setattr__(self, "parallel_mode", "simd")
-        elif self.compile_mode == "unstructured_in_simt":
-            # For historical compatibility reasons, force_simt_template will still be used.
-            object.__setattr__(self, "force_simt_template", True)
+        elif self.compile_mode in ("unstructured_in_simt", "simt_template"):
+            object.__setattr__(self, "use_simt_template", True)
         elif self.compile_mode == "simt_only":
             object.__setattr__(self, "is_pure_simt", True)
             object.__setattr__(self, "parallel_mode", "simt")
@@ -1078,6 +1079,7 @@ _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "disable_auto_inject_block_sync",
     "enable_select_analysis",
     "force_simt_only",
+    "force_simt_template",
     "ops_reorder",
     "parallel_mode",
     "storage_align",

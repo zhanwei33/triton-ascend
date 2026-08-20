@@ -678,18 +678,18 @@ def test_default_compile_mode_keeps_the_91095_layout_memory_gate_prepared(compil
     """The normal compiler default supplies the second half of the T2L gate.
 
     Axis/Chunk/SLS must remain controlled by the original
-    ``compile_on_910_95 && force_simt_template`` predicate.  The first half
+    ``compile_on_910_95 && use_simt_template`` predicate.  The first half
     comes only from real hardware detection; this source-level contract makes
     sure the normal 91095 path does not accidentally lose its historical
-    ``unstructured_in_simt``/``force_simt_template`` default while tests run
+    ``unstructured_in_simt``/``use_simt_template`` default while tests run
     on a non-91095 host.
     """
 
     default_options = compiler_module.NPUOptions()
     assert default_options.compile_mode == "unstructured_in_simt"
-    assert default_options.force_simt_template is True
+    assert default_options.use_simt_template is True
     assert default_options.is_pure_simt is False
 
     simd_options = compiler_module.NPUOptions(compile_mode="simd")
-    assert simd_options.force_simt_template is False
+    assert simd_options.use_simt_template is False
     assert simd_options.is_pure_simt is False
