@@ -570,6 +570,20 @@ def test_auto_tile_and_bind_subblock_is_ir_derived_metadata_not_an_npu_option(co
     assert compiler_module.get_auto_bind_sub_block_option(metadata) is True
 
 
+def test_dynamic_cv_veccore_buffer_slot_option_is_renamed(compiler_module):
+    option_name = "buf_slot_num_of_veccore"
+    removed_name = "intra_cache_num"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+
+    options = _parse_options(compiler_module, "Ascend910_9589", {option_name: 2})
+
+    assert option_name in compiler_module.NPUOptions.__dataclass_fields__
+    assert getattr(options, option_name) == 2
+    assert f'metadata.get("{option_name}")' in compiler_source
+    assert removed_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert f'metadata.get("{removed_name}")' not in compiler_source
+
+
 def test_graph_optimize_rule_mask_is_not_an_npu_option(compiler_module):
     option_name = "graph_optimize_rule_mask"
 
