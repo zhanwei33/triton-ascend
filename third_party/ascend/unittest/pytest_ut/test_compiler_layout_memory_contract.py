@@ -329,6 +329,21 @@ def test_graph_optimize_emit_remarks_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_bisheng_options_is_not_an_npu_option(compiler_module):
+    option_name = "bisheng_options"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+    assert 'metadata["bisheng_options"]' not in compiler_source
+    assert 'f"--append-bisheng-options={bisheng_options}"' not in compiler_source
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: "-mllvm --some-option"})
+    default = _parse_options(compiler_module, "Ascend910B1")
+    requested = _parse_options(compiler_module, "Ascend910B1", {option_name: "-mllvm --some-option"})
+
+    assert requested.hash() == default.hash()
+
+
 def _make_opt(
     *,
     force_simt_only,
@@ -365,7 +380,6 @@ def _run_ttir_to_npubin(
     row_coalescing_applied=False,
     superblock_factor=0,
     common_options=(),
-    bisheng_options=None,
     enable_bishengir_simt_optimization=0,
     resolved_simt_stack_limit=1152,
     shared_mem_dynamic_size=None,
@@ -381,7 +395,6 @@ def _run_ttir_to_npubin(
         events.append("parse")
         return {
             **metadata,
-            "bisheng_options": bisheng_options,
             "has_auto_blockify_blacklist_op": has_blacklist_op,
             "row_coalescing_applied": row_coalescing_applied,
         }
@@ -658,7 +671,6 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
     default contract rather than an explicit user choice.
     """
     common_options = ["--common-before-pure-simt", "--common-after-pure-simt"]
-    bisheng_options = "--preserve-bisheng-option-order"
     pure_simt_prefix = [
         "--enable-hivm-compile=false",
         "--enable-triton-ir-compile",
@@ -680,14 +692,12 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
             blacklisted,
             row_applied,
             superblock,
-            case_bisheng_options,
     ) in itertools.product(
         (False, True),
         (None, False, True),
         (False, True),
         (False, True),
         (0, 7),
-        (None, bisheng_options),
     ):
         with monkeypatch.context() as case_monkeypatch:
             _events, command = _run_ttir_to_npubin(
@@ -699,7 +709,6 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
                 row_coalescing_applied=row_applied,
                 superblock_factor=superblock,
                 common_options=common_options,
-                bisheng_options=case_bisheng_options,
                 enable_bishengir_simt_optimization=17,
                 resolved_simt_stack_limit=64,
                 shared_mem_dynamic_size=4096,
@@ -711,8 +720,7 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
                            (user_option is None or user_option)) or (not env_enabled and bool(user_option))
         second_injection = env_enabled and not blacklisted and not row_applied
         case = (f"E={env_enabled}, O={user_option}, B={blacklisted}, "
-                f"R={row_applied}, superblock={superblock}, "
-                f"bisheng_options={case_bisheng_options!r}")
+                f"R={row_applied}, superblock={superblock}")
 
         metadata_options = [arg for arg in command if arg.startswith("--triton-metadata-output=")]
         assert len(metadata_options) == 1, case
@@ -722,17 +730,14 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
         expected_options = [*common_options, metadata_option, *pure_simt_prefix]
         if first_injection:
             expected_options.append(auto_blockify_flag)
-        if case_bisheng_options is not None:
-            expected_options.append(f"--append-bisheng-options={case_bisheng_options}")
         if second_injection:
             expected_options.append(auto_blockify_flag)
             if superblock > 0:
                 expected_options.append(f"--super-block-factor={superblock}")
 
         # Keep the source/output envelope as well as every option.  In
-        # particular, two copies of the auto-blockify flag must remain in their
-        # historical insertion slots: adjacent when no Bisheng option exists,
-        # and on opposite sides of append-bisheng-options when it does.
+        # particular, two copies of the auto-blockify flag must remain
+        # adjacent in their historical insertion slots.
         assert command[0] == "/fake/bisheng", case
         assert Path(command[1]).name == "kernel.ttir.mlir", case
         assert command[2:-2] == expected_options, case
