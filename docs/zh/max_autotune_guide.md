@@ -81,7 +81,6 @@ from triton.backends.ascend.runtime import max_autotune
 |------|:----:|:---:|:------:|--------|--------|------|
 | `num_stages` | ✅ | ✅ | ✅ | `[2]` | `[1, 2]` | pipeline stages 数量 |
 | `unit_flag` | ✅ | ✅ | ❌ | `[False]` | 布尔列表 | Cube 搬出相关同步优化项 |
-| `limit_auto_multi_buffer_of_local_buffer` | ✅ | ✅ | ❌ | `["no-l0c"]` | `["no-limit", "no-l0c"]` | 配置 local buffer 自动 multi-buffer 的 scope |
 | `set_workspace_multibuffer` | ❌ | ✅ | ❌ | `[2, 4]` | `[2, 4]` | 配置 workspace multi-buffer 档位 |
 | `enable_hivm_auto_cv_balance` | ❌ | ✅ | ❌ | `[True]` | 布尔列表 | 启用或禁用自动 CV balance |
 | `tile_mix_vector_loop` | ❌ | ✅ | ❌ | `[2, 4]` | `[2, 4, 8]` | 配置 Vector loop 的切分份数 |
@@ -250,7 +249,6 @@ cube 类型算子（如纯矩阵乘法）支持的参数较少：
     kernel_type="cube",
     num_stages=[1, 2],
     unit_flag=[True, False],
-    limit_auto_multi_buffer_of_local_buffer=["no-limit", "no-l0c"],
 )
 @triton.jit
 def matmul_kernel(...):

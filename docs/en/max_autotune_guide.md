@@ -81,7 +81,6 @@ from triton.backends.ascend.runtime import max_autotune
 |------|:----:|:---:|:------:|--------|--------|------|
 | `num_stages` | ✅ | ✅ | ✅ | `[2]` | `[1, 2]` | Number of pipeline stages |
 | `unit_flag` | ✅ | ✅ | ❌ | `[False]` | Boolean list | Cube搬出 related synchronization optimization |
-| `limit_auto_multi_buffer_of_local_buffer` | ✅ | ✅ | ❌ | `["no-l0c"]` | `["no-limit", "no-l0c"]` | Configure the scope of automatic multi-buffer for local buffer |
 | `set_workspace_multibuffer` | ❌ | ✅ | ❌ | `[2, 4]` | `[2, 4]` | Configure workspace multi-buffer levels |
 | `enable_hivm_auto_cv_balance` | ❌ | ✅ | ❌ | `[True]` | Boolean list | Enable or disable automatic CV balance |
 | `tile_mix_vector_loop` | ❌ | ✅ | ❌ | `[2, 4]` | `[2, 4, 8]` | Configure the number of splits for Vector loop |
@@ -250,7 +249,6 @@ Cube type operators (such as pure matrix multiplication) support fewer parameter
     kernel_type="cube",
     num_stages=[1, 2],
     unit_flag=[True, False],
-    limit_auto_multi_buffer_of_local_buffer=["no-limit", "no-l0c"],
 )
 @triton.jit
 def matmul_kernel(...):

@@ -414,6 +414,22 @@ def test_limit_auto_multi_buffer_only_for_local_buffer_is_not_an_npu_or_autotune
         _parse_options(compiler_module, "Ascend910B1", {option_name: True})
 
 
+def test_limit_auto_multi_buffer_of_local_buffer_is_not_an_npu_or_autotune_option(compiler_module):
+    option_name = "limit_auto_multi_buffer_of_local_buffer"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+    autotuner_source = (Path(compiler_module.__file__).parent / "runtime" / "autotuner.py").read_text(
+        encoding="utf-8-sig")
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert f'metadata["{option_name}"]' not in compiler_source
+    assert "--limit-auto-multi-buffer-of-local-buffer" not in compiler_source
+    assert option_name not in autotuner_source
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: "no-limit"})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910B1", {option_name: "no-limit"})
+
+
 def test_storage_align_is_not_an_npu_or_ubtuner_option(compiler_module):
     option_name = "storage_align"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")

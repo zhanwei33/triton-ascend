@@ -671,11 +671,6 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--set-workspace-multibuffer={set_workspace_multibuffer}"]
 
-        auto_multi_buffer = metadata["limit_auto_multi_buffer_of_local_buffer"]
-        if auto_multi_buffer is None:
-            auto_multi_buffer = "no-limit"
-        _compile_option_list += \
-            [f"--limit-auto-multi-buffer-of-local-buffer={auto_multi_buffer}"]
         auto_multi_buffer_buffer = metadata["limit_auto_multi_buffer_buffer"]
         if auto_multi_buffer_buffer is not None:
             _compile_option_list += \
@@ -908,11 +903,6 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--tile-mix-cube-loop={tile_mix_cube_loop}"]
 
-        auto_multi_buffer = metadata["limit_auto_multi_buffer_of_local_buffer"]
-        if auto_multi_buffer is not None:
-            _compile_option_list += \
-                [f"--limit-auto-multi-buffer-of-local-buffer={auto_multi_buffer}"]
-
         disable_auto_inject_block_sync = metadata["disable_auto_inject_block_sync"]
         if disable_auto_inject_block_sync is not None:
             _compile_option_list += \
@@ -1040,7 +1030,6 @@ class NPUOptions:
     prevec_max_fused_ops_num: int = None
     inject_barrier_all: bool = None
     inject_block_all: bool = None
-    limit_auto_multi_buffer_of_local_buffer: str = None
     limit_auto_multi_buffer_buffer: str = None
     set_workspace_multibuffer: int = None
     tile_mix_vector_loop: int = None
@@ -1141,6 +1130,7 @@ _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "code_motion",
     "disable_size_align_for_cast",
     "limit_auto_multi_buffer_only_for_local_buffer",
+    "limit_auto_multi_buffer_of_local_buffer",
     "enable_cce_vf_auto_sync",
     "enable_cce_vf_remove_membar",
     "enable_drop_unit_dims",

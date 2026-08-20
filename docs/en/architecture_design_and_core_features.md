@@ -77,15 +77,14 @@ This project extends the support for Huawei Ascend NPU (using the CANN software 
 | 5   | unit_flag                                     | NPU        | Autotune option. It enables or disables the sync unit flag.|
 | 6   | inject_barrier_all                            | NPU        | Autotune option. It enables or disables automatic injection of barriers for all operations.|
 | 7   | inject_block_all                              | NPU        | Autotune option. It enables or disables automatic injection of blocks for all operations.|
-| 8   | limit_auto_multi_buffer_of_local_buffer       | NPU        | Autotune option. It enables or disables automatic multi-buffering for local buffers.|
-| 9   | set_workspace_multibuffer                     | NPU        | Autotune option. It enables or disables multi-buffering for the workspace.|
-| 10  | tile_mix_vector_loop                          | NPU        | Autotune option (CV-fused kernels only). It enables or disables tiling for vector loops.|
-| 11  | tile_mix_cube_loop                            | NPU        | Autotune option (CV-fused kernels only). It enables or disables tiling for cube loops.|
-| 12  | disable_auto_inject_block_sync                | NPU        | Autotune option (CV-fused kernels only). It enables or disables automatic injection of block synchronizations.|
-| 13  | stream                                        | NPU        | (Optional) Informs the compiler about the NPU stream to use.|
-| 14  | enable_linearize                              | NPU        | Autotune option. It enables or disables the linearization pass.|
-| 15  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only). It enables or disables the ND (n-dimensional) to NZ (non-zero) layout transformation.|
-| 16  | auto_blockify_size                            | NPU        | Autotune option. It enables or disables AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
+| 8   | set_workspace_multibuffer                     | NPU        | Autotune option. It enables or disables multi-buffering for the workspace.|
+| 9   | tile_mix_vector_loop                          | NPU        | Autotune option (CV-fused kernels only). It enables or disables tiling for vector loops.|
+| 10  | tile_mix_cube_loop                            | NPU        | Autotune option (CV-fused kernels only). It enables or disables tiling for cube loops.|
+| 11  | disable_auto_inject_block_sync                | NPU        | Autotune option (CV-fused kernels only). It enables or disables automatic injection of block synchronizations.|
+| 12  | stream                                        | NPU        | (Optional) Informs the compiler about the NPU stream to use.|
+| 13  | enable_linearize                              | NPU        | Autotune option. It enables or disables the linearization pass.|
+| 14  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only). It enables or disables the ND (n-dimensional) to NZ (non-zero) layout transformation.|
+| 15  | auto_blockify_size                            | NPU        | Autotune option. It enables or disables AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
 
 #### 3.2.2 SIMD Compiler
 
