@@ -317,6 +317,18 @@ def test_graph_optimize_ub_capacity_bytes_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_graph_optimize_emit_remarks_is_not_an_npu_option(compiler_module):
+    option_name = "graph_optimize_emit_remarks"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: True})
+    default = _parse_options(compiler_module, "Ascend910B1")
+    requested = _parse_options(compiler_module, "Ascend910B1", {option_name: True})
+
+    assert requested.hash() == default.hash()
+
+
 def _make_opt(
     *,
     force_simt_only,
