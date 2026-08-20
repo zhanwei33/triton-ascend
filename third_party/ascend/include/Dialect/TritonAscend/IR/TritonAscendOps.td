@@ -339,6 +339,44 @@ def IndirectLoadOp : TT_Ascend_Op<"indirect_load", [
 }
 
 //
+// Built-in: UnstructuredLoad Op
+//
+def UnstructuredLoadOp : TT_Ascend_Op<"unstructured_load", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  AttrSizedOperandSegments
+]> {
+  let summary = "Unstructured load with explicit base, indices, and dimensions";
+
+  let description = [{
+    Canonical mixed SIMD/SIMT load.  It retains the scalar base pointer,
+    per-element index tensor, and the unstructured dimensions so the lowering
+    can derive the gather burst length without guessing from flattened IR.
+  }];
+
+  let arguments = (
+    ins TT_Ptr:$base,
+        TT_IntTensor:$indices,
+        DenseI64ArrayAttr:$unstructuredDims,
+        Optional<TT_BoolLike>:$mask,
+        Optional<TT_Type>:$other,
+        OptionalAttr<TT_CacheModifierAttr>:$cache,
+        OptionalAttr<TT_EvictionPolicyAttr>:$evict,
+        DefaultValuedAttr<BoolAttr, "true">:$isVolatile
+  );
+
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $base `:` type($base) `,`
+    $indices `:` type($indices)
+    `unstructured_dims` `=` $unstructuredDims
+    (`,` $mask^ `:` type($mask))?
+    (`,` $other^ `:` type($other))?
+    attr-dict `->` type($result)
+  }];
+}
+
+//
 // Built-in: StrideLoad Op
 //
 def StrideLoadOp : TT_Ascend_Op<"stride_load", [
@@ -444,6 +482,39 @@ def IndirectStoreOp : TT_Ascend_Op<"indirect_store", [
     attr-dict
   }];
 
+}
+
+//
+// Built-in: UnstructuredStore Op
+//
+def UnstructuredStoreOp : TT_Ascend_Op<"unstructured_store", [
+  MemoryEffects<[MemWrite<GlobalMemory>]>
+]> {
+  let summary = "Unstructured store with explicit base, indices, and dimensions";
+
+  let description = [{
+    Store counterpart of UnstructuredLoadOp for the simd_simt mixed route.
+    TritonToLinalg lowers it to hfusion.scatter_store.
+  }];
+
+  let arguments = (
+    ins TT_Ptr:$base,
+        TT_IntTensor:$indices,
+        TT_Type:$value,
+        DenseI64ArrayAttr:$unstructuredDims,
+        Optional<TT_BoolLike>:$mask,
+        OptionalAttr<TT_CacheModifierAttr>:$cache,
+        OptionalAttr<TT_EvictionPolicyAttr>:$evict
+  );
+
+  let assemblyFormat = [{
+    $base `:` type($base) `,`
+    $indices `:` type($indices) `,`
+    $value `:` type($value)
+    `unstructured_dims` `=` $unstructuredDims
+    (`,` $mask^ `:` type($mask))?
+    attr-dict
+  }];
 }
 
 //

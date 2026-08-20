@@ -860,6 +860,16 @@ private:
   static constexpr llvm::StringRef funcNameBase = "triton_indirect_load";
 };
 
+class UnstructuredLoadConverter
+    : public OpConversionPattern<triton::ascend::UnstructuredLoadOp> {
+public:
+  using OpConversionPattern<
+      triton::ascend::UnstructuredLoadOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::ascend::UnstructuredLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
 class StrideLoadConverter
     : public OpConversionPattern<triton::ascend::StrideLoadOp> {
 public:
@@ -895,6 +905,16 @@ public:
 
 private:
   static constexpr llvm::StringRef funcNameBase = "triton_indirect_store";
+};
+
+class UnstructuredStoreConverter
+    : public OpConversionPattern<triton::ascend::UnstructuredStoreOp> {
+public:
+  using OpConversionPattern<
+      triton::ascend::UnstructuredStoreOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::ascend::UnstructuredStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
 };
 
 class IndexSelectSimdConverter
