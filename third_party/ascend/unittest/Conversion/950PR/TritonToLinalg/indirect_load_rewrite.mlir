@@ -1,9 +1,9 @@
-// RUN: triton-opt %s --triton-to-unstructure='compile-on-910-95=true force-simt-template=true' \
-// RUN:                --triton-to-linalg='compile-on-910-95=true' --split-input-file \
+// RUN: triton-opt %s --triton-to-unstructure='compile-on-910-95=true compile-mode=simt_template' \
+// RUN:                --triton-to-linalg='compile-on-910-95=true compile-mode=simt_template' --split-input-file \
 // RUN: | FileCheck %s
 // RUN: triton-opt %s --mlir-print-ir-after-all \
-// RUN:                --triton-to-unstructure='compile-on-910-95=true force-simt-template=true' \
-// RUN:                --triton-to-linalg='compile-on-910-95=true' --split-input-file 2>&1 \
+// RUN:                --triton-to-unstructure='compile-on-910-95=true compile-mode=simt_template' \
+// RUN:                --triton-to-linalg='compile-on-910-95=true compile-mode=simt_template' --split-input-file 2>&1 \
 // RUN: | FileCheck %s --check-prefix=SLS-INSPECT
 
 // The static stride-4 AddPtr below is deliberately inspected but cannot be

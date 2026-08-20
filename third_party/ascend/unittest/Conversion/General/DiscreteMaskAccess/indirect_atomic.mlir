@@ -1,4 +1,4 @@
-// RUN: triton-opt '--discrete-mask-access-conversion=compile-on-910-95=True force-simt-template=True' --split-input-file %s | FileCheck %s
+// RUN: triton-opt '--discrete-mask-access-conversion=compile-on-910-95=True compile-mode=simt_template' --split-input-file %s | FileCheck %s
 
 // CHECK-LABEL: tt.func @structured_disc_mask_atomic_add_2d
 // CHECK-NOT: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>

@@ -1,4 +1,4 @@
-// RUN: triton-opt %s '--triton-to-unstructure=compile-on-910-95=True force-simt-template=True' | FileCheck %s
+// RUN: triton-opt %s '--triton-to-unstructure=compile-on-910-95=True compile-mode=simt_template' | FileCheck %s
 
 // CHECK-LABEL: tt.func @triton_indirect_load
 // CHECK: ascend.indirect_load {{.*}} -> tensor<1024xi32>
