@@ -378,6 +378,22 @@ def test_ops_reorder_is_not_an_npu_or_ubtuner_option(compiler_module):
         _parse_options(compiler_module, "Ascend910B1", {option_name: True})
 
 
+def test_code_motion_is_not_an_npu_or_ubtuner_option(compiler_module):
+    option_name = "code_motion"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+    ubtuner_source = (Path(compiler_module.__file__).parent / "runtime" / "ubtuner.py").read_text(
+        encoding="utf-8-sig")
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert 'metadata["code_motion"]' not in compiler_source
+    assert "--enable-code-motion" not in compiler_source
+    assert "enable_code_motion" not in ubtuner_source
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: True})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910B1", {option_name: True})
+
+
 def _make_opt(
     *,
     force_simt_only,
