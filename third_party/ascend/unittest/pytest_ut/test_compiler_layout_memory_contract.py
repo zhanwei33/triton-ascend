@@ -353,6 +353,21 @@ def test_parallel_mode_is_internal_metadata_derived_from_mode_and_linalg_ir(comp
     assert metadata[option_name] == "mix_simd_simt"
 
 
+def test_force_simt_only_is_replaced_by_compile_mode(compiler_module):
+    option_name = "force_simt_only"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: True})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+
+    pure_simt = _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simt_only"})
+    assert pure_simt.is_pure_simt is True
+    assert compiler_module.AscendBackend.use_alignment_specialization({"compile_mode": "simt_only"}) is True
+    assert compiler_module.AscendBackend.use_alignment_specialization({"compile_mode": "simd"}) is False
+
+
 def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     option_name = "allow_fp8e4nv"
 
@@ -808,7 +823,7 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
 
 def _make_opt(
     *,
-    force_simt_only,
+    is_pure_simt,
     superblock_factor=0,
     enable_bishengir_simt_optimization=0,
     simt_stack_limit=None,
@@ -817,7 +832,7 @@ def _make_opt(
     disable_fma=False,
 ):
     return SimpleNamespace(
-        force_simt_only=force_simt_only,
+        is_pure_simt=is_pure_simt,
         num_warps=4,
         warp_size=32,
         enable_bishengir_simt_optimization=enable_bishengir_simt_optimization,
@@ -833,7 +848,7 @@ def _run_ttir_to_npubin(
     compiler,
     monkeypatch,
     *,
-    force_simt_only=True,
+    is_pure_simt=True,
     auto_map_enabled=False,
     has_blacklist_op=False,
     row_coalescing_applied=False,
@@ -902,7 +917,7 @@ def _run_ttir_to_npubin(
         module,
         {},
         _make_opt(
-            force_simt_only=force_simt_only,
+            is_pure_simt=is_pure_simt,
             superblock_factor=superblock_factor,
             enable_bishengir_simt_optimization=enable_bishengir_simt_optimization,
             simt_stack_limit=simt_stack_limit,
@@ -916,14 +931,14 @@ def _run_ttir_to_npubin(
     return events, commands[0]
 
 
-@pytest.mark.parametrize("force_simt_only", (False, True))
-def test_ttir_to_npubin_global_scratch_allocation_flag(compiler_module, monkeypatch, force_simt_only):
+@pytest.mark.parametrize("is_pure_simt", (False, True))
+def test_ttir_to_npubin_global_scratch_allocation_flag(compiler_module, monkeypatch, is_pure_simt):
     _events, command = _run_ttir_to_npubin(
         compiler_module,
         monkeypatch,
-        force_simt_only=force_simt_only,
+        is_pure_simt=is_pure_simt,
     )
-    assert ("--enable-global-scratch-allocation" in command) is force_simt_only
+    assert ("--enable-global-scratch-allocation" in command) is is_pure_simt
 
 
 def test_ttir_to_npubin_uses_explicit_simt_stack_limit(compiler_module, monkeypatch):
@@ -1030,7 +1045,7 @@ def test_ttir_to_npubin_exports_make_ttir_row_contract_only_for_pure_simt(compil
     events, _command = _run_ttir_to_npubin(
         compiler_module,
         monkeypatch,
-        force_simt_only=True,
+        is_pure_simt=True,
     )
     assert events == [
         "str:0",
@@ -1043,7 +1058,7 @@ def test_ttir_to_npubin_exports_make_ttir_row_contract_only_for_pure_simt(compil
         events, _command = _run_ttir_to_npubin(
             compiler_module,
             pure_simt_off,
-            force_simt_only=False,
+            is_pure_simt=False,
         )
     assert events == ["str:0", "parse"]
 
@@ -1092,11 +1107,11 @@ def _run_make_ttir_with_recorded_graph_options(compiler, monkeypatch, options):
     return events, graph_calls
 
 
-def test_make_ttir_passes_force_simt_only_to_graph_optimize(compiler_module, monkeypatch):
+def test_make_ttir_passes_pure_simt_state_to_graph_optimize(compiler_module, monkeypatch):
     options = SimpleNamespace(
         enable_graph_optimize=True,
         _arch="Ascend910B1",
-        force_simt_only=True,
+        is_pure_simt=True,
         debug=False,
     )
 
@@ -1209,8 +1224,8 @@ def test_default_compile_mode_keeps_the_91095_layout_memory_gate_prepared(compil
     default_options = compiler_module.NPUOptions()
     assert default_options.compile_mode == "unstructured_in_simt"
     assert default_options.force_simt_template is True
-    assert default_options.force_simt_only is False
+    assert default_options.is_pure_simt is False
 
     simd_options = compiler_module.NPUOptions(compile_mode="simd")
     assert simd_options.force_simt_template is False
-    assert simd_options.force_simt_only is False
+    assert simd_options.is_pure_simt is False

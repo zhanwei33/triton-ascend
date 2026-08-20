@@ -190,7 +190,7 @@ def _make_opt(
     superblock_factor,
 ):
     return SimpleNamespace(
-        force_simt_only=True,
+        is_pure_simt=True,
         num_warps=4,
         warp_size=32,
         enable_bishengir_simt_optimization=17,
@@ -457,7 +457,7 @@ def _make_metadata(*, factor, axis, ceil_div, blacklisted, row_applied):
         shared=0,
         compile_on_910_95=False,
         parallel_mode="",
-        force_simt_only=False,
+        is_pure_simt=False,
         debug=False,
         shared_mem_dynamic_size=221184,
         coalesce_factor=factor,

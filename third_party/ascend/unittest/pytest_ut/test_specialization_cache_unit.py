@@ -65,8 +65,6 @@ SIMD_OPTIONS = [
 
 SIMT_OPTIONS = [
     pytest.param({"compile_mode": "simt_only"}, id="simt-only"),
-    pytest.param({"force_simt_only": True}, id="legacy-force-simt-only"),
-    pytest.param({"compile_mode": "simd", "force_simt_only": True}, id="legacy-force-simt-overrides-mode"),
 ]
 
 
