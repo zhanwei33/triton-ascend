@@ -95,6 +95,7 @@ The following table describes the options.
 |----------|-----------------|----------------|----------------------|--------------------|
 | **General pipeline** | `multibuffer` | `True` (default), `False` | Enables or disables ping-pong/double-buffer pipelines. Enabled by default. | `triton.Config` or launch meta-parameter |
 | **Compilation mode** | `compile_mode` | `unstructured_in_simt` (default), `simd`, `simt_template`, `simt_only` | Selects the compiler mode. `simt_template` is the template-SIMT entry and replaces the removed `force_simt_template` option; `unstructured_in_simt` retains its existing template behavior. | `triton.Config` or launch meta-parameter |
+| **Pure-SIMT optimization** | `enable_bishengir_simt_optimization` | `0` (default) or a BiShengIR toolchain value | Effective only for A5 `compile_mode="simt_only"`; an explicit value in other modes or products is warned and ignored. Its value is passed through without Python numeric/range validation. | `triton.Config` or launch meta-parameter |
 | **CV fusion** | `enable_auto_bind_sub_block` | `None`, `True`, `False` | Enables or disables automatic sub-block binding. | `triton.Config` or launch meta-parameter |
 | **CV fusion** | `enable_hivm_auto_cv_balance` | `None`, `True`, `False` | Enables or disables automatic CV balance. | `triton.Config` or autotune parameter |
 | **CV fusion/sync** | `sync_solver` | `None`, `True`, `False` | Enables or disables the HIVM synchronization solver. | `triton.Config` or launch meta-parameter |
