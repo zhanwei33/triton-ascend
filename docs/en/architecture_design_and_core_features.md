@@ -80,11 +80,10 @@ This project extends the support for Huawei Ascend NPU (using the CANN software 
 | 8   | set_workspace_multibuffer                     | NPU        | Autotune option. It enables or disables multi-buffering for the workspace.|
 | 9   | tile_mix_vector_loop                          | NPU        | Autotune option (CV-fused kernels only). It enables or disables tiling for vector loops.|
 | 10  | tile_mix_cube_loop                            | NPU        | Autotune option (CV-fused kernels only). It enables or disables tiling for cube loops.|
-| 11  | disable_auto_inject_block_sync                | NPU        | Autotune option (CV-fused kernels only). It enables or disables automatic injection of block synchronizations.|
-| 12  | stream                                        | NPU        | (Optional) Informs the compiler about the NPU stream to use.|
-| 13  | enable_linearize                              | NPU        | Autotune option. It enables or disables the linearization pass.|
-| 14  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only). It enables or disables the ND (n-dimensional) to NZ (non-zero) layout transformation.|
-| 15  | auto_blockify_size                            | NPU        | Autotune option. It enables or disables AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
+| 11  | stream                                        | NPU        | (Optional) Informs the compiler about the NPU stream to use.|
+| 12  | enable_linearize                              | NPU        | Autotune option. It enables or disables the linearization pass.|
+| 13  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only). It enables or disables the ND (n-dimensional) to NZ (non-zero) layout transformation.|
+| 14  | auto_blockify_size                            | NPU        | Autotune option. It enables or disables AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
 
 #### 3.2.2 SIMD Compiler
 
