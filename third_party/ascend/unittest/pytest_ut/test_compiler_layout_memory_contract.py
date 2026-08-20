@@ -129,7 +129,6 @@ def compiler_module():
     utils_stub.downgrade_llir = lambda llir: llir
     utils_stub.get_cann_version_file_hash = lambda: ""
     utils_stub.graph_ub_budget_bytes_for_arch = _stub_graph_ub_budget_bytes_for_arch
-    utils_stub.is_compile_on_910_95 = lambda: False
 
     class UnusedNPUUtils:
         pass
@@ -252,6 +251,23 @@ def test_enable_auto_blockify_is_not_an_npu_option(compiler_module):
 
     assert "enable_auto_blockify" not in compiler_module.NPUOptions.__dataclass_fields__
     assert "enable_auto_blockify" not in options.__dict__
+
+
+@pytest.mark.parametrize(
+    ("arch", "requested", "expected"),
+    (
+        ("Ascend910_9589", False, True),
+        ("Ascend950A3", False, True),
+        ("Ascend910B4", True, False),
+        ("Ascend910_9362", True, False),
+    ),
+)
+def test_compile_on_910_95_is_internal_target_arch_state(compiler_module, arch, requested, expected):
+    options = _parse_options(compiler_module, arch, {"compile_on_910_95": requested})
+
+    assert compiler_module.NPUOptions.__dataclass_fields__["compile_on_910_95"].init is False
+    assert options.compile_on_910_95 is expected
+    assert options.__dict__["compile_on_910_95"] is expected
 
 
 def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
