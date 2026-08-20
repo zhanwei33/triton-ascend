@@ -234,6 +234,15 @@ def test_warp_size_is_fixed_npu_backend_capability(compiler_module):
     assert compiler_module.NPUOptions.__dataclass_fields__["warp_size"].init is False
 
 
+def test_auto_blockify_size_is_not_an_npu_option(compiler_module):
+    default = _parse_options(compiler_module, "Ascend910_9589")
+    requested = _parse_options(compiler_module, "Ascend910_9589", {"auto_blockify_size": 64})
+
+    assert "auto_blockify_size" not in compiler_module.NPUOptions.__dataclass_fields__
+    assert "auto_blockify_size" not in requested.__dict__
+    assert requested.hash() == default.hash()
+
+
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 @pytest.mark.parametrize(
     ("arch", "requested_capacity", "expected_capacity"),
