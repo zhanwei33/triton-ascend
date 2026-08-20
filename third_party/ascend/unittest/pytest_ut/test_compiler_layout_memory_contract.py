@@ -243,6 +243,18 @@ def test_auto_blockify_size_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_graph_optimize_rule_mask_is_not_an_npu_option(compiler_module):
+    option_name = "graph_optimize_rule_mask"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: 7})
+    default = _parse_options(compiler_module, "Ascend910B1")
+    requested = _parse_options(compiler_module, "Ascend910B1", {option_name: 7})
+
+    assert requested.hash() == default.hash()
+
+
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 @pytest.mark.parametrize(
     ("arch", "requested_capacity", "expected_capacity"),
@@ -606,11 +618,9 @@ def _run_make_ttir_with_recorded_graph_options(compiler, monkeypatch, options):
     return events, graph_calls
 
 
-@pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 def test_make_ttir_passes_force_simt_only_to_graph_optimize(compiler_module, monkeypatch):
     options = SimpleNamespace(
         enable_graph_optimize=True,
-        graph_optimize_rule_mask=8,
         graph_optimize_max_rewrites_per_function=17,
         graph_optimize_ub_capacity_bytes=4096,
         force_simt_only=True,
@@ -620,7 +630,6 @@ def test_make_ttir_passes_force_simt_only_to_graph_optimize(compiler_module, mon
     events, graph_calls = _run_make_ttir_with_recorded_graph_options(compiler_module, monkeypatch, options)
 
     assert graph_calls == [{
-        "rule_mask": 8,
         "max_rewrites_per_function": 17,
         "ub_capacity_bytes": 4096,
         "force_simt_only": True,
@@ -647,7 +656,6 @@ def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypa
                                                        expected_capacity):
     options = compiler_module.NPUOptions(
         arch="Ascend910B1",
-        graph_optimize_rule_mask=8,
         graph_optimize_max_rewrites_per_function=17,
         graph_optimize_ub_capacity_bytes=requested_capacity,
         force_simt_only=True,
@@ -656,7 +664,6 @@ def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypa
     events, graph_calls = _run_make_ttir_with_recorded_graph_options(compiler_module, monkeypatch, options)
 
     assert graph_calls == [{
-        "rule_mask": 8,
         "max_rewrites_per_function": 17,
         "ub_capacity_bytes": expected_capacity,
         "force_simt_only": True,
