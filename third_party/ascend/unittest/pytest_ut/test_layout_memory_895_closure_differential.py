@@ -188,7 +188,6 @@ def _row_attrs(row_applied):
 
 def _make_opt(
     *,
-    user_option,
     superblock_factor,
 ):
     return SimpleNamespace(
@@ -200,7 +199,6 @@ def _make_opt(
         shared_mem_dynamic_size=4096,
         enable_simt_reorder_instruction=True,
         disable_fma=True,
-        enable_auto_blockify=user_option,
         superblock_factor=superblock_factor,
     )
 
@@ -209,7 +207,6 @@ def _run_ttir_to_npubin(
     closure,
     *,
     env_enabled,
-    user_option,
     blacklisted,
     row_applied,
     superblock_factor,
@@ -269,7 +266,6 @@ def _run_ttir_to_npubin(
         _FakeIrModule(_row_attrs(row_applied)),
         {},
         _make_opt(
-            user_option=user_option,
             superblock_factor=superblock_factor,
         ),
     )
@@ -499,7 +495,6 @@ def _make_metadata(*, factor, axis, ceil_div, blacklisted, row_applied):
         coalesce_grid_ceil_div=ceil_div,
         has_auto_blockify_blacklist_op=blacklisted,
         row_coalescing_applied=row_applied,
-        enable_auto_blockify=None,
     )
 
 
