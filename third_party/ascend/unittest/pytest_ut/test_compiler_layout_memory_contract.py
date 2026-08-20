@@ -240,6 +240,18 @@ def test_auto_blockify_size_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
+    option_name = "allow_fp8e4nv"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: True})
+    default = _parse_options(compiler_module, "Ascend910_9589")
+    requested = _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+
+    assert requested.hash() == default.hash()
+
+
 def test_graph_optimize_rule_mask_is_not_an_npu_option(compiler_module):
     option_name = "graph_optimize_rule_mask"
 
