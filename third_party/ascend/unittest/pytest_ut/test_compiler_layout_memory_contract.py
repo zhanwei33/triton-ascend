@@ -247,6 +247,18 @@ def test_auto_block_mapping_is_fixed_backend_policy():
     assert returns[0].value.value is True
 
 
+def test_libdevice_simt_uses_target_injected_arch():
+    source_root = Path(__file__).resolve().parents[2]
+    utils_source = (source_root / "backend" / "utils.py").read_text(encoding="utf-8")
+    libdevice_source = (source_root / "language" / "cann" / "libdevice.py").read_text(encoding="utf-8")
+    removed_env = "TRITON_ENABLE" + "_LIBDEVICE_SIMT"
+
+    assert removed_env not in utils_source
+    assert removed_env not in libdevice_source
+    assert "is_compile_on_910_95" not in libdevice_source
+    assert "return is_ascend_910_95(_semantic.builder.options._arch)" in libdevice_source
+
+
 def test_warp_size_is_fixed_npu_backend_capability(compiler_module):
     options = _parse_options(compiler_module, "Ascend910_9589", {"warp_size": 64})
 

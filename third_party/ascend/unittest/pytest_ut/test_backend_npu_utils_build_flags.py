@@ -87,6 +87,22 @@ def test_graph_ub_budget_resolves_from_explicit_arch(arch, raw_ub_kib, graph_bud
 @pytest.mark.parametrize(
     ("arch", "expected"),
     (
+        ("Ascend910_9589", True),
+        ("Ascend950A3", True),
+        ("Ascend910B4", False),
+        ("", False),
+        (None, False),
+    ),
+)
+def test_libdevice_simt_generation_resolves_from_explicit_target_arch(arch, expected):
+    utils = _load_utils_module()
+
+    assert utils.is_ascend_910_95(arch) is expected
+
+
+@pytest.mark.parametrize(
+    ("arch", "expected"),
+    (
         ("Ascend910B4", True),
         ("Ascend910_9589", False),
         ("Ascend910A", False),
