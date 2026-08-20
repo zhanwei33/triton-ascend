@@ -16,7 +16,6 @@ def _get_cmake_dir():
 
 
 def get_cmake_dir():
-    cmake_dir = os.getenv("TRITON_BUILD_DIR", default=_get_cmake_dir())
-    cmake_dir = Path(cmake_dir)
+    cmake_dir = _get_cmake_dir()
     cmake_dir.mkdir(parents=True, exist_ok=True)
     return cmake_dir
