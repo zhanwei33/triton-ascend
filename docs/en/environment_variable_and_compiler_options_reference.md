@@ -41,7 +41,6 @@ The following table describes how to set environment variables.
 | **Compilation control**| TRITON_OVERRIDE_DIR | ~/.triton/override | Specifies the directory for searching the Triton kernel override file. Directory for loading the IR/PTX file when `TRITON_KERNEL_OVERRIDE` is set to `1`.| **"path"**: save path.| |
 | **Compilation control**| TRITON_ASCEND_COMPILE_SPEED_OPT | **0** or not set| Specifies whether the JIT compiler skips the subsequent compilation phase after detecting that the kernel compilation fails. Set the parameter to `1` to skip the attempt. (The default value `0` indicates that the attempt is continued.)| **0**: Continue the attempt.<br>**1**: Skip.| |
 | **Compilation control**| TRITON_COMPILE_ONLY | **0** or not set| Specifies whether to perform only compilation without execution. This parameter is used when **remote_launch** is used.| **0**: Disabled.<br>**1**: Enabled.| |
-| **Compilation control**| TRITON_DISABLE_FFTS | **0** or not set| Specifies whether to disable FFTS.| **0**: Enabled.<br>**1**: Disabled.| |
 | **Running and scheduling**| TRITON_ENABLE_TASKQUEUE | **1**| Specifies whether to enable **task_queue**.| **0**: Disabled.<br>**1**: Enabled.| |
 | **Running and scheduling**| TRITON_ENABLE_SANITIZER | **0** or not set| Specifies whether to enable SANITIZER.| **0**: Disabled.<br>**1**: Enabled.| |
 | **Running and scheduling**| ENABLE_PRINT_UB_BITS | **0** or not set| After this parameter is enabled, the current UB usage can be obtained for the inductor.| **0**: Disabled.<br>**1**: Enabled.| |
