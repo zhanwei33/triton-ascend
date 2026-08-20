@@ -930,6 +930,10 @@ def get_libdevice():
     return os.path.join(current, "lib/libdevice.10.bc")
 
 
+def _is_a5_target_arch(arch: str) -> bool:
+    return isinstance(arch, str) and arch.startswith(("Ascend910_95", "Ascend950"))
+
+
 @dataclass(frozen=True)
 class NPUOptions:
     debug: bool = False
@@ -1004,8 +1008,8 @@ class NPUOptions:
     use_simt_template: bool = field(default=False, init=False)
     # only take effect on the simt-only & simd-simt-mix scenarios
     shared_mem_dynamic_size: int = None
-    # enable_bishengir_simt_optimization is passed as
-    # -enable-bishengir-simt-optimization flag to bishengir-compile.
+    # A5 pure-SIMT-only option passed as -enable-bishengir-simt-optimization
+    # to bishengir-compile. Its value grammar belongs to the toolchain.
     enable_bishengir_simt_optimization: int = 000
     # compile_mode: "simd", "unstructured_in_simt" (legacy template alias),
     # "simt_template", or "simt_only"
@@ -1073,6 +1077,27 @@ def _get_npu_options_arch(options: NPUOptions) -> str:
 
 
 NPUOptions.arch = property(_get_npu_options_arch)
+
+
+def _normalize_bishengir_simt_optimization_for_context(options: NPUOptions, raw_options) -> None:
+    """Restrict the vendor SIMT optimization switch to its A5 pure-SIMT path."""
+    option_name = "enable_bishengir_simt_optimization"
+    if option_name not in raw_options:
+        return
+
+    if _is_a5_target_arch(options.target_arch) and options.is_pure_simt:
+        # The BiShengIR toolchain owns the option's value grammar; keep the
+        # Python boundary free of numeric or range validation.
+        return
+
+    warnings.warn(
+        "enable_bishengir_simt_optimization only takes effect for A5 "
+        'compile_mode="simt_only"; ignoring the explicit value.',
+        UserWarning,
+        stacklevel=3,
+    )
+    object.__setattr__(options, option_name, 0)
+
 
 _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "allow_fp8e4nv",
@@ -1227,6 +1252,7 @@ class AscendBackend(BaseBackend):
             # compile_on_910_95 is already resolved from the requested target.
             if options.enable_dynamic_cv_pipeline is None:
                 object.__setattr__(options, "enable_dynamic_cv_pipeline", options.compile_on_910_95)
+            _normalize_bishengir_simt_optimization_for_context(options, opts)
         else:
             raise NotImplementedError(f"Backend '{self.target.backend}' is not supported. "
                                       "Please ensure the target backend is set to 'npu'.")
