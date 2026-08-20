@@ -487,6 +487,17 @@ def test_hfusion_enable_multiple_consumer_fusion_is_silently_ignored(compiler_mo
     assert option_name not in options.__dict__
 
 
+def test_enable_cross_if_fusion_is_silently_ignored(compiler_module):
+    option_name = "enable_cross_if_fusion"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert f'metadata["{option_name}"]' not in compiler_source
+    assert "--hfusion-enable-cross-if-fusion" not in compiler_source
+    options = _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+    assert option_name not in options.__dict__
+
+
 def test_disable_size_align_for_cast_is_not_an_npu_option(compiler_module):
     option_name = "disable_size_align_for_cast"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
