@@ -115,8 +115,8 @@ def test_strided_axis_coalescing_gate_on_e2e():
     dst = torch.empty_like(src)
 
     # Compile first through the normal JIT API, then retain its real metadata
-    # for the ABI checks below.  No target/compile-mode override is supplied:
-    # this must be the target's default 91095 gate-on configuration.
+    # for the ABI checks below.  Template-SIMT is explicit because the public
+    # default is now SIMD.
     kernel = strided_axis_coalescing_copy.warmup(
         src,
         dst,
@@ -124,20 +124,20 @@ def test_strided_axis_coalescing_gate_on_e2e():
         T=t,
         S=s,
         BLOCK=block,
+        compile_mode="simt_template",
     )
     assert kernel is not None
-    strided_axis_coalescing_copy[(grid_x, )](src, dst, T=t, S=s, BLOCK=block)
+    strided_axis_coalescing_copy[(grid_x, )](src, dst, T=t, S=s, BLOCK=block, compile_mode="simt_template")
     torch.npu.synchronize()
 
     assert torch.equal(dst.cpu(), src.cpu())
 
     # These fields are compiler output, not test-supplied options: together
-    # they prove the original compile_on_910_95 && force_simt_template slot
-    # actually ran StridedAxisCoalescing and exported the launch contract.
+    # they prove the original compile_on_910_95 && compile_mode="simt_template"
+    # condition actually ran StridedAxisCoalescing and exported the launch contract.
     metadata = kernel.metadata
-    assert metadata.compile_mode == "unstructured_in_simt"
+    assert metadata.compile_mode == "simt_template"
     assert metadata.compile_on_910_95 is True
-    assert metadata.force_simt_template is True
     assert metadata.coalesce_factor == s
     assert metadata.coalesce_axis == 0
     assert metadata.coalesce_grid_ceil_div is False

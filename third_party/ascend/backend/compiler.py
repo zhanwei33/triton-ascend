@@ -178,7 +178,7 @@ def make_ttir(mod, metadata, opt):
         ascend.passes.ttir.add_graph_optimize(
             pm,
             ub_capacity_bytes=graph_ub_budget_bytes_for_arch(opt.target_arch),
-            force_simt_only=opt.is_pure_simt,
+            compile_mode=opt.effective_compile_mode,
         )
     pm.run(mod, 'make_ttir')
     if opt.debug:
@@ -212,7 +212,11 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         # Select analysis is a fixed lowering policy, not a user compile option.
         enable_select_analysis = True
         compile_on_910_95 = metadata["compile_on_910_95"]
-        force_simt_template = metadata["force_simt_template"]
+        # Use one effective lowering mode. It preserves an explicitly passed
+        # compile_mode; otherwise the direct force selectors choose their
+        # historical route.
+        compile_mode = getattr(opt, "effective_compile_mode", getattr(opt, "compile_mode", "simd"))
+        metadata["compile_mode"] = compile_mode
         enable_mixed_cv = metadata.get("enable_mixed_cv")
         set_workspace_multibuffer = metadata.get("set_workspace_multibuffer")
 
@@ -223,16 +227,16 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
 
         ascend.passes.ttir.add_triton_control_flow_opt(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, False, False)
-        ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, force_simt_template)
+        ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, compile_mode)
         ascend.passes.ttir.add_triton_to_annotation(pm)
-        ascend.passes.ttir.add_triton_to_unstructure(pm, compile_on_910_95, force_simt_template)
+        ascend.passes.ttir.add_triton_to_unstructure(pm, compile_on_910_95, compile_mode)
         ascend.passes.ttir.add_triton_to_hivm(pm)
         ascend.passes.ttir.add_triton_to_hfusion(pm, compile_on_910_95)
         ascend.passes.ttir.add_triton_to_llvm(pm)
         ascend.passes.ttir.add_bubble_up_operation(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, False, False)
-        ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, False, enable_select_analysis,
-                                                compile_on_910_95)
+        ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, False, enable_select_analysis, compile_on_910_95,
+                                                compile_mode)
         # Restricted to 910_95/950. The merged buffer is written by two disjoint
         # memref.copy ops, and on 910_9362 the generated code only makes the
         # copy next to the surviving to_tensor visible, so the other half of the
@@ -930,6 +934,53 @@ def get_libdevice():
     return os.path.join(current, "lib/libdevice.10.bc")
 
 
+def _is_a5_target_arch(arch: str) -> bool:
+    return isinstance(arch, str) and arch.startswith(("Ascend910_95", "Ascend950"))
+
+
+_CANONICAL_COMPILE_MODES = ("simd", "simt_template", "simt_only")
+_LEGACY_COMPILE_MODE_ALIASES = {
+    "unstructured_in_simt": "simt_template",
+}
+
+
+class _DefaultCompileMode(str):
+    """Distinguish an omitted compile_mode from an explicit ``"simd"``."""
+
+
+_DEFAULT_COMPILE_MODE = _DefaultCompileMode("simd")
+
+
+def _normalize_compile_mode(compile_mode, arch: str) -> str:
+    """Validate and canonicalize the public compile-mode contract.
+
+    SIMD is portable.  The two modes that introduce SIMT behavior are A5
+    only, so reject them before they can silently become cache-key-only
+    strings on A2/A3.  ``unstructured_in_simt`` remains a temporary explicit
+    compatibility alias for the template route.
+    """
+    if not isinstance(compile_mode, str):
+        raise ValueError("compile_mode must be a string; expected one of: " + ", ".join(_CANONICAL_COMPILE_MODES))
+
+    canonical_mode = _LEGACY_COMPILE_MODE_ALIASES.get(compile_mode, compile_mode)
+    if canonical_mode not in _CANONICAL_COMPILE_MODES:
+        raise ValueError(f"invalid compile_mode={compile_mode!r}; expected one of: " +
+                         ", ".join(_CANONICAL_COMPILE_MODES))
+
+    if canonical_mode != compile_mode:
+        warnings.warn(
+            'compile_mode="unstructured_in_simt" is deprecated; '
+            'use compile_mode="simt_template" instead.',
+            FutureWarning,
+            stacklevel=3,
+        )
+
+    if canonical_mode != "simd" and not _is_a5_target_arch(arch):
+        raise ValueError(f'compile_mode="{canonical_mode}" is supported only on A5 targets; '
+                         'A2/A3 supports only compile_mode="simd".')
+    return canonical_mode
+
+
 @dataclass(frozen=True)
 class NPUOptions:
     debug: bool = False
@@ -998,20 +1049,23 @@ class NPUOptions:
     # Internal launch metadata.  The mode is initially derived from
     # compile_mode, then replaced with the mode emitted by TritonToLinalg.
     parallel_mode: str = field(default="simd", init=False)
-    # Internal pure-SIMT state, derived from compile_mode or the retained
-    # direct force_simt_only selector.
+    # Internal pure-SIMT state, derived from the effective lowering mode.
     is_pure_simt: bool = field(default=False, init=False)
+    # Retained public selectors. They apply only when compile_mode was not
+    # explicitly supplied by the caller.
     force_simt_only: bool = False
     force_simt_template: bool = False
-    # only take effect on the simt-only & simd-simt-mix scenarios
+    # Only takes effect on the pure-SIMT path.
     shared_mem_dynamic_size: int = None
-    # enable_bishengir_simt_optimization is passed as
-    # -enable-bishengir-simt-optimization flag to bishengir-compile.
+    # A5 pure-SIMT-only option passed as -enable-bishengir-simt-optimization
+    # to bishengir-compile. Its value grammar belongs to the toolchain.
     enable_bishengir_simt_optimization: int = 000
-    # compile_mode: "simd", "unstructured_in_simt" (legacy template alias),
-    # "simt_template", or "simt_only"
-    # When compile_mode is provided, it automatically sets other fields
-    compile_mode: str = "unstructured_in_simt"
+    # Canonical modes: SIMD (D), template-SIMT (P), and pure-SIMT (T).
+    # ``unstructured_in_simt`` is a deprecated P alias.
+    compile_mode: str = _DEFAULT_COMPILE_MODE
+    # Internal round-trip marker. The core compiler reconstructs NPUOptions
+    # from serialized metadata, so this preserves whether simd was explicit.
+    compile_mode_is_explicit: Optional[bool] = field(default=None, repr=False)
     simt_stack_limit: int = None
     # take effect on the reorder instruction pattern for SIMT. The pattern is disabled by default.
     enable_simt_reorder_instruction: bool = False
@@ -1041,26 +1095,38 @@ class NPUOptions:
         if self.simt_stack_limit is not None:
             _validate_simt_stack_limit(self.simt_stack_limit)
 
-        # Parse compile_mode and retain the direct pure-SIMT selector.  The
-        # selector changes internal lowering state but never rewrites the
-        # caller-provided compile_mode value.
-        if self.compile_mode == "simd":
-            object.__setattr__(self, "parallel_mode", "simd")
-        elif self.compile_mode in ("unstructured_in_simt", "simt_template"):
-            object.__setattr__(self, "force_simt_template", True)
-        elif self.compile_mode == "simt_only":
-            object.__setattr__(self, "is_pure_simt", True)
-            object.__setattr__(self, "parallel_mode", "simt")
+        compile_mode_is_explicit = self.compile_mode_is_explicit
+        if compile_mode_is_explicit is None:
+            compile_mode_is_explicit = self.compile_mode is not _DEFAULT_COMPILE_MODE
+        else:
+            compile_mode_is_explicit = bool(compile_mode_is_explicit)
 
-        if self.force_simt_only:
+        compile_mode = str(_normalize_compile_mode(self.compile_mode, arch))
+        object.__setattr__(self, "compile_mode", compile_mode)
+        object.__setattr__(self, "compile_mode_is_explicit", compile_mode_is_explicit)
+
+        if self.effective_compile_mode == "simt_only":
             object.__setattr__(self, "is_pure_simt", True)
             object.__setattr__(self, "parallel_mode", "simt")
+        else:
+            object.__setattr__(self, "parallel_mode", "simd")
 
         if self.is_pure_simt:
             if self.shared_mem_dynamic_size is None:
                 object.__setattr__(self, "shared_mem_dynamic_size", 122880)
         else:
             object.__setattr__(self, "shared_mem_dynamic_size", 221184)
+
+    @property
+    def effective_compile_mode(self) -> str:
+        """Return the one lowering selector consumed after option parsing."""
+        if self.compile_mode_is_explicit:
+            return self.compile_mode
+        if self.force_simt_only:
+            return "simt_only"
+        if self.force_simt_template:
+            return "simt_template"
+        return self.compile_mode
 
     def hash(self):
         key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
@@ -1080,6 +1146,27 @@ def _get_npu_options_arch(options: NPUOptions) -> str:
 
 
 NPUOptions.arch = property(_get_npu_options_arch)
+
+
+def _normalize_bishengir_simt_optimization_for_context(options: NPUOptions, raw_options) -> None:
+    """Restrict the vendor SIMT optimization switch to its A5 pure-SIMT path."""
+    option_name = "enable_bishengir_simt_optimization"
+    if option_name not in raw_options:
+        return
+
+    if _is_a5_target_arch(options.target_arch) and options.is_pure_simt:
+        # The BiShengIR toolchain owns the option's value grammar; keep the
+        # Python boundary free of numeric or range validation.
+        return
+
+    warnings.warn(
+        "enable_bishengir_simt_optimization only takes effect for A5 "
+        "pure-SIMT compilation; ignoring the explicit value.",
+        UserWarning,
+        stacklevel=3,
+    )
+    object.__setattr__(options, option_name, 0)
+
 
 _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "allow_fp8e4nv",
@@ -1101,6 +1188,7 @@ _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "grid_num_tiles",
     "stream",
 })
+
 
 def ttir_to_npubin(mod, metadata, opt):
     # Get Triton-MLIR as string
@@ -1201,7 +1289,8 @@ class AscendBackend(BaseBackend):
 
     @staticmethod
     def use_alignment_specialization(options: dict) -> bool:
-        if "compile_mode" in options:
+        compile_mode_is_explicit = options.get("compile_mode_is_explicit", "compile_mode" in options)
+        if compile_mode_is_explicit:
             return options["compile_mode"] == "simt_only"
         return bool(options.get("force_simt_only", False))
 
@@ -1217,8 +1306,9 @@ class AscendBackend(BaseBackend):
         if self.target.backend == "npu":
             _warn_deprecated_ascend_env_vars()
             option_names = {
-                name for name, option_field in NPUOptions.__dataclass_fields__.items()
-                if option_field.init and name != "arch"
+                name
+                for name, option_field in NPUOptions.__dataclass_fields__.items()
+                if option_field.init and name not in {"arch", "compile_mode_is_explicit"}
             }
             # JIT and AOT hand the complete, already-normalized dataclass back to
             # parse_options before compilation.  Those values are internal state,
@@ -1229,11 +1319,14 @@ class AscendBackend(BaseBackend):
             # requiring any change to the community JIT implementation.
             normalized_opts = opts if internal_options else _remove_deprecated_npu_options(opts, in_place=True)
             args = {k: normalized_opts[k] for k in option_names if k in normalized_opts}
+            if internal_options and "compile_mode_is_explicit" in normalized_opts:
+                args["compile_mode_is_explicit"] = normalized_opts["compile_mode_is_explicit"]
             options = NPUOptions(arch=self.target.arch, **args)
             # Lazy init enable_dynamic_cv_pipeline if not provided.
             # compile_on_910_95 is already resolved from the requested target.
             if options.enable_dynamic_cv_pipeline is None:
                 object.__setattr__(options, "enable_dynamic_cv_pipeline", options.compile_on_910_95)
+            _normalize_bishengir_simt_optimization_for_context(options, opts)
         else:
             raise NotImplementedError(f"Backend '{self.target.backend}' is not supported. "
                                       "Please ensure the target backend is set to 'npu'.")
