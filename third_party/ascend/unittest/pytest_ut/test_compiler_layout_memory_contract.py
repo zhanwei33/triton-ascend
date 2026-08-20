@@ -260,6 +260,13 @@ def test_optimize_dynamic_offset_is_not_an_npu_option(compiler_module):
     assert "optimize_dynamic_offset" not in options.__dict__
 
 
+def test_enable_mask_fallback_conversion_is_not_an_npu_option(compiler_module):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"enable_mask_fallback_conversion": True})
+
+    assert "enable_mask_fallback_conversion" not in compiler_module.NPUOptions.__dataclass_fields__
+    assert "enable_mask_fallback_conversion" not in options.__dict__
+
+
 @pytest.mark.parametrize(
     ("arch", "requested", "expected"),
     (
@@ -574,7 +581,6 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
             "enable_nd2nz_on_vector": False,
             "compile_on_910_95": False,
             "force_simt_template": False,
-            "enable_mask_fallback_conversion": False,
             "enable_dynamic_cv_pipeline": False,
         },
         SimpleNamespace(debug=False),
