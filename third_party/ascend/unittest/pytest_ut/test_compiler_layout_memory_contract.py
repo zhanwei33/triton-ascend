@@ -466,6 +466,13 @@ def test_bisheng_options_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_triton_enable_libdevice_is_not_consumed(compiler_module):
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+
+    assert 'os.getenv("TRITON_ENABLE_LIBDEVICE", False)' not in compiler_source
+    assert 'f"--link-aicore-bitcode={get_libdevice()}"' not in compiler_source
+
+
 def test_enable_cce_vf_auto_sync_is_silently_ignored(compiler_module):
     option_name = "enable_cce_vf_auto_sync"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
