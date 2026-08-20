@@ -103,7 +103,6 @@ The following table describes the options.
 | **Workspace** | `set_workspace_multibuffer` | `None`, `2`, `4` | Configures workspace multi-buffering. | `triton.Config` or autotune parameter |
 | **CV fusion tiling** | `tile_mix_vector_loop` | `None`, `2`, `4`, `8` | Configures the Vector loop split count. | `triton.Config` or autotune parameter |
 | **CV fusion tiling** | `tile_mix_cube_loop` | `None`, `2`, `4`, `8` | Configures the Cube loop split count. | `triton.Config` or autotune parameter |
-| **Runtime stream** | `stream` | `None` or NPU stream identifier | Specifies the NPU stream. | launch meta-parameter |
 | **Compiler pass** | `enable_linearize` | Version-dependent | Enables or disables the linearization pass. | `triton.Config` or launch meta-parameter |
 | **CV fusion/layout** | `enable_nd2nz_on_vector` | Default `False` | Enables or disables ND-to-NZ layout transformation on the Vector path. | `triton.Config` or launch meta-parameter |
 | **Large-grid optimization** | `auto_blockify_size` | Default `1` | Configures the AutoBlockify expansion size. | launch meta-parameter or `triton.Config` |

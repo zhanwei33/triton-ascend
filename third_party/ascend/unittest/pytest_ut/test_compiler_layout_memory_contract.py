@@ -325,6 +325,16 @@ def test_compile_on_910_95_is_internal_target_arch_state(compiler_module, arch, 
     assert options.__dict__["compile_on_910_95"] is expected
 
 
+def test_stream_is_not_an_npu_compile_option(compiler_module):
+    option_name = "stream"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: 0})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910_9589", {option_name: 0})
+
+
 def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     option_name = "allow_fp8e4nv"
 

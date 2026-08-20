@@ -105,7 +105,6 @@ if __name__ == "__main__":
 | **Workspace** | `set_workspace_multibuffer` | `None`、`2`、`4` | 配置 workspace multi-buffer 档位。 | `triton.Config` 或 Autotune 参数 |
 | **CV 融合 tiling** | `tile_mix_vector_loop` | `None`、`2`、`4`、`8` | 配置 Vector loop 的切分份数。 | `triton.Config` 或 Autotune 参数 |
 | **CV 融合 tiling** | `tile_mix_cube_loop` | `None`、`2`、`4`、`8` | 配置 Cube loop 的切分份数。 | `triton.Config` 或 Autotune 参数 |
-| **运行流** | `stream` | `None` 或 NPU stream 标识 | 指定 NPU stream。 | launch meta-parameter |
 | **编译 Pass** | `enable_linearize` | 版本相关 | 启用或禁用 linearization pass。 | `triton.Config` 或 launch meta-parameter |
 | **CV 融合/layout** | `enable_nd2nz_on_vector` | 默认 `False` | 启用或禁用 Vector 路径上的 ND 到 NZ 布局转换。 | `triton.Config` 或 launch meta-parameter |
 | **大 grid 优化** | `auto_blockify_size` | 默认 `1` | 配置 AutoBlockify pass 的扩展大小。 | launch meta-parameter 或 `triton.Config` |
