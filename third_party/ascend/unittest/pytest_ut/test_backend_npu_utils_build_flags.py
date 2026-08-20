@@ -25,6 +25,22 @@ def _load_utils_module():
     return module
 
 
+def test_backend_policy_defaults_to_torch_npu(monkeypatch):
+    utils = _load_utils_module()
+    calls = []
+
+    def fake_execute_func(category, method, *args, **kwargs):
+        calls.append((category, method, args, kwargs))
+        return "selected"
+
+    monkeypatch.setattr(utils, "backend_policy", None)
+    monkeypatch.setattr(utils.backend_strategy_registry, "execute_func", fake_execute_func)
+    monkeypatch.setenv("TRITON_BACKEND", "mindspore")
+
+    assert utils.get_backend_func("version_hash") == "selected"
+    assert calls == [("torch_npu", "version_hash", (), {})]
+
+
 def _assert_npu_utils_uses_special_flags(utils, monkeypatch, tmp_path):
     monkeypatch.setattr(utils, "_get_cxx", lambda: "c++")
     monkeypatch.setattr(utils, "_get_ascend_path", lambda: str(tmp_path / "ascend"))
