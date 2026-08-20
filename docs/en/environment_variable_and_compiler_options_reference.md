@@ -94,6 +94,7 @@ The following table describes the options.
 | Category | Compiler Option | Default/Values | Function Description | Setting Description |
 |----------|-----------------|----------------|----------------------|--------------------|
 | **General pipeline** | `multibuffer` | `True` (default), `False` | Enables or disables ping-pong/double-buffer pipelines. Enabled by default. | `triton.Config` or launch meta-parameter |
+| **Compilation mode** | `compile_mode` | `unstructured_in_simt` (default), `simd`, `simt_template`, `simt_only` | Selects the compiler mode. `simt_template` is the template-SIMT entry and replaces the removed `force_simt_template` option; `unstructured_in_simt` retains its existing template behavior. | `triton.Config` or launch meta-parameter |
 | **CV fusion** | `enable_auto_bind_sub_block` | `None`, `True`, `False` | Enables or disables automatic sub-block binding. | `triton.Config` or launch meta-parameter |
 | **CV fusion** | `enable_hivm_auto_cv_balance` | `None`, `True`, `False` | Enables or disables automatic CV balance. | `triton.Config` or autotune parameter |
 | **CV fusion/sync** | `sync_solver` | `None`, `True`, `False` | Enables or disables the HIVM synchronization solver. | `triton.Config` or launch meta-parameter |

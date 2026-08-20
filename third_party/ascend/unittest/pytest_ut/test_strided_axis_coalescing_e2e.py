@@ -132,12 +132,12 @@ def test_strided_axis_coalescing_gate_on_e2e():
     assert torch.equal(dst.cpu(), src.cpu())
 
     # These fields are compiler output, not test-supplied options: together
-    # they prove the original compile_on_910_95 && force_simt_template slot
+    # they prove the original compile_on_910_95 && use_simt_template slot
     # actually ran StridedAxisCoalescing and exported the launch contract.
     metadata = kernel.metadata
     assert metadata.compile_mode == "unstructured_in_simt"
     assert metadata.compile_on_910_95 is True
-    assert metadata.force_simt_template is True
+    assert metadata.use_simt_template is True
     assert metadata.coalesce_factor == s
     assert metadata.coalesce_axis == 0
     assert metadata.coalesce_grid_ceil_div is False
