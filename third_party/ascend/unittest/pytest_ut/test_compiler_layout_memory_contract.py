@@ -335,6 +335,24 @@ def test_stream_is_not_an_npu_compile_option(compiler_module):
         _parse_options(compiler_module, "Ascend910_9589", {option_name: 0})
 
 
+def test_parallel_mode_is_internal_metadata_derived_from_mode_and_linalg_ir(compiler_module):
+    option_name = "parallel_mode"
+
+    assert compiler_module.NPUOptions.__dataclass_fields__[option_name].init is False
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: "simt"})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910_9589", {option_name: "simt"})
+
+    assert _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simd"}).parallel_mode == "simd"
+    assert _parse_options(compiler_module, "Ascend910_9589", {"compile_mode": "simt_only"}).parallel_mode == "simt"
+
+    _linalg, metadata = compiler_module._parse_linalg_metadata(
+        'mix_mode = "aiv" parallel_mode = "mix_simd_simt" func.func @derived_kernel()', {}
+    )
+    assert metadata[option_name] == "mix_simd_simt"
+
+
 def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     option_name = "allow_fp8e4nv"
 
