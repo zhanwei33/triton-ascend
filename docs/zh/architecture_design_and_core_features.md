@@ -85,7 +85,7 @@
 | 13  | stream                                        | NPU        | Optional: Inform the compiler about the NPU stream to use. |
 | 14  | enable_linearize                              | NPU        | Autotune option: Enable or disable the linearization pass. |
 | 15  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only): Enable or disable the ND (n-dimensional) to NZ (non-zero) layout transformation. |
-| 16  | auto_blockify_size                            | NPU        | Autotune option: Enable or disable AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
+| 16  | auto_blockify_size                            | NPU        | Autotune option: Configure the AutoBlockify expansion size. |
 
 #### 3.2.2 SIMD compiler
 
