@@ -430,6 +430,19 @@ def test_enable_drop_unit_dims_is_silently_ignored(compiler_module):
     assert option_name not in options.__dict__
 
 
+def test_enable_vf_fusion_is_silently_ignored(compiler_module):
+    option_name = "enable_vf_fusion"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert f'metadata["{option_name}"]' not in compiler_source
+    assert "--enable-vf-fusion" not in compiler_source
+    assert "vf_fusion_mode" in compiler_module.NPUOptions.__dataclass_fields__
+    assert "--vf-fusion-mode" in compiler_source
+    options = _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+    assert option_name not in options.__dict__
+
+
 def test_disable_size_align_for_cast_is_not_an_npu_option(compiler_module):
     option_name = "disable_size_align_for_cast"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
