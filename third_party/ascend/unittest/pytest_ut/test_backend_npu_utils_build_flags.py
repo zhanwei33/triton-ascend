@@ -119,7 +119,11 @@ def test_ffts_support_resolves_from_explicit_target_arch(arch, expected):
 
 def test_force_disable_ffts_uses_explicit_target_arch(monkeypatch):
     utils = _load_utils_module()
-    monkeypatch.delenv("TRITON_DISABLE_FFTS", raising=False)
+    utils_source = _get_utils_path().read_text(encoding="utf-8")
+    removed_env = "TRITON_DISABLE" + "_FFTS"
 
+    monkeypatch.setenv(removed_env, "true")
+    assert removed_env not in utils_source
     assert utils.force_disable_ffts("Ascend910_9589") is True
+    assert utils.force_disable_ffts("Ascend950A3") is True
     assert utils.force_disable_ffts("Ascend910B4") is False
