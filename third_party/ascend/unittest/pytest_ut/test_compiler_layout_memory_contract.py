@@ -253,6 +253,13 @@ def test_enable_auto_blockify_is_not_an_npu_option(compiler_module):
     assert "enable_auto_blockify" not in options.__dict__
 
 
+def test_optimize_dynamic_offset_is_not_an_npu_option(compiler_module):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"optimize_dynamic_offset": True})
+
+    assert "optimize_dynamic_offset" not in compiler_module.NPUOptions.__dataclass_fields__
+    assert "optimize_dynamic_offset" not in options.__dict__
+
+
 @pytest.mark.parametrize(
     ("arch", "requested", "expected"),
     (
@@ -526,6 +533,7 @@ def test_code_motion_is_not_an_npu_or_ubtuner_option(compiler_module):
 def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
     option_name = "enable_select_analysis"
     captured = {}
+    structure_flags = []
     pass_manager = SimpleNamespace(enable_debug=lambda: None, run=lambda *_args: None)
 
     def no_op(*_args, **_kwargs):
@@ -534,9 +542,12 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
     def add_triton_to_linalg(*args):
         captured[option_name] = args[4]
 
+    def add_triton_to_structure(*args):
+        structure_flags.append(args[1:])
+
     ttir_passes = SimpleNamespace(
         add_triton_control_flow_opt=no_op,
-        add_triton_to_structure=no_op,
+        add_triton_to_structure=add_triton_to_structure,
         add_discrete_mask_access_conversion=no_op,
         add_triton_to_annotation=no_op,
         add_triton_to_unstructure=no_op,
@@ -564,7 +575,6 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
             "compile_on_910_95": False,
             "force_simt_template": False,
             "enable_mask_fallback_conversion": False,
-            "optimize_dynamic_offset": False,
             "enable_dynamic_cv_pipeline": False,
         },
         SimpleNamespace(debug=False),
@@ -572,6 +582,7 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
 
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
     assert captured[option_name] is True
+    assert structure_flags == [(False, False), (False, False)]
     with pytest.raises(TypeError, match=option_name):
         compiler_module.NPUOptions(**{option_name: False})
     with pytest.raises(ValueError, match=option_name):
