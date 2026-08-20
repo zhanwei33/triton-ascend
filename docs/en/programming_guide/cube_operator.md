@@ -55,4 +55,4 @@ Recommended decomposition:
 4. Use inner loops for long K or long sequence dimensions to control on-chip usage.
 5. Use autotune to manage candidate `BLOCK_M/N/K` and `multibuffer` configurations.
 
-A common migration risk is directly keeping a GPU-style large grid. If the output tile count is far larger than the physical Cube Core count, let each program process multiple tiles in an inner loop, or set `TRITON_ALL_BLOCKS_PARALLEL=1` when logical programs are independent.
+A common migration risk is directly keeping a GPU-style large grid. If the output tile count is far larger than the physical Cube Core count, let each program process multiple tiles in an inner loop; the backend's automatic block mapping applies when logical programs are independent.

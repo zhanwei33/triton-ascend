@@ -249,18 +249,18 @@ def test_make_launcher_enables_91095_simt_for_sls_mixed_parallel_mode(
 @patch.object(driver, "force_disable_ffts", return_value=False)
 @patch.object(driver, "is_ffts_supported", return_value=True)
 @patch.object(driver, "get_backend_func", side_effect=_mock_backend_func)
-def test_make_launcher_block_cap_uses_only_env_and_blacklist(
+def test_make_launcher_block_cap_uses_automatic_mapping_and_blacklist(
     _mock_backend_func_patch,
     _mock_ffts,
     _mock_disable_ffts,
     mock_npu_utils,
 ):
-    """The launcher cap is the 895 E && !B contract, independent of Row."""
+    """The launcher cap is the 895 automatic-mapping && !B contract, independent of Row."""
     mock_npu_utils.return_value.get_aivector_core_num.return_value = 40
     mock_npu_utils.return_value.get_aicore_num.return_value = 20
     cap = "blockNum = std::min(blockNum, (uint32_t)40);"
 
-    # E = TRITON_ALL_BLOCKS_PARALLEL, B = blacklist, R = Row coalescing.
+    # E = internal automatic mapping, B = blacklist, R = Row coalescing.
     # The Row result must not leak into the launcher predicate: only E && !B
     # controls whether both generated launch paths contain the physical-core
     # cap.  (O is intentionally absent here; it is a compiler argv option.)

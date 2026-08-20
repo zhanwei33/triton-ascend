@@ -264,9 +264,7 @@ def _run_ttir_to_npubin(
     result = closure["ttir_to_npubin"](
         _FakeIrModule(_row_attrs(row_applied)),
         {},
-        _make_opt(
-            superblock_factor=superblock_factor,
-        ),
+        _make_opt(superblock_factor=superblock_factor, ),
     )
     assert result == b"npubin"
     assert len(commands) == 1
@@ -303,7 +301,7 @@ def _export_coalesce_metadata(closure, attrs):
 
 
 def test_895_pure_simt_argv_matrix_after_row_make_ttir_migration(source_pairs):
-    """All 16 env-and-safety pure-SIMT argv cases survive after Row leaves npubin."""
+    """All 16 policy-and-safety pure-SIMT argv cases survive after Row leaves npubin."""
     _baseline_source, target_source = source_pairs["compiler"]
     common_prefix = [
         "--common-before-pure-simt",
@@ -319,12 +317,11 @@ def test_895_pure_simt_argv_matrix_after_row_make_ttir_migration(source_pairs):
         "--enable-simt-reorder-instruction=true",
         "--disable-fma",
     ]
-    cases = itertools.product(
-        (False, True),  # E: TRITON_ALL_BLOCKS_PARALLEL
-        (False, True),  # B: blacklist result
-        (False, True),  # R: Row pass result
-        (0, 7),  # superblock factor
-    )
+    cases = itertools.product((False, True),  # E: internal automatic block-mapping policy
+                              (False, True),  # B: blacklist result
+                              (False, True),  # R: Row pass result
+                              (0, 7),  # superblock factor
+                              )
 
     count = 0
     for env_enabled, blacklisted, row_applied, superblock in cases:

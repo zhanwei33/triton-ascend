@@ -17,6 +17,7 @@ The installed Triton package can point at another worktree, so importing
 being changed here.
 """
 
+import ast
 import importlib.util
 import itertools
 import sys
@@ -228,6 +229,22 @@ def test_npu_arch_is_target_injected_internal_state(compiler_module):
     assert options._arch == "Ascend910_9589"
     assert "arch" not in {option_field.name for option_field in fields(compiler_module.NPUOptions)}
     assert "arch" not in options.__dict__
+
+
+def test_auto_block_mapping_is_fixed_backend_policy():
+    utils_path = Path(__file__).resolve().parents[2] / "backend" / "utils.py"
+    utils_source = utils_path.read_text(encoding="utf-8")
+    removed_env = "TRITON_ALL" + "_BLOCKS_PARALLEL"
+
+    assert removed_env not in utils_source
+    module = ast.parse(utils_source)
+    function = next(
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_is_auto_map_parallel_blocks_enabled")
+    returns = [node for node in function.body if isinstance(node, ast.Return)]
+    assert len(returns) == 1
+    assert isinstance(returns[0].value, ast.Constant)
+    assert returns[0].value.value is True
 
 
 def test_warp_size_is_fixed_npu_backend_capability(compiler_module):
@@ -1078,7 +1095,7 @@ def test_make_ttir_uses_arch_derived_graph_ub_budget(compiler_module, monkeypatc
 
 
 def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
-    """Keep the env-and-safety-only pure-SIMT auto-blockify argv contract."""
+    """Keep the internal-policy-and-safety pure-SIMT auto-blockify argv contract."""
     common_options = ["--common-before-pure-simt", "--common-after-pure-simt"]
     pure_simt_prefix = [
         "--enable-hivm-compile=false",
@@ -1131,7 +1148,7 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
             if superblock > 0:
                 expected_options.append(f"--super-block-factor={superblock}")
 
-        # The compiler and launcher now agree on the single env/safety gate.
+        # The compiler and launcher now agree on the single policy/safety gate.
         assert command[0] == "/fake/bisheng", case
         assert Path(command[1]).name == "kernel.ttir.mlir", case
         assert command[2:-2] == expected_options, case

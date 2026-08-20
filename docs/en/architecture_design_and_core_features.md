@@ -83,7 +83,7 @@ This project extends the support for Huawei Ascend NPU (using the CANN software 
 | 11  | stream                                        | NPU        | (Optional) Informs the compiler about the NPU stream to use.|
 | 12  | enable_linearize                              | NPU        | Autotune option. It enables or disables the linearization pass.|
 | 13  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only). It enables or disables the ND (n-dimensional) to NZ (non-zero) layout transformation.|
-| 14  | auto_blockify_size                            | NPU        | Autotune option. It enables or disables AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
+| 14  | auto_blockify_size                            | NPU        | Autotune option. It configures the AutoBlockify expansion size. |
 
 #### 3.2.2 SIMD Compiler
 

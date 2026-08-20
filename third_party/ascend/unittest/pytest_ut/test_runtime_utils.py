@@ -93,6 +93,10 @@ def test_deprecated_simt_option_warns_only_once_after_in_place_normalization():
     assert options == {"compile_mode": "simt_only"}
 
 
+def test_auto_map_parallel_blocks_is_fixed_backend_policy():
+    assert utils._is_auto_map_parallel_blocks_enabled()
+
+
 def test_get_byte_per_numel_supports_unsigned_integer_dtypes():
     assert runtime_utils.get_byte_per_numel(torch.uint16) == 2
     assert runtime_utils.get_byte_per_numel(torch.uint32) == 4
