@@ -252,6 +252,35 @@ def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_auto_tile_and_bind_subblock_is_ir_derived_metadata_not_an_npu_option(compiler_module):
+    option_name = "auto_tile_and_bind_subblock"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: False})
+    default = _parse_options(compiler_module, "Ascend910_9589")
+    requested = _parse_options(compiler_module, "Ascend910_9589", {option_name: False})
+    assert requested.hash() == default.hash()
+
+    base_linalg = 'mix_mode = "aiv" parallel_mode = "simd" func.func @derived_kernel()'
+    for marker, expected in (
+            ("", True),
+            ("hivm.disable_auto_tile_and_bind_subblock", False),
+            ("sync_block_lock_unordered", False),
+    ):
+        _linalg, metadata = compiler_module._parse_linalg_metadata(
+            f"{base_linalg} {marker}", {"enable_auto_bind_sub_block": None})
+        assert metadata[option_name] is expected
+        assert compiler_module.get_auto_bind_sub_block_option(metadata) is expected
+
+    _linalg, metadata = compiler_module._parse_linalg_metadata(
+        f"{base_linalg} hivm.disable_auto_tile_and_bind_subblock",
+        {"enable_auto_bind_sub_block": True},
+    )
+    assert metadata[option_name] is False
+    assert compiler_module.get_auto_bind_sub_block_option(metadata) is True
+
+
 def test_graph_optimize_rule_mask_is_not_an_npu_option(compiler_module):
     option_name = "graph_optimize_rule_mask"
 
