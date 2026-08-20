@@ -82,10 +82,9 @@ This project extends the support for Huawei Ascend NPU (using the CANN software 
 | 10  | set_workspace_multibuffer                     | NPU        | Autotune option. It enables or disables multi-buffering for the workspace.|
 | 11  | tile_mix_vector_loop                          | NPU        | Autotune option (CV-fused kernels only). It enables or disables tiling for vector loops.|
 | 12  | tile_mix_cube_loop                            | NPU        | Autotune option (CV-fused kernels only). It enables or disables tiling for cube loops.|
-| 13  | stream                                        | NPU        | (Optional) Informs the compiler about the NPU stream to use.|
-| 14  | enable_linearize                              | NPU        | Autotune option. It enables or disables the linearization pass.|
-| 15  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only). It enables or disables the ND (n-dimensional) to NZ (non-zero) layout transformation.|
-| 16  | auto_blockify_size                            | NPU        | Autotune option. It configures the AutoBlockify expansion size. |
+| 13  | enable_linearize                              | NPU        | Autotune option. It enables or disables the linearization pass.|
+| 14  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only). It enables or disables the ND (n-dimensional) to NZ (non-zero) layout transformation.|
+| 15  | auto_blockify_size                            | NPU        | Autotune option. It configures the AutoBlockify expansion size. |
 
 #### 3.2.2 SIMD Compiler
 
