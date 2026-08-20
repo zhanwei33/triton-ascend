@@ -463,8 +463,9 @@ def _load_make_launcher(source):
     state = {"auto_map_enabled": False}
     namespace = {
         "NPUUtils": _FakeNPUUtils,
+        "_BASE_ARGS_FORMAT": "iiiKKOOOO",
         "_is_auto_map_parallel_blocks_enabled": lambda: state["auto_map_enabled"],
-        "force_disable_ffts": lambda: False,
+        "force_disable_ffts": lambda *_args: False,
         "is_ffts_supported": lambda _arch: True,
         "get_ascend_arch_from_env": lambda: "Ascend910B",
         "get_backend_func": lambda name, *_args: f"/* {name} */",
@@ -495,6 +496,7 @@ def _make_metadata(*, factor, axis, ceil_div, blacklisted, row_applied):
         coalesce_grid_ceil_div=ceil_div,
         has_auto_blockify_blacklist_op=blacklisted,
         row_coalescing_applied=row_applied,
+        target=SimpleNamespace(arch="Ascend910B"),
     )
 
 
@@ -686,11 +688,12 @@ def test_895_launcher_keeps_mixed_simt_sls_marker_in_both_paths(source_pairs):
     )
 
     for baseline_path, target_path in zip(_launcher_paths(baseline_src), _launcher_paths(target_src)):
-        marker = "rtKernelLaunchWithFlagV2"
-        assert baseline_path.count(marker) == target_path.count(marker) == 1
-        assert baseline_path.count("rtArgsEx_t argsInfo") == target_path.count("rtArgsEx_t argsInfo") == 1
+        assert baseline_path.count("rtKernelLaunchWithFlagV2") == 1
+        assert target_path.count("aclrtLaunchKernelWithHostArgs") == 1
+        assert baseline_path.count("rtArgsEx_t argsInfo") == 1
+        assert target_path.count("aclrtLaunchKernelAttr attrInfo") == 1
         assert "cfgInfo.localMemorySize = 221184;" in baseline_path
-        assert "cfgInfo.localMemorySize = 221184;" in target_path
+        assert "value.localMemorySize = 221184;" in target_path
 
 
 def _load_inject_grid_num_tiles(source):
