@@ -304,8 +304,7 @@ def _get_tool_path(tool_name: str) -> str:
     Get the path to a Triton tool binary.
     Search order:
       1. Installed package location (triton/_C/)
-      2. TRITON_BUILD_DIR environment variable
-      3. System PATH
+      2. System PATH
     """
     try:
         import triton._C.libtriton as libtriton
@@ -314,12 +313,6 @@ def _get_tool_path(tool_name: str) -> str:
             return tool_path
     except (ImportError, AttributeError):
         pass
-
-    build_path = os.getenv("TRITON_BUILD_DIR", "")
-    if build_path:
-        tool_path = os.path.join(build_path, "bin", tool_name)
-        if os.path.exists(tool_path) and os.access(tool_path, os.X_OK):
-            return tool_path
 
     tool_path = shutil.which(tool_name)
     if tool_path:
