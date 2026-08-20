@@ -303,6 +303,20 @@ def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     assert requested.hash() == default.hash()
 
 
+def test_mix_mode_is_ir_derived_metadata_not_an_npu_option(compiler_module):
+    option_name = "mix_mode"
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: "aic"})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910_9589", {option_name: "aic"})
+
+    _linalg, metadata = compiler_module._parse_linalg_metadata(
+        'mix_mode = "mix" parallel_mode = "simd" func.func @derived_kernel()', {})
+    assert metadata[option_name] == "mix"
+
+
 def test_auto_tile_and_bind_subblock_is_ir_derived_metadata_not_an_npu_option(compiler_module):
     option_name = "auto_tile_and_bind_subblock"
 
