@@ -41,6 +41,13 @@ def test_backend_policy_defaults_to_torch_npu(monkeypatch):
     assert calls == [("torch_npu", "version_hash", (), {})]
 
 
+def test_cxx_uses_cc_environment_override(monkeypatch):
+    utils = _load_utils_module()
+    monkeypatch.setenv("CC", "/toolchain/custom-cxx")
+
+    assert utils._get_cxx() == "/toolchain/custom-cxx"
+
+
 def _assert_npu_utils_uses_special_flags(utils, monkeypatch, tmp_path):
     monkeypatch.setattr(utils, "_get_cxx", lambda: "c++")
     monkeypatch.setattr(utils, "_get_ascend_path", lambda: str(tmp_path / "ascend"))
