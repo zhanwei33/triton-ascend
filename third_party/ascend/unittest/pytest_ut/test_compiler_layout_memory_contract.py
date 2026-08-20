@@ -21,6 +21,7 @@ import importlib.util
 import itertools
 import sys
 import types
+from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -218,6 +219,14 @@ def test_kernel_name_is_derived_metadata_not_an_npu_option(compiler_module):
     assert metadata["name"] == "derived_kernel"
 
 
+def test_npu_arch_is_target_injected_internal_state(compiler_module):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"arch": "Ascend910B1"})
+
+    assert options._arch == "Ascend910_9589"
+    assert "arch" not in {option_field.name for option_field in fields(compiler_module.NPUOptions)}
+    assert "arch" not in options.__dict__
+
+
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 @pytest.mark.parametrize(
     ("arch", "requested_capacity", "expected_capacity"),
@@ -264,7 +273,7 @@ def test_parse_options_normalizes_graph_ub_budget(compiler_module, arch, request
 
     options = _parse_options(compiler_module, arch, opts)
 
-    assert options.arch == arch
+    assert options._arch == arch
     assert options.graph_optimize_ub_capacity_bytes == expected_capacity
 
 
