@@ -96,6 +96,7 @@ if __name__ == "__main__":
 | 类别 | 编译选项 | 默认值/可选值 | 功能说明 | 配置说明 |
 |------|----------|----------------|----------|----------|
 | **通用流水** | `multibuffer` | `True`（默认）、`False` | 启用或禁用 ping-pong/double buffer 流水。默认开启。 | `triton.Config` 或 launch meta-parameter |
+| **编译模式** | `compile_mode` | `unstructured_in_simt`（默认）、`simd`、`simt_template`、`simt_only` | 选择编译模式。`simt_template` 是 template-SIMT 入口，用于替代已删除的 `force_simt_template`；`unstructured_in_simt` 保持既有 template 行为。 | `triton.Config` 或 launch meta-parameter |
 | **CV 融合** | `enable_auto_bind_sub_block` | `None`、`True`、`False` | 启用或禁用自动绑定 sub-block。 | `triton.Config` 或 launch meta-parameter |
 | **CV 融合** | `enable_hivm_auto_cv_balance` | `None`、`True`、`False` | 启用或禁用自动 CV balance。 | `triton.Config` 或 Autotune 参数 |
 | **CV 融合/同步** | `sync_solver` | `None`、`True`、`False` | 启用或禁用 HIVM 同步求解器。 | `triton.Config` 或 launch meta-parameter |
