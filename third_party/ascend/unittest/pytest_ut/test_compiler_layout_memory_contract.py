@@ -247,6 +247,13 @@ def test_add_auto_scheduling_is_not_an_npu_option(compiler_module):
     assert "add_auto_scheduling" not in options.__dict__
 
 
+def test_enable_auto_blockify_is_not_an_npu_option(compiler_module):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"enable_auto_blockify": True})
+
+    assert "enable_auto_blockify" not in compiler_module.NPUOptions.__dataclass_fields__
+    assert "enable_auto_blockify" not in options.__dict__
+
+
 def test_allow_fp8e4nv_is_not_an_npu_option(compiler_module):
     option_name = "allow_fp8e4nv"
 
@@ -558,7 +565,6 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
 def _make_opt(
     *,
     force_simt_only,
-    enable_auto_blockify=None,
     superblock_factor=0,
     enable_bishengir_simt_optimization=0,
     simt_stack_limit=0,
@@ -575,7 +581,6 @@ def _make_opt(
         shared_mem_dynamic_size=shared_mem_dynamic_size,
         enable_simt_reorder_instruction=enable_simt_reorder_instruction,
         disable_fma=disable_fma,
-        enable_auto_blockify=enable_auto_blockify,
         superblock_factor=superblock_factor,
     )
 
@@ -586,7 +591,6 @@ def _run_ttir_to_npubin(
     *,
     force_simt_only=True,
     auto_map_enabled=False,
-    enable_auto_blockify=None,
     has_blacklist_op=False,
     row_coalescing_applied=False,
     superblock_factor=0,
@@ -655,7 +659,6 @@ def _run_ttir_to_npubin(
         {},
         _make_opt(
             force_simt_only=force_simt_only,
-            enable_auto_blockify=enable_auto_blockify,
             superblock_factor=superblock_factor,
             enable_bishengir_simt_optimization=enable_bishengir_simt_optimization,
             shared_mem_dynamic_size=shared_mem_dynamic_size,
@@ -875,12 +878,7 @@ def test_make_ttir_uses_arch_derived_graph_ub_budget(compiler_module, monkeypatc
 
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
-    """Keep the complete 895 pure-SIMT argv, including duplicate flag order.
-
-    E: TRITON_ALL_BLOCKS_PARALLEL; O: user option; B: blacklist; R: Row
-    coalescing result.  O is intentionally tri-state because ``None`` is the
-    default contract rather than an explicit user choice.
-    """
+    """Keep the env-and-safety-only pure-SIMT auto-blockify argv contract."""
     common_options = ["--common-before-pure-simt", "--common-after-pure-simt"]
     pure_simt_prefix = [
         "--enable-hivm-compile=false",
@@ -897,15 +895,8 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
     ]
     auto_blockify_flag = "--enable-auto-blockify-loop"
 
-    for (
-            env_enabled,
-            user_option,
-            blacklisted,
-            row_applied,
-            superblock,
-    ) in itertools.product(
+    for env_enabled, blacklisted, row_applied, superblock in itertools.product(
         (False, True),
-        (None, False, True),
         (False, True),
         (False, True),
         (0, 7),
@@ -915,7 +906,6 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
                 compiler_module,
                 case_monkeypatch,
                 auto_map_enabled=env_enabled,
-                enable_auto_blockify=user_option,
                 has_blacklist_op=blacklisted,
                 row_coalescing_applied=row_applied,
                 superblock_factor=superblock,
@@ -927,11 +917,8 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
                 disable_fma=True,
             )
 
-        first_injection = (env_enabled and
-                           (user_option is None or user_option)) or (not env_enabled and bool(user_option))
         second_injection = env_enabled and not blacklisted and not row_applied
-        case = (f"E={env_enabled}, O={user_option}, B={blacklisted}, "
-                f"R={row_applied}, superblock={superblock}")
+        case = f"E={env_enabled}, B={blacklisted}, R={row_applied}, superblock={superblock}"
 
         metadata_options = [arg for arg in command if arg.startswith("--triton-metadata-output=")]
         assert len(metadata_options) == 1, case
@@ -939,16 +926,12 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
         assert Path(metadata_option.split("=", 1)[1]).name == "triton-metadata.json", case
 
         expected_options = [*common_options, metadata_option, *pure_simt_prefix]
-        if first_injection:
-            expected_options.append(auto_blockify_flag)
         if second_injection:
             expected_options.append(auto_blockify_flag)
             if superblock > 0:
                 expected_options.append(f"--super-block-factor={superblock}")
 
-        # Keep the source/output envelope as well as every option.  In
-        # particular, two copies of the auto-blockify flag must remain
-        # adjacent in their historical insertion slots.
+        # The compiler and launcher now agree on the single env/safety gate.
         assert command[0] == "/fake/bisheng", case
         assert Path(command[1]).name == "kernel.ttir.mlir", case
         assert command[2:-2] == expected_options, case
