@@ -18,7 +18,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+import ast
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -165,3 +167,35 @@ def test_npu_device_limit_get_aicore_num(monkeypatch):
 
     assert NPUUtils.get_aicore_num(mock_utils) == 8
     assert NPUUtils.get_aivector_core_num(mock_utils) == 16
+
+
+def test_legacy_msprof_register_env_does_not_skip_launcher(monkeypatch):
+    """The removed legacy switch must not suppress a normal kernel launch."""
+    monkeypatch.setenv("TRITON_REGISTER_TENSOR_MSPROF", "1")
+    ascend_root = Path(__file__).resolve().parents[2]
+    driver_path = ascend_root / "backend" / "driver.py"
+    backend_register_path = ascend_root / "backend" / "backend_register.py"
+    driver_source = driver_path.read_text(encoding="utf-8")
+    backend_register_source = backend_register_path.read_text(encoding="utf-8")
+
+    assert "TRITON_REGISTER_TENSOR_MSPROF" not in driver_source
+    assert "get_tensor_params_shape" not in backend_register_source
+
+    module = ast.parse(driver_source, filename=str(driver_path))
+    launcher_class = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == "NPULauncher")
+    call_method = next(node for node in launcher_class.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "__call__")
+    call_module = ast.Module(body=[call_method], type_ignores=[])
+    ast.fix_missing_locations(call_module)
+    namespace = {"_ascend_utils": types.SimpleNamespace()}
+    exec(compile(call_module, str(driver_path), "exec"), namespace)
+
+    launcher = types.SimpleNamespace()
+    launcher.compile_only = False
+    launcher.launch = MagicMock(return_value=1)
+    launch_args = (1, 2, 3, 4, 5, {})
+
+    namespace["__call__"](launcher, *launch_args)
+
+    launcher.launch.assert_called_once_with(*launch_args)
+    assert namespace["_ascend_utils"].TRITON_PROFILER_REGISTERED is True
