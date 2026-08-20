@@ -178,7 +178,7 @@ def make_ttir(mod, metadata, opt):
         ascend.passes.ttir.add_graph_optimize(
             pm,
             ub_capacity_bytes=graph_ub_budget_bytes_for_arch(opt._arch),
-            force_simt_only=opt.force_simt_only,
+            force_simt_only=opt.is_pure_simt,
         )
     pm.run(mod, 'make_ttir')
     if opt.debug:
@@ -998,7 +998,8 @@ class NPUOptions:
     # Internal launch metadata.  The mode is initially derived from
     # compile_mode, then replaced with the mode emitted by TritonToLinalg.
     parallel_mode: str = field(default="simd", init=False)
-    force_simt_only: bool = False
+    # Internal pure-SIMT state, derived exclusively from compile_mode.
+    is_pure_simt: bool = field(default=False, init=False)
     force_simt_template: bool = False
     # only take effect on the simt-only & simd-simt-mix scenarios
     shared_mem_dynamic_size: int = None
@@ -1044,10 +1045,10 @@ class NPUOptions:
             # For historical compatibility reasons, force_simt_template will still be used.
             object.__setattr__(self, "force_simt_template", True)
         elif self.compile_mode == "simt_only":
-            object.__setattr__(self, "force_simt_only", True)
+            object.__setattr__(self, "is_pure_simt", True)
             object.__setattr__(self, "parallel_mode", "simt")
 
-        if self.force_simt_only:
+        if self.is_pure_simt:
             if self.shared_mem_dynamic_size is None:
                 object.__setattr__(self, "shared_mem_dynamic_size", 122880)
         else:
@@ -1071,6 +1072,7 @@ _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "disable_size_align_for_cast",
     "disable_auto_inject_block_sync",
     "enable_select_analysis",
+    "force_simt_only",
     "ops_reorder",
     "parallel_mode",
     "storage_align",
@@ -1084,7 +1086,7 @@ def ttir_to_npubin(mod, metadata, opt):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
     metadata = _parse_ttir_metadata(ttir_code, metadata)
-    if opt.force_simt_only:
+    if opt.is_pure_simt:
         # RowCoalescing is now the pure-SIMT graph rule in make_ttir().  This
         # stage only transfers its complete launch contract to metadata before
         # handing TTIR to pure-SIMT codegen.
@@ -1100,7 +1102,7 @@ def ttir_to_npubin(mod, metadata, opt):
         metadata_path = os.path.join(tmpdir, "triton-metadata.json")
         # build compile options
         _compile_option_list = get_common_bishengir_compile_options(metadata)
-        if opt.force_simt_only:
+        if opt.is_pure_simt:
             _compile_option_list += [f"--triton-metadata-output={metadata_path}"]
             _compile_option_list += ["--enable-hivm-compile=false"]
             _compile_option_list += ["--enable-triton-ir-compile"]
@@ -1137,7 +1139,7 @@ def ttir_to_npubin(mod, metadata, opt):
             print(f"[DEBUG] {bin_path} is not found")
             print(f"[DEBUG] Stderr:\n{error_msg}")
             raise subprocess.CalledProcessError(ret.returncode, cmd_list, ret.stdout, ret.stderr)
-        if opt.force_simt_only:
+        if opt.is_pure_simt:
             metadata.update(json.loads(Path(metadata_path).read_text()))
         return Path(bin_path).read_bytes()
 
@@ -1179,7 +1181,7 @@ class AscendBackend(BaseBackend):
 
     @staticmethod
     def use_alignment_specialization(options: dict) -> bool:
-        return options.get("compile_mode") == "simt_only" or bool(options.get("force_simt_only", False))
+        return options.get("compile_mode") == "simt_only"
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
@@ -1253,7 +1255,7 @@ class AscendBackend(BaseBackend):
     def add_stages(self, stages, options, language):
         if self.target.backend == "npu":
             stages["ttir"] = lambda src, metadata: make_ttir(src, metadata, options)
-            if options.force_simt_only:
+            if options.is_pure_simt:
                 stages["npubin"] = (lambda src, metadata: ttir_to_npubin(src, metadata, options))
                 return
             stages["ttadapter"] = lambda src, metadata: ttir_to_linalg(src, metadata, options, named_ops=True)

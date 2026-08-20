@@ -519,7 +519,7 @@ def make_launcher(constants, signature, metadata):
     mix_mode = metadata.mix_mode
     compile_on_910_95 = metadata.compile_on_910_95
     parallel_mode = metadata.parallel_mode
-    enable_simt = ("simt" in parallel_mode) or metadata.force_simt_only
+    enable_simt = ("simt" in parallel_mode) or metadata.is_pure_simt
 
     def _expand_signature(signature):
         output = []
@@ -1115,8 +1115,8 @@ void triton_launch_kernel(const char* kernelName, aclrtFuncHandle func, aclrtStr
       return current_offset;
     }};
     {'size_t ffts_offset = reserve_slot(sizeof(void*), 8);' if target_support_ffts else ''}
-    {'size_t sync_block_lock_offset = reserve_slot(sizeof(void*), 8);' if not metadata.force_simt_only else ''}
-    {'size_t workspace_offset = reserve_slot(sizeof(void*), 8);' if not metadata.force_simt_only else ''}
+    {'size_t sync_block_lock_offset = reserve_slot(sizeof(void*), 8);' if not metadata.is_pure_simt else ''}
+    {'size_t workspace_offset = reserve_slot(sizeof(void*), 8);' if not metadata.is_pure_simt else ''}
     size_t kernel_args_offset = args_offset;
     for (int arg_idx = 0; arg_idx < num_args; ++arg_idx) {{
       size_t alignment = launch_arg_sizes[arg_idx] >= 8 ? 8 : (launch_arg_sizes[arg_idx] >= 4 ? 4 : 1);
@@ -1133,8 +1133,8 @@ void triton_launch_kernel(const char* kernelName, aclrtFuncHandle func, aclrtStr
 
     std::vector<char> launch_args(total_size, 0);
     {'memcpy(launch_args.data() + ffts_offset, &ffts_addr, sizeof(void*));' if target_support_ffts else ''}
-    {f'memcpy(launch_args.data() + sync_block_lock_offset, &syncBlockLock_ptr, sizeof(void*));' if not metadata.force_simt_only else ''}
-    {f'memcpy(launch_args.data() + workspace_offset, &workspace_addr_ptr, sizeof(void*));' if not metadata.force_simt_only else ''}
+    {f'memcpy(launch_args.data() + sync_block_lock_offset, &syncBlockLock_ptr, sizeof(void*));' if not metadata.is_pure_simt else ''}
+    {f'memcpy(launch_args.data() + workspace_offset, &workspace_addr_ptr, sizeof(void*));' if not metadata.is_pure_simt else ''}
     size_t kernel_arg_offset = kernel_args_offset;
     for (int arg_idx = 0; arg_idx < num_args; ++arg_idx) {{
       size_t alignment = launch_arg_sizes[arg_idx] >= 8 ? 8 : (launch_arg_sizes[arg_idx] >= 4 ? 4 : 1);
@@ -1223,8 +1223,8 @@ static void _launch(
     {'if (ret != ACL_SUCCESS) return ret;' if (workspace_size > 0 and enable_taskqueue) else 'if (ret != ACL_SUCCESS) return;' if (workspace_size > 0 and not enable_taskqueue) else ''}
     struct __attribute__((packed)) {{
       {'void* ffts_addr __attribute__((aligned(8)));' if target_support_ffts else ''}
-      {'void* syncBlockLock __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
-      {'void* workspace_addr __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
+      {'void* syncBlockLock __attribute__((aligned(8)));' if not metadata.is_pure_simt else ''}
+      {'void* workspace_addr __attribute__((aligned(8)));' if not metadata.is_pure_simt else ''}
       {' '.join(f'{ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if ty != "constexpr")}
       {' '.join(f'{ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
       {'void* global_scratch __attribute__((aligned(8)));' if metadata.force_simt_only else ''}
@@ -1232,8 +1232,8 @@ static void _launch(
       {'void* DTData __attribute__((aligned(8)));' if enable_device_print else ''}
     }} args = {{
       {'static_cast<void*>(ffts_addr),' if target_support_ffts else ''}
-      {('static_cast<void*>(syncBlockLock_ptr),' if lock_num > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
-      {('static_cast<void*>(workspace_addr_ptr),' if workspace_size > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
+      {('static_cast<void*>(syncBlockLock_ptr),' if lock_num > 0 else 'nullptr,') if not metadata.is_pure_simt else ''}
+      {('static_cast<void*>(workspace_addr_ptr),' if workspace_size > 0 else 'nullptr,') if not metadata.is_pure_simt else ''}
       {(lambda _rt: (', '.join(_rt) + ',') if _rt else '')(
         [f'static_cast<{ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if ty != "constexpr"]
       )}
