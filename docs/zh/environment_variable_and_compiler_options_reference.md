@@ -40,7 +40,6 @@ python run_kernel.py
 | **编译控制** | TRITON_DEFAULT_FP_FUSION | 1 启用 | 控制是否默认启用浮点运算融合优化，覆盖默认的浮点运算融合行为（如mul+add->fma）。 | 0：不启用<br>1：启用 | |
 | **编译控制** | TRITON_KERNEL_OVERRIDE | 0 或未设置 | 启用或禁用 Triton 内核覆盖功能，允许在每个编译阶段开始时用用户指定的外部文件（IR/PTX等）覆盖默认生成的内核代码。 | 0：不启用<br>1：启用 | |
 | **编译控制** | TRITON_OVERRIDE_DIR | ~/.triton/override | 指定 Triton 内核覆盖文件的查找目录。当`TRITON_KERNEL_OVERRIDE=1`时加载IR/PTX文件的目录。 | "path"：保存路径 | |
-| **编译控制** | TRITON_ASCEND_COMPILE_SPEED_OPT | 0 或未设置 | 控制JIT编译器在发现内核编译失败后是否跳过后续编译阶段。设为`1`跳过（默认`0`继续尝试）。 | 0：继续尝试<br>1：跳过 | |
 | **编译控制** | TRITON_COMPILE_ONLY | 0 或未设置 | remote_launch时使用，只编译不运行。 | 0：不启用<br>1：启用 | |
 | **编译控制** | TRITON_DISABLE_PRECOMPILE | 0 或未设置 | 是否禁用预编译。                                                                                                                                                                                                                                                                                  | 0：启用预编译<br>1：禁用预编译                                                                               | |
 | **运行与调度** | TRITON_ENABLE_TASKQUEUE | 1 | 是否开启task_queue。 | 0：不启用<br>1：启用 | |
