@@ -317,6 +317,30 @@ def test_mix_mode_is_ir_derived_metadata_not_an_npu_option(compiler_module):
     assert metadata[option_name] == "mix"
 
 
+def test_simt_stack_limit_explicit_value_overrides_acl_config(compiler_module, monkeypatch, tmp_path):
+    (tmp_path / "acl_default.json").write_text(
+        '{"StackSize": {"simt_stack_size": 2048}}', encoding="utf-8")
+    torch_npu = types.ModuleType("torch_npu")
+    torch_npu.__file__ = str(tmp_path / "__init__.py")
+    monkeypatch.setitem(sys.modules, "torch_npu", torch_npu)
+
+    assert compiler_module.get_simt_stack_limit(8192) == 8192
+
+
+@pytest.mark.parametrize("user_stack_limit", (0, -1, True, 1.5, "8192"))
+def test_simt_stack_limit_rejects_invalid_explicit_value(compiler_module, user_stack_limit):
+    with pytest.raises(ValueError, match="positive integer"):
+        compiler_module.get_simt_stack_limit(user_stack_limit)
+
+
+def test_simt_stack_limit_option_requires_positive_integer(compiler_module):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"simt_stack_limit": 8192})
+
+    assert options.simt_stack_limit == 8192
+    with pytest.raises(ValueError, match="positive integer"):
+        _parse_options(compiler_module, "Ascend910_9589", {"simt_stack_limit": 0})
+
+
 def test_auto_tile_and_bind_subblock_is_ir_derived_metadata_not_an_npu_option(compiler_module):
     option_name = "auto_tile_and_bind_subblock"
 
@@ -699,7 +723,7 @@ def _make_opt(
     force_simt_only,
     superblock_factor=0,
     enable_bishengir_simt_optimization=0,
-    simt_stack_limit=0,
+    simt_stack_limit=None,
     shared_mem_dynamic_size=None,
     enable_simt_reorder_instruction=False,
     disable_fma=False,
@@ -728,6 +752,7 @@ def _run_ttir_to_npubin(
     superblock_factor=0,
     common_options=(),
     enable_bishengir_simt_optimization=0,
+    simt_stack_limit=None,
     resolved_simt_stack_limit=1152,
     shared_mem_dynamic_size=None,
     enable_simt_reorder_instruction=False,
@@ -776,14 +801,13 @@ def _run_ttir_to_npubin(
         "_is_auto_map_parallel_blocks_enabled",
         lambda: auto_map_enabled,
     )
-    # StackSize precedence is covered by test_compiler.py.  Keep this argv
-    # matrix independent of the host torch_npu configuration while verifying
-    # that ttir_to_npubin uses the resolver rather than the legacy option.
-    monkeypatch.setattr(
-        compiler,
-        "get_simt_stack_limit",
-        lambda: resolved_simt_stack_limit,
-    )
+    # Keep this argv matrix independent of the host torch_npu configuration
+    # while checking that Pure-SIMT passes the explicit option to the resolver.
+    def get_simt_stack_limit(user_stack_limit):
+        assert user_stack_limit == simt_stack_limit
+        return resolved_simt_stack_limit if user_stack_limit is None else user_stack_limit
+
+    monkeypatch.setattr(compiler, "get_simt_stack_limit", get_simt_stack_limit)
     monkeypatch.setattr(compiler.subprocess, "run", run_bisheng)
 
     result = compiler.ttir_to_npubin(
@@ -793,6 +817,7 @@ def _run_ttir_to_npubin(
             force_simt_only=force_simt_only,
             superblock_factor=superblock_factor,
             enable_bishengir_simt_optimization=enable_bishengir_simt_optimization,
+            simt_stack_limit=simt_stack_limit,
             shared_mem_dynamic_size=shared_mem_dynamic_size,
             enable_simt_reorder_instruction=enable_simt_reorder_instruction,
             disable_fma=disable_fma,
@@ -811,6 +836,17 @@ def test_ttir_to_npubin_global_scratch_allocation_flag(compiler_module, monkeypa
         force_simt_only=force_simt_only,
     )
     assert ("--enable-global-scratch-allocation" in command) is force_simt_only
+
+
+def test_ttir_to_npubin_uses_explicit_simt_stack_limit(compiler_module, monkeypatch):
+    _events, command = _run_ttir_to_npubin(
+        compiler_module,
+        monkeypatch,
+        simt_stack_limit=8192,
+        resolved_simt_stack_limit=1152,
+    )
+
+    assert "--simt-stack-limit=8192" in command
 
 
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
