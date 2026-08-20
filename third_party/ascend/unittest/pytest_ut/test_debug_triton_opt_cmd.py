@@ -36,7 +36,6 @@ def _make_metadata():
     return {
         "compile_on_910_95": False,
         "use_simt_template": False,
-        "enable_sync_block_lock": False,
         "auto_blockify_size": 1,
         "enable_dynamic_cv_pipeline": False,
         "hash": "deadbeef",
