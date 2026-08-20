@@ -370,6 +370,21 @@ def test_enable_cce_vf_remove_membar_is_not_an_npu_option(compiler_module):
         _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
 
 
+def test_enable_drop_unit_dims_is_not_an_npu_option(compiler_module):
+    option_name = "enable_drop_unit_dims"
+    compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
+
+    assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert f'metadata["{option_name}"]' not in compiler_source
+    assert "--enable-drop-unit-dims" not in compiler_source
+    assert "enable_flatten" in compiler_module.NPUOptions.__dataclass_fields__
+    assert "--enable-flatten" in compiler_source
+    with pytest.raises(TypeError, match=option_name):
+        compiler_module.NPUOptions(**{option_name: True})
+    with pytest.raises(ValueError, match=option_name):
+        _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+
+
 def test_storage_align_is_not_an_npu_or_ubtuner_option(compiler_module):
     option_name = "storage_align"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
