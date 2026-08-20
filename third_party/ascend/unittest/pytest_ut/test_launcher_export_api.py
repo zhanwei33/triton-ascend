@@ -39,7 +39,6 @@ def _make_metadata():
         coalesce_grid_ceil_div=False,
         has_auto_blockify_blacklist_op=False,
         row_coalescing_applied=False,
-        enable_auto_blockify=None,
     )
 
 
