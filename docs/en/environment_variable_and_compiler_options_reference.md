@@ -94,7 +94,7 @@ The following table describes the options.
 | Category | Compiler Option | Default/Values | Function Description | Setting Description |
 |----------|-----------------|----------------|----------------------|--------------------|
 | **General pipeline** | `multibuffer` | `True` (default), `False` | Enables or disables ping-pong/double-buffer pipelines. Enabled by default. | `triton.Config` or launch meta-parameter |
-| **Compilation mode** | `compile_mode` | `unstructured_in_simt` (default), `simd`, `simt_template`, `simt_only` | Selects the compiler mode. `simt_template` is the template-SIMT entry and replaces the removed `force_simt_template` option; `unstructured_in_simt` retains its existing template behavior. | `triton.Config` or launch meta-parameter |
+| **Compilation mode** | `compile_mode` | `simd` (default); on A5 also `simd_simt`, `simt_template`, `simt_only` | Selects one canonical compilation route: SIMD, mixed SIMD/SIMT gather/scatter, template-SIMT, or pure-SIMT. | `triton.Config` or launch meta-parameter |
 | **Pure-SIMT optimization** | `enable_bishengir_simt_optimization` | `0` (default) or a BiShengIR toolchain value | Effective only for A5 `compile_mode="simt_only"`; an explicit value in other modes or products is warned and ignored. Its value is passed through without Python numeric/range validation. | `triton.Config` or launch meta-parameter |
 | **CV fusion** | `enable_auto_bind_sub_block` | `None`, `True`, `False` | Enables or disables automatic sub-block binding. | `triton.Config` or launch meta-parameter |
 | **CV fusion** | `enable_hivm_auto_cv_balance` | `None`, `True`, `False` | Enables or disables automatic CV balance. | `triton.Config` or autotune parameter |
@@ -110,3 +110,9 @@ The following table describes the options.
 | **Compiler pass** | `enable_linearize` | Version-dependent | Enables or disables the linearization pass. | `triton.Config` or launch meta-parameter |
 | **CV fusion/layout** | `enable_nd2nz_on_vector` | Default `False` | Enables or disables ND-to-NZ layout transformation on the Vector path. | `triton.Config` or launch meta-parameter |
 | **Large-grid optimization** | `auto_blockify_size` | Default `1` | Configures the AutoBlockify expansion size. | launch meta-parameter or `triton.Config` |
+
+#### Compilation-mode compatibility
+
+`simd` is the default on every target. A2/A3 accepts only `simd`; A5 accepts all four canonical values. `simd_simt` enables the mixed compiler route and supplies its warp geometry, `simt_template` drives the discrete-mask/unstructured/template lowering route, and `simt_only` drives the pure-SIMT graph, compiler, launcher, and autotuner route.
+
+`compile_mode="unstructured_in_simt"` is a temporary compatibility alias for `simt_template` and emits a `FutureWarning`; migrate callers to `simt_template`. The removed `force_simt_template` and `force_simt_only` options are not accepted. Code that relied on the historical template-SIMT default must set `compile_mode="simt_template"` explicitly.
