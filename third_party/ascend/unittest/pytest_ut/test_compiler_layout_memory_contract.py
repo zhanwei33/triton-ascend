@@ -417,7 +417,7 @@ def test_enable_cce_vf_remove_membar_is_silently_ignored(compiler_module):
     assert option_name not in options.__dict__
 
 
-def test_enable_drop_unit_dims_is_not_an_npu_option(compiler_module):
+def test_enable_drop_unit_dims_is_silently_ignored(compiler_module):
     option_name = "enable_drop_unit_dims"
     compiler_source = Path(compiler_module.__file__).read_text(encoding="utf-8-sig")
 
@@ -426,10 +426,8 @@ def test_enable_drop_unit_dims_is_not_an_npu_option(compiler_module):
     assert "--enable-drop-unit-dims" not in compiler_source
     assert "enable_flatten" in compiler_module.NPUOptions.__dataclass_fields__
     assert "--enable-flatten" in compiler_source
-    with pytest.raises(TypeError, match=option_name):
-        compiler_module.NPUOptions(**{option_name: True})
-    with pytest.raises(ValueError, match=option_name):
-        _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+    options = _parse_options(compiler_module, "Ascend910_9589", {option_name: True})
+    assert option_name not in options.__dict__
 
 
 def test_disable_size_align_for_cast_is_not_an_npu_option(compiler_module):

@@ -1105,7 +1105,6 @@ _REMOVED_NPU_COMPILE_OPTIONS = frozenset({
     "limit_auto_multi_buffer_only_for_local_buffer",
     "limit_auto_multi_buffer_of_local_buffer",
     "disable_auto_inject_block_sync",
-    "enable_drop_unit_dims",
     "enable_select_analysis",
     "ops_reorder",
     "storage_align",
