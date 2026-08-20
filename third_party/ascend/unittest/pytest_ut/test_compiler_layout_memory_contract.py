@@ -267,6 +267,13 @@ def test_enable_mask_fallback_conversion_is_not_an_npu_option(compiler_module):
     assert "enable_mask_fallback_conversion" not in options.__dict__
 
 
+def test_enable_nd2nz_on_vector_is_not_an_npu_option(compiler_module):
+    options = _parse_options(compiler_module, "Ascend910_9589", {"enable_nd2nz_on_vector": True})
+
+    assert "enable_nd2nz_on_vector" not in compiler_module.NPUOptions.__dataclass_fields__
+    assert "enable_nd2nz_on_vector" not in options.__dict__
+
+
 @pytest.mark.parametrize(
     ("arch", "requested", "expected"),
     (
@@ -547,6 +554,7 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
         return None
 
     def add_triton_to_linalg(*args):
+        captured["enable_nd2nz_on_vector"] = args[3]
         captured[option_name] = args[4]
 
     def add_triton_to_structure(*args):
@@ -578,7 +586,6 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
     compiler_module.ttir_to_linalg(
         _FakeModule([]),
         {
-            "enable_nd2nz_on_vector": False,
             "compile_on_910_95": False,
             "force_simt_template": False,
             "enable_dynamic_cv_pipeline": False,
@@ -587,6 +594,7 @@ def test_select_analysis_is_fixed_lowering_policy(compiler_module, monkeypatch):
     )
 
     assert option_name not in compiler_module.NPUOptions.__dataclass_fields__
+    assert captured["enable_nd2nz_on_vector"] is False
     assert captured[option_name] is True
     assert structure_flags == [(False, False), (False, False)]
     with pytest.raises(TypeError, match=option_name):
