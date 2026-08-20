@@ -213,7 +213,6 @@ def _run_ttir_to_npubin(
     blacklisted,
     row_applied,
     superblock_factor,
-    bisheng_options,
 ):
     """Run the historical pure-SIMT tail with a fake pass manager/compiler."""
     pass_manager = _FakePassManager()
@@ -229,12 +228,16 @@ def _run_ttir_to_npubin(
     def parse_ttir_metadata(_ttir, metadata):
         parsed = dict(metadata)
         parsed.update({
-            "bisheng_options": bisheng_options,
             "has_auto_blockify_blacklist_op": blacklisted,
             # _export_coalesce_metadata below replaces this with the row
             # pass result from the mock module attrs, just like production.
             "row_coalescing_applied": False,
         })
+        # The 895 baseline still reads this retired metadata key.  Supply a
+        # null legacy value only so its historical closure can be compared to
+        # the current source, which no longer consumes it.
+        if "bisheng_options" in closure["ttir_to_npubin"].__code__.co_consts:
+            parsed["bisheng_options"] = None
         metadata_after_parse.append(parsed)
         return parsed
 
@@ -259,6 +262,7 @@ def _run_ttir_to_npubin(
     ]
     closure["_get_npucompiler_path"] = lambda: ("bishengir-compile", {})
     closure["_is_auto_map_parallel_blocks_enabled"] = lambda: env_enabled
+    closure["get_simt_stack_limit"] = lambda: 64
     closure["subprocess"].run = run_bisheng
 
     result = closure["ttir_to_npubin"](
