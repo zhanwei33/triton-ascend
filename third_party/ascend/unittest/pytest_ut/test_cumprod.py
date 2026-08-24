@@ -169,8 +169,7 @@ def cumprod_generate_tensor(shape, dtype):
 
 
 not_support_dtype = {'int8', 'bool'}
-support_dtypes = (_all_dtypes_no_bool + _uint_dtypes) if is_compile_on_910_95(
-    triton.runtime.driver.active.get_current_target().arch) else \
+support_dtypes = (_all_dtypes_no_bool + _uint_dtypes) if is_compile_on_910_95() else \
     [dtype for dtype in _all_dtypes_no_bool if dtype not in not_support_dtype]
 
 
