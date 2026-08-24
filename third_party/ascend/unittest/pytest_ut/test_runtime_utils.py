@@ -27,11 +27,6 @@ from triton.backends.ascend import utils
 from triton.backends.ascend.runtime import utils as runtime_utils
 
 
-@pytest.fixture(autouse=True)
-def _reset_deprecated_npu_option_warnings(monkeypatch):
-    monkeypatch.setattr(utils, "_WARNED_DEPRECATED_NPU_OPTIONS", set())
-
-
 def test_get_logger():
     logger = utils.get_logger("test_utils", "INFO")
     assert logger.level == logging.INFO
@@ -61,33 +56,35 @@ def test_deprecated_ascend_env_var_warns_only_once_per_process(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("legacy_option", "compile_mode"),
+    "simt_option",
     [
-        pytest.param("force_simt_only", "simt_only", id="simt-only"),
-        pytest.param("force_simt_template", "simd_simt_template", id="simt-template"),
+        pytest.param("force_simt_only", id="simt-only"),
+        pytest.param("force_simt_template", id="simt-template"),
     ],
 )
-def test_deprecated_simt_option_routes_to_compile_mode(legacy_option, compile_mode):
-    options = {legacy_option: True}
+def test_retained_simt_option_is_not_removed(simt_option):
+    options = {simt_option: True}
 
-    with pytest.warns(FutureWarning, match=rf"{legacy_option}.*compile_mode={compile_mode!r}"):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         normalized = utils._remove_deprecated_npu_options(options)
 
-    assert normalized == {"compile_mode": compile_mode}
-    assert options == {legacy_option: True}
+    assert not caught
+    assert normalized == options == {simt_option: True}
 
 
-def test_explicit_compile_mode_takes_precedence_over_deprecated_simt_option():
+def test_explicit_compile_mode_preserves_retained_simt_option():
     options = {"compile_mode": "simd", "force_simt_only": True}
 
-    with pytest.warns(FutureWarning, match=r"force_simt_only.*compile_mode='simt_only'"):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         normalized = utils._remove_deprecated_npu_options(options)
 
-    assert normalized == {"compile_mode": "simd"}
-    assert options == {"compile_mode": "simd", "force_simt_only": True}
+    assert not caught
+    assert normalized == options
 
 
-def test_deprecated_simt_option_is_routed_once_during_in_place_normalization():
+def test_retained_simt_option_is_preserved_after_in_place_normalization():
     options = {"force_simt_only": True}
 
     with warnings.catch_warnings(record=True) as caught:
@@ -95,9 +92,9 @@ def test_deprecated_simt_option_is_routed_once_during_in_place_normalization():
         first = utils._remove_deprecated_npu_options(options, in_place=True)
         second = utils._remove_deprecated_npu_options(options, in_place=True)
 
-    assert len(caught) == 1
+    assert not caught
     assert first is second is options
-    assert options == {"compile_mode": "simt_only"}
+    assert options == {"force_simt_only": True}
 
 
 def test_get_byte_per_numel_supports_unsigned_integer_dtypes():
