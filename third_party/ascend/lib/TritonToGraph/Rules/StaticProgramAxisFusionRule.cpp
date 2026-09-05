@@ -106,6 +106,10 @@ bool hasDirectCall(triton::FuncOp function) {
 bool hasDisallowedEffect(triton::FuncOp function) {
   bool disallowed = false;
   function.walk([&](Operation *operation) {
+    // Operation::walk includes the function root. Its region is the normal
+    // entry body, not nested control flow introduced by the candidate.
+    if (operation == function.getOperation())
+      return;
     const StringRef name = operation->getName().getStringRef();
     // Atomics, barriers, random state, printing, and nested control flow all
     // make execution order observable. SPAF has no synchronization or RNG
