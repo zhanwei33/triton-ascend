@@ -23,6 +23,7 @@
 #ifndef TRITON_TO_GRAPH_GRAPH_OPTIMIZATION_CONTEXT_H
 #define TRITON_TO_GRAPH_GRAPH_OPTIMIZATION_CONTEXT_H
 
+#include "TritonToGraph/ResourceCostModel.h"
 #include "mlir/Support/LogicalResult.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -51,6 +52,7 @@ enum class AnalysisRequirement : uint8_t {
   MemorySSA = 1u << 3,
   EntryArgPointerAlias = 1u << 4,
   ProgramAxisDependence = 1u << 5,
+  ResourceCost = 1u << 6,
 };
 
 constexpr AnalysisRequirement operator|(AnalysisRequirement lhs,
@@ -74,7 +76,8 @@ constexpr bool hasAnalysisRequirement(AnalysisRequirement requirements,
 // call invalidate() before requesting analysis results again.
 class GraphOptimizationContext {
 public:
-  explicit GraphOptimizationContext(triton::FuncOp function);
+  explicit GraphOptimizationContext(triton::FuncOp function,
+                                    ResourceSnapshot resources = {});
   ~GraphOptimizationContext();
 
   GraphOptimizationContext(const GraphOptimizationContext &) = delete;
@@ -125,23 +128,33 @@ public:
     return *programAxisDependenceAnalysis;
   }
 
+  ResourceCostAnalysis &getResourceCostAnalysis() {
+    assert(resourceCostAnalysis &&
+           "call ensure() before accessing resource/cost analysis");
+    return *resourceCostAnalysis;
+  }
+
 private:
   LogicalResult ensureControlFlowGraph();
   LogicalResult ensureAliasAnalysis();
   LogicalResult ensureEntryArgPointerAliasAnalysis();
   LogicalResult ensureDataFlowGraph();
   LogicalResult ensureProgramAxisDependenceAnalysis();
+  LogicalResult ensureResourceCostAnalysis();
 
   triton::FuncOp function;
+  ResourceSnapshot resources;
   unsigned epoch = 0;
 
-  // Declaration order makes normal destruction mirror invalidate(): program
-  // axis dependence, DFG, entry-argument pointer aliases, AliasAnalysis, CFG.
+  // Declaration order makes normal destruction mirror invalidate(): resource
+  // cost, program-axis dependence, DFG, entry-argument pointer aliases,
+  // AliasAnalysis, then CFG.
   std::unique_ptr<ControlFlowGraph> controlFlowGraph;
   std::unique_ptr<AliasAnalysis> aliasAnalysis;
   std::unique_ptr<EntryArgPointerAliasAnalysis> entryArgPointerAliasAnalysis;
   std::unique_ptr<DataFlowGraph> dataFlowGraph;
   std::unique_ptr<ProgramAxisDependenceAnalysis> programAxisDependenceAnalysis;
+  std::unique_ptr<ResourceCostAnalysis> resourceCostAnalysis;
 };
 
 } // namespace cfg
