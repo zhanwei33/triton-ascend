@@ -146,11 +146,16 @@ def make_logits_inputs(
     }
 
 
-def _compile_kwargs(graph_optimize: bool) -> dict[str, Any]:
-    return {
+def _compile_kwargs(
+    graph_optimize: bool, *, program_mapping_rule_mask: int = 0
+) -> dict[str, Any]:
+    kwargs = {
         "compile_mode": COMPILE_MODE,
         "enable_graph_optimize": graph_optimize,
     }
+    if program_mapping_rule_mask:
+        kwargs["program_mapping_rule_mask"] = program_mapping_rule_mask
+    return kwargs
 
 
 def launch_merge_split(
@@ -292,6 +297,7 @@ def launch_indexer_logits(
     case: LogitsCase = LOGITS_PRIMARY,
     *,
     graph_optimize: bool,
+    program_mapping_rule_mask: int = 0,
 ) -> LaunchResult:
     module = load_fixture("indexer_logits")
     q = module.round_activations_e4m3(inputs["q"])
@@ -318,7 +324,10 @@ def launch_indexer_logits(
         proxy_dim=case.proxy_dim,
         BLOCK_Q=case.block_q,
         BLOCK_K=case.block_k,
-        **_compile_kwargs(graph_optimize),
+        **_compile_kwargs(
+            graph_optimize,
+            program_mapping_rule_mask=program_mapping_rule_mask,
+        ),
     )
     return LaunchResult(
         outputs=(out,),

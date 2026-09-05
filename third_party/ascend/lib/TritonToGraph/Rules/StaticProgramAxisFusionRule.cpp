@@ -526,7 +526,8 @@ bool buildCandidateCost(const StaticFusionStructure &structure, unsigned factor,
 }
 
 std::optional<StaticFusionCandidate>
-selectStaticFusionCandidate(GraphOptimizationContext &context) {
+selectStaticFusionCandidate(GraphOptimizationContext &context,
+                            bool emitRemarks = true) {
   std::optional<StaticFusionStructure> structure = matchStaticFusion(
       context.getFunction(), &context.getProgramAxisDependenceAnalysis());
   if (!structure)
@@ -552,7 +553,8 @@ selectStaticFusionCandidate(GraphOptimizationContext &context) {
         context.getResourceCostAnalysis().evaluate(cost);
     // This is intentionally a remark rather than a hidden heuristic: a
     // rejected UB/parallelism candidate must be inspectable in a compiler log.
-    emitCandidateRemark(structure->keyLoad, evaluation);
+    if (emitRemarks)
+      emitCandidateRemark(structure->keyLoad, evaluation);
     evaluations.push_back(std::move(evaluation));
   }
   if (evaluations.empty())
@@ -665,7 +667,7 @@ public:
     if (context.getFunction() != candidate.structure.function)
       return failure();
     std::optional<StaticFusionCandidate> current =
-        selectStaticFusionCandidate(context);
+        selectStaticFusionCandidate(context, /*emitRemarks=*/false);
     return current && sameCandidate(candidate, *current) ? success() : failure();
   }
 

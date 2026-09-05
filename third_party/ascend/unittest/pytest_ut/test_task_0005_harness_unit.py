@@ -38,6 +38,7 @@ from task_0005_harness.run_baselines import (  # noqa: E402
     ingest_profile,
 )
 from task_0005_harness.runtime import (  # noqa: E402
+    _compile_kwargs,
     collect_cache_records,
     validate_primary_metadata,
 )
@@ -69,6 +70,20 @@ def test_primary_program_contracts_match_the_before_grids():
 def test_primary_contract_is_template_simd_not_explicit_simt_only():
     assert COMPILE_MODE == "simd_simt_template"
     assert "simt_only" not in COMPILE_MODE
+
+
+def test_logits_runner_compile_options_keep_legacy_default_and_allow_spaf():
+    assert _compile_kwargs(True) == {
+        "compile_mode": COMPILE_MODE,
+        "enable_graph_optimize": True,
+    }
+    assert _compile_kwargs(
+        True, program_mapping_rule_mask=1024
+    ) == {
+        "compile_mode": COMPILE_MODE,
+        "enable_graph_optimize": True,
+        "program_mapping_rule_mask": 1024,
+    }
 
 
 def test_after_variants_are_explicitly_non_oracles():
