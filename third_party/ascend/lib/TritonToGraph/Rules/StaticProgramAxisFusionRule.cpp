@@ -374,7 +374,7 @@ matchStaticFusion(triton::FuncOp function,
   });
   if (groupPids.size() != 1)
     return std::nullopt;
-  const triton::GetProgramIdOp groupPid = groupPids.front();
+  triton::GetProgramIdOp groupPid = groupPids.front();
 
   ProgramAxisDependenceAnalysis localAxisAnalysis(function);
   const ProgramAxisDependence &groupInfo =
@@ -538,7 +538,7 @@ selectStaticFusionCandidate(GraphOptimizationContext &context) {
   if (factors.empty())
     return std::nullopt;
 
-  SmallVector<CandidateEvaluation> evaluations;
+  SmallVector<CandidateEvaluation, 2> evaluations;
   evaluations.reserve(factors.size());
   for (unsigned factor : factors) {
     CandidateCost cost;
@@ -577,7 +577,7 @@ bool sameCandidate(const StaticFusionCandidate &lhs,
 }
 
 LogicalResult materializeStaticFusion(triton::FuncOp function,
-                                      const StaticFusionStructure &structure,
+                                      StaticFusionStructure &structure,
                                       unsigned factor) {
   if (factor < 2 || structure.groups % factor != 0)
     return failure();
@@ -652,7 +652,7 @@ public:
   }
 
   Operation *getAnchor() const override {
-    return candidate.structure.groupPid.getOperation();
+    return candidate.structure.firstSuffix;
   }
 
   unsigned getCreationEpoch() const override { return epoch; }
