@@ -53,6 +53,7 @@ def _make_metadata():
         coalesce_axis=-1,
         coalesce_grid_ceil_div=False,
         program_grid_transforms=None,
+        program_grid_specialization=None,
         has_auto_blockify_blacklist_op=False,
         row_coalescing_applied=False,
     )
@@ -284,6 +285,14 @@ def _program_grid_transform(order, axis, factor, logical_extent, *, persistent=F
     }
 
 
+def _program_grid_specialization(*, grid=(8, 65, 1), rule_mask=512):
+    return {
+        "version": 1,
+        "grid": list(grid),
+        "rule_mask": rule_mask,
+    }
+
+
 @patch.object(driver, "NPUUtils")
 @patch.object(driver, "_is_auto_map_parallel_blocks_enabled", return_value=False)
 @patch.object(driver, "force_disable_ffts", return_value=False)
@@ -323,6 +332,74 @@ def test_make_launcher_applies_composable_program_grid_contract_in_both_paths(
         positions = [launch_path.index(fragment) for fragment in expected_in_order]
         assert positions == sorted(positions)
         assert "ChunkCoalescing" not in launch_path
+
+
+@patch.object(driver, "NPUUtils")
+@patch.object(driver, "_is_auto_map_parallel_blocks_enabled", return_value=False)
+@patch.object(driver, "force_disable_ffts", return_value=False)
+@patch.object(driver, "is_ffts_supported", return_value=True)
+@patch.object(driver, "get_backend_func", side_effect=_mock_backend_func)
+def test_grid_specialization_snapshot_precedes_transforms_and_rejects_both_paths(
+    _mock_backend_func_patch,
+    _mock_ffts,
+    _mock_disable_ffts,
+    _mock_auto_map,
+    mock_npu_utils,
+):
+    mock_npu_utils.return_value.get_aivector_core_num.return_value = 40
+    mock_npu_utils.return_value.get_aicore_num.return_value = 20
+    metadata = _make_metadata()
+    metadata.program_grid_specialization = _program_grid_specialization()
+    metadata.program_grid_transforms = {
+        "version": 1,
+        "transforms": [_program_grid_transform(0, 1, 4, 65)],
+    }
+
+    src = driver.make_launcher(
+        constants={}, signature={0: "*fp32"}, metadata=metadata,
+    )
+    c_abi_launch, cpp_launch = _split_launch_functions(src)
+    expected_check = (
+        "const int originalGrid0 = gridX;",
+        "const int originalGrid1 = gridY;",
+        "const int originalGrid2 = gridZ;",
+        "if (!haccProgramGridSpecializationMatches(",
+        "haccGridSpecializationRejected = true;",
+    )
+    for launch_path in (c_abi_launch, cpp_launch):
+        positions = [launch_path.index(fragment) for fragment in expected_check]
+        assert positions == sorted(positions)
+        assert launch_path.index("const int originalGrid1 = gridY;") < launch_path.index(
+            "const int logicalGrid1 = gridY;")
+        assert launch_path.index("const int logicalGrid1 = gridY;") < launch_path.index(
+            "gridY = (gridY + 4 - 1) / 4;")
+
+    assert src.count("static bool haccProgramGridSpecializationMatches") == 1
+    assert c_abi_launch.count("\n  haccGridSpecializationRejected = false;") == 1
+    assert cpp_launch.count("haccGridSpecializationRejected = true;") == 1
+    assert "runtime grid does not match the compiled hacc.grid_specialization" in src
+
+
+@patch.object(driver, "NPUUtils")
+@patch.object(driver, "_is_auto_map_parallel_blocks_enabled", return_value=False)
+@patch.object(driver, "force_disable_ffts", return_value=False)
+@patch.object(driver, "is_ffts_supported", return_value=True)
+@patch.object(driver, "get_backend_func", side_effect=_mock_backend_func)
+def test_legacy_launcher_does_not_gain_grid_specialization_state(
+    _mock_backend_func_patch,
+    _mock_ffts,
+    _mock_disable_ffts,
+    _mock_auto_map,
+    mock_npu_utils,
+):
+    mock_npu_utils.return_value.get_aivector_core_num.return_value = 40
+    mock_npu_utils.return_value.get_aicore_num.return_value = 20
+    src = driver.make_launcher(
+        constants={}, signature={0: "*fp32"}, metadata=_make_metadata(),
+    )
+
+    assert "haccProgramGridSpecializationMatches" not in src
+    assert "haccGridSpecializationRejected" not in src
 
 
 @patch.object(driver, "NPUUtils")

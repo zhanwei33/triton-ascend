@@ -732,6 +732,19 @@ def _install_program_grid_attr_shim(monkeypatch, compiler_module):
     def get_program_grid_transforms(module):
         return module.attrs.get("hacc.program_grid_transforms")
 
+    def get_program_grid_specialization(module):
+        return module.attrs.get("hacc.grid_specialization")
+
+    def set_program_grid_specialization(module, version, grid_0, grid_1, grid_2, rule_mask):
+        module.attrs["hacc.grid_specialization"] = {
+            "version": version,
+            "grid": [grid_0, grid_1, grid_2],
+            "rule_mask": rule_mask,
+        }
+
+    def clear_program_grid_specialization(module):
+        module.attrs.pop("hacc.grid_specialization", None)
+
     def remove_attr(module, name):
         module.attrs.pop(name, None)
 
@@ -741,6 +754,9 @@ def _install_program_grid_attr_shim(monkeypatch, compiler_module):
         SimpleNamespace(ir=SimpleNamespace(
             get_int_attr=get_int_attr,
             get_program_grid_transforms=get_program_grid_transforms,
+            get_program_grid_specialization=get_program_grid_specialization,
+            set_program_grid_specialization=set_program_grid_specialization,
+            clear_program_grid_specialization=clear_program_grid_specialization,
             remove_attr=remove_attr,
         )),
     )
@@ -870,3 +886,115 @@ def test_npu_options_hash_includes_program_grid_schema_and_precision_policy(
             arch="Ascend910B1", program_grid_transform_schema_version=2,
         )
     assert current.hash() != next_schema.hash()
+
+
+def _program_grid_specialization(*, grid=(8, 65, 1), rule_mask=512):
+    return {"version": 1, "grid": list(grid), "rule_mask": rule_mask}
+
+
+def test_program_grid_specialization_options_preserve_legacy_state_when_disabled(
+    compiler_module,
+):
+    legacy = compiler_module.NPUOptions(arch="Ascend910B1")
+    explicit_disabled = compiler_module.NPUOptions(
+        arch="Ascend910B1", program_mapping_rule_mask=0)
+    enabled = compiler_module.NPUOptions(
+        arch="Ascend910B1",
+        program_mapping_rule_mask=512,
+        program_grid_specialization=_program_grid_specialization(),
+    )
+
+    for options in (legacy, explicit_disabled):
+        assert "program_mapping_rule_mask" not in options.__dict__
+        assert "program_grid_specialization" not in options.__dict__
+    assert legacy.hash() == explicit_disabled.hash()
+    assert enabled.__dict__["program_mapping_rule_mask"] == 512
+    assert enabled.__dict__["program_grid_specialization"] == _program_grid_specialization()
+    assert enabled.hash() != legacy.hash()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"program_mapping_rule_mask": 1},
+        {"program_grid_specialization": _program_grid_specialization()},
+        {
+            "program_mapping_rule_mask": 512,
+            "program_grid_specialization": _program_grid_specialization(rule_mask=1024),
+        },
+    ],
+)
+def test_npu_options_reject_inconsistent_program_grid_specialization(
+    compiler_module, kwargs,
+):
+    with pytest.raises(ValueError, match="program-grid|program_grid|program_mapping"):
+        compiler_module.NPUOptions(arch="Ascend910B1", **kwargs)
+
+
+def test_backend_prepares_reproducible_grid_before_cache_and_rejects_stale_input(
+    compiler_module,
+):
+    backend = compiler_module.AscendBackend(SimpleNamespace(backend="npu", arch="Ascend910B1"))
+    calls = []
+
+    def stable_grid(bound):
+        calls.append(bound["extent"])
+        return (bound["extent"], 16)
+
+    prepared = backend.prepare_program_grid_specialization(
+        stable_grid, {"extent": 65}, {"program_mapping_rule_mask": 512})
+    assert prepared == (
+        (65, 16, 1),
+        {"program_grid_specialization": _program_grid_specialization(grid=(65, 16, 1))},
+    )
+    assert calls == [65, 65]
+
+    unstable = iter(((8, 1), (9, 1)))
+    with pytest.raises(RuntimeError, match="not reproducible"):
+        backend.prepare_program_grid_specialization(
+            lambda _bound: next(unstable), {}, {"program_mapping_rule_mask": 512})
+    with pytest.raises(RuntimeError, match="JIT resolves"):
+        backend.prepare_program_grid_specialization(
+            (8, 1), {}, {
+                "program_mapping_rule_mask": 512,
+                "program_grid_specialization": _program_grid_specialization(grid=(8, 1, 1)),
+            })
+
+
+def test_compiler_injects_and_exports_grid_specialization_without_attr_leak(
+    compiler_module, monkeypatch,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={})
+    metadata = {}
+    option = SimpleNamespace(
+        program_mapping_rule_mask=512,
+        program_grid_specialization=_program_grid_specialization(),
+    )
+
+    compiler_module._inject_program_grid_specialization(module, metadata, option)
+    assert module.attrs == {"hacc.grid_specialization": _program_grid_specialization()}
+    assert metadata["program_grid_specialization"] == _program_grid_specialization()
+    assert metadata["program_grid_specialization_cache_key"] == (
+        '{"grid":[8,65,1],"rule_mask":512,"version":1}'
+    )
+
+    compiler_module._export_program_grid_metadata(module, metadata)
+    assert module.attrs == {}
+    assert metadata["program_grid_specialization"] == _program_grid_specialization()
+    assert metadata["program_grid_specialization_cache_key"] == (
+        '{"grid":[8,65,1],"rule_mask":512,"version":1}'
+    )
+
+
+def test_aot_program_mapping_without_fixed_grid_stays_attr_free(
+    compiler_module, monkeypatch,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={})
+    metadata = {}
+    option = SimpleNamespace(program_mapping_rule_mask=512, program_grid_specialization=None)
+
+    assert compiler_module._inject_program_grid_specialization(module, metadata, option) is None
+    assert module.attrs == {}
+    assert metadata == {}

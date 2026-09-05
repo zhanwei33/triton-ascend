@@ -96,6 +96,54 @@ def test_contract_rejects_unknown_or_mismatched_original_extent(program_grid):
         program_grid.normalize_program_grid_transforms(dynamic_extent)
 
 
+def test_program_mapping_specialization_is_canonical_and_cache_serializable(program_grid):
+    rule_mask = program_grid.INDEPENDENT_AXIS_TENSORIZE_RULE_BIT
+    specialization = program_grid.make_program_grid_specialization((8, 65), rule_mask)
+
+    assert specialization == {
+        "version": 1,
+        "grid": [8, 65, 1],
+        "rule_mask": rule_mask,
+    }
+    assert program_grid.program_grid_specialization_enabled(rule_mask) is True
+    assert program_grid.program_grid_specialization_enabled(0) is False
+    assert program_grid.canonical_program_grid_specialization_json(specialization) == (
+        '{"grid":[8,65,1],"rule_mask":512,"version":1}'
+    )
+
+
+def test_program_mapping_specialization_rejects_unknown_bits_and_noncanonical_grid(program_grid):
+    with pytest.raises(program_grid.ProgramGridContractError, match="unsupported bits"):
+        program_grid.normalize_program_mapping_rule_mask(1)
+    with pytest.raises(program_grid.ProgramGridContractError, match="one to three"):
+        program_grid.canonicalize_program_grid(())
+    with pytest.raises(program_grid.ProgramGridContractError, match="positive integer"):
+        program_grid.canonicalize_program_grid((1, True))
+    with pytest.raises(program_grid.ProgramGridContractError, match="exactly three"):
+        program_grid.normalize_program_grid_specialization({
+            "version": 1,
+            "grid": [8, 65],
+            "rule_mask": 512,
+        })
+
+
+def test_callable_grid_is_resolved_twice_before_cache_and_must_be_reproducible(program_grid):
+    calls = []
+
+    def stable_grid(bound):
+        calls.append(bound["extent"])
+        return (bound["extent"], 16)
+
+    assert program_grid.resolve_program_grid_for_specialization(
+        stable_grid, {"extent": 65}) == (65, 16, 1)
+    assert calls == [65, 65]
+
+    values = iter(((8, 1, 1), (9, 1, 1)))
+    with pytest.raises(program_grid.ProgramGridContractError, match="not reproducible"):
+        program_grid.resolve_program_grid_for_specialization(
+            lambda _bound: next(values), {})
+
+
 @pytest.mark.parametrize("logical_tiles", (4, 8, 19))
 def test_persistent_coverage_caps_only_verified_grid_stride_and_covers_every_tile_once(
     program_grid, logical_tiles,

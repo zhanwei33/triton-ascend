@@ -23,11 +23,31 @@ serialized metadata.
 from __future__ import annotations
 
 import json
+import operator
 from typing import Any, Mapping, Sequence
 
 
 PROGRAM_GRID_TRANSFORMS_ATTR = "hacc.program_grid_transforms"
 PROGRAM_GRID_TRANSFORMS_VERSION = 1
+
+# ``hacc.grid_specialization`` is intentionally independent from the launcher
+# transform contract above.  It records the *unmodified* launch grid observed
+# by JIT before cache lookup, so a graph rule never has to infer a logical
+# extent from a grid which another rule may already have shrunk.
+PROGRAM_GRID_SPECIALIZATION_ATTR = "hacc.grid_specialization"
+PROGRAM_GRID_SPECIALIZATION_VERSION = 1
+
+# These values are owned by the append-only GraphOptimize registry (task_0001).
+# Keep the bridge's trigger set explicit: unrelated future rules must not make
+# a legacy JIT launch evaluate its grid before cache lookup.
+INDEPENDENT_AXIS_TENSORIZE_RULE_BIT = 1 << 9
+STATIC_PROGRAM_AXIS_FUSION_RULE_BIT = 1 << 10
+PERSISTENT_TASK_STRIP_MINING_RULE_BIT = 1 << 11
+PROGRAM_MAPPING_RULE_MASK = (
+    INDEPENDENT_AXIS_TENSORIZE_RULE_BIT
+    | STATIC_PROGRAM_AXIS_FUSION_RULE_BIT
+    | PERSISTENT_TASK_STRIP_MINING_RULE_BIT
+)
 
 
 class ProgramGridContractError(ValueError):
@@ -44,6 +64,7 @@ _TRANSFORM_KEYS = frozenset((
     "persistent_coverage",
     "grid_stride_abi_verified",
 ))
+_SPECIALIZATION_KEYS = frozenset(("version", "grid", "rule_mask"))
 
 
 def _integer(value: Any, name: str, *, minimum: int | None = None) -> int:
@@ -66,6 +87,136 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ProgramGridContractError(f"{name} must be a mapping")
     return value
+
+
+def normalize_program_mapping_rule_mask(raw: Any) -> int:
+    """Validate the explicit opt-in bits which require original grid state.
+
+    This is deliberately not the legacy GraphOptimize rule mask.  The legacy
+    mask remains backend-managed (and default-off for these bits); exposing a
+    separate narrow option prevents an old ``graph_optimize_rule_mask`` value
+    from silently changing when JIT evaluates callable grids.
+    """
+    mask = _integer(raw, "program_mapping_rule_mask", minimum=0)
+    unknown = mask & ~PROGRAM_MAPPING_RULE_MASK
+    if unknown:
+        raise ProgramGridContractError(
+            "program_mapping_rule_mask contains unsupported bits "
+            f"0x{unknown:x}; supported bits are 0x{PROGRAM_MAPPING_RULE_MASK:x}")
+    return mask
+
+
+def program_grid_specialization_enabled(rule_mask: Any) -> bool:
+    return bool(normalize_program_mapping_rule_mask(rule_mask))
+
+
+def _grid_dimension(value: Any, name: str) -> int:
+    """Accept indexable runtime grid values while rejecting booleans/tails."""
+    if isinstance(value, bool):
+        raise ProgramGridContractError(f"{name} must be a positive integer")
+    try:
+        dimension = operator.index(value)
+    except TypeError as error:
+        raise ProgramGridContractError(f"{name} must be a positive integer") from error
+    if dimension <= 0:
+        raise ProgramGridContractError(f"{name} must be >= 1")
+    return int(dimension)
+
+
+def canonicalize_program_grid(grid: Any) -> tuple[int, int, int]:
+    """Convert a runtime 1--3D grid to the complete cache-safe triplet."""
+    if isinstance(grid, (str, bytes)) or not isinstance(grid, Sequence):
+        raise ProgramGridContractError("grid must be a sequence with one to three dimensions")
+    if not 1 <= len(grid) <= 3:
+        raise ProgramGridContractError("grid must contain one to three dimensions")
+    dimensions = [_grid_dimension(value, f"grid[{axis}]") for axis, value in enumerate(grid)]
+    return tuple((dimensions + [1, 1, 1])[:3])  # type: ignore[return-value]
+
+
+def resolve_program_grid_for_specialization(grid: Any, bound_args: Any) -> tuple[int, int, int]:
+    """Resolve the original grid under the opt-in pure-callable contract.
+
+    Callable grids are evaluated twice *before* cache lookup.  A changed
+    canonical result is rejected rather than compiling one variant and
+    launching another with stale tail/loop bounds.  The caller launches the
+    returned triplet, so it never evaluates the callable a third time.
+    """
+    if not callable(grid):
+        return canonicalize_program_grid(grid)
+
+    try:
+        first = canonicalize_program_grid(grid(bound_args))
+        second = canonicalize_program_grid(grid(bound_args))
+    except Exception as error:
+        raise ProgramGridContractError(
+            "program-mapping grid callable could not be resolved before cache lookup") from error
+    if first != second:
+        raise ProgramGridContractError(
+            "program-mapping grid callable is not reproducible before cache lookup")
+    return first
+
+
+def normalize_program_grid_specialization(raw: Any) -> dict[str, Any]:
+    """Validate the static original-grid compiler input and canonicalize it."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ProgramGridContractError(
+                "program_grid_specialization must be valid JSON when encoded as text") from error
+
+    contract = _mapping(raw, "program_grid_specialization")
+    if set(contract) != _SPECIALIZATION_KEYS:
+        missing = sorted(_SPECIALIZATION_KEYS - set(contract))
+        unknown = sorted(set(contract) - _SPECIALIZATION_KEYS)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if unknown:
+            detail.append("unknown " + ", ".join(unknown))
+        raise ProgramGridContractError(
+            "program_grid_specialization has an invalid schema" +
+            (": " + "; ".join(detail) if detail else ""))
+
+    version = _integer(contract["version"], "program_grid_specialization.version", minimum=1)
+    if version != PROGRAM_GRID_SPECIALIZATION_VERSION:
+        raise ProgramGridContractError(
+            "unsupported program_grid_specialization version "
+            f"{version}; expected {PROGRAM_GRID_SPECIALIZATION_VERSION}")
+
+    raw_grid = contract["grid"]
+    if isinstance(raw_grid, (str, bytes)) or not isinstance(raw_grid, Sequence) or len(raw_grid) != 3:
+        raise ProgramGridContractError(
+            "program_grid_specialization.grid must contain exactly three dimensions")
+    canonical_grid = canonicalize_program_grid(raw_grid)
+    rule_mask = normalize_program_mapping_rule_mask(contract["rule_mask"])
+    if not rule_mask:
+        raise ProgramGridContractError(
+            "program_grid_specialization requires at least one program-mapping rule bit")
+    return {
+        "version": PROGRAM_GRID_SPECIALIZATION_VERSION,
+        "grid": list(canonical_grid),
+        "rule_mask": rule_mask,
+    }
+
+
+def make_program_grid_specialization(grid: Any, rule_mask: Any) -> dict[str, Any]:
+    """Create the one canonical compiler/cache representation for a raw grid."""
+    normalized_mask = normalize_program_mapping_rule_mask(rule_mask)
+    if not normalized_mask:
+        raise ProgramGridContractError(
+            "cannot create program_grid_specialization with all program-mapping bits disabled")
+    return normalize_program_grid_specialization({
+        "version": PROGRAM_GRID_SPECIALIZATION_VERSION,
+        "grid": list(canonicalize_program_grid(grid)),
+        "rule_mask": normalized_mask,
+    })
+
+
+def canonical_program_grid_specialization_json(raw: Any) -> str:
+    """Return the stable compiler-cache representation of an original grid."""
+    return json.dumps(
+        normalize_program_grid_specialization(raw), sort_keys=True, separators=(",", ":"))
 
 
 def normalize_program_grid_transforms(raw: Any) -> dict[str, Any]:

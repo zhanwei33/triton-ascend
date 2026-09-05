@@ -111,6 +111,13 @@ def test_enabled_assertion_contract_requires_pre_cache_extent_and_cache_isolatio
         "actual_launch_grid",
     }
     report = _report(enabled=True)
+    # The prime pass creates a launcher before the harness can wrap it.  A
+    # matching observe event is therefore sufficient to prove the generated
+    # launcher received this grid.
+    prime_event = _event("_merge_split_states_kernel", [8, 64, 1], enabled=True)
+    prime_event["actual_launch_grid"] = None
+    prime_event["actual_launch_grid_observation"] = "not_intercepted"
+    report["events"].append(prime_event)
     assert_grid_specialization_enabled(report)
 
     # A different raw grid must not reuse the first grid's specialization.
