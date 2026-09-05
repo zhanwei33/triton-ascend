@@ -40,6 +40,8 @@ from task_0005_harness.run_baselines import (  # noqa: E402
 from task_0005_harness.runtime import (  # noqa: E402
     _compile_kwargs,
     collect_cache_records,
+    launch_merge_split,
+    make_merge_inputs,
     validate_primary_metadata,
 )
 from task_0102_static_program_axis_fusion_runner import _cache_evidence  # noqa: E402
@@ -85,6 +87,32 @@ def test_logits_runner_compile_options_keep_legacy_default_and_allow_spaf():
         "enable_graph_optimize": True,
         "program_mapping_rule_mask": 1024,
     }
+
+
+def test_merge_launcher_forwards_an_explicit_program_mapping_mask(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeKernel:
+        def __getitem__(self, _grid):
+            def launch(*_args, **kwargs):
+                captured.update(kwargs)
+
+            return launch
+
+    class FakeModule:
+        _merge_split_states_kernel = FakeKernel()
+
+    monkeypatch.setattr(
+        "task_0005_harness.runtime.load_fixture", lambda _operator: FakeModule()
+    )
+    case = MERGE_PRIMARY_CASES[0]
+    launch_merge_split(
+        make_merge_inputs(case, device=torch.device("cpu")),
+        case,
+        graph_optimize=True,
+        program_mapping_rule_mask=512,
+    )
+    assert captured["program_mapping_rule_mask"] == 512
 
 
 def test_spaf_cache_evidence_requires_a_real_transform_contract(tmp_path):
