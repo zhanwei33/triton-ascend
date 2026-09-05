@@ -384,11 +384,27 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
     if opt.enable_graph_optimize:
-        ascend.passes.ttir.add_graph_optimize(
-            pm,
-            ub_capacity_bytes=graph_ub_budget_bytes_for_arch(opt.target_arch),
-            compile_mode=opt.compile_mode,
-        )
+        graph_optimize_options = {
+            "ub_capacity_bytes": graph_ub_budget_bytes_for_arch(opt.target_arch),
+            "compile_mode": opt.compile_mode,
+        }
+        # A program-mapping rule has a different enablement boundary from the
+        # legacy default graph bundle.  Passing its exact mask makes an IAT
+        # request observable by the native pass and prevents RowCoalescing
+        # from competing through the legacy mask.  The resource snapshot is
+        # deliberately explicit: an unavailable device fact remains zero and
+        # makes resource-gated candidates fail closed in C++.
+        program_mapping_rule_mask = normalize_program_mapping_rule_mask(
+            getattr(opt, "program_mapping_rule_mask", 0))
+        if program_mapping_rule_mask:
+            graph_optimize_options.update({
+                "rule_mask": program_mapping_rule_mask,
+                "device_core_count": NPUUtils().get_aivector_core_num(),
+                "min_programs_per_core": 1,
+                "ub_safety_percent": 80,
+                "reserved_ub_bytes": 0,
+            })
+        ascend.passes.ttir.add_graph_optimize(pm, **graph_optimize_options)
     pm.run(mod, 'make_ttir')
     if opt.debug:
         dump_manager = get_dump_manager(metadata["hash"])
