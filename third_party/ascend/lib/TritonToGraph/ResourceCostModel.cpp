@@ -31,7 +31,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #if TRITON_ASCEND_HAS_INPROC_COSTMODEL
-#include "AscendModel/HardwareConfig.h"
+#include "AscendModel/Analysis/HardwareConfig.h"
 #endif
 
 #include <algorithm>
