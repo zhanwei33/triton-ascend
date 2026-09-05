@@ -26,6 +26,7 @@
 #include "TritonToGraph/ControlFlowGraphBuilder.h"
 #include "TritonToGraph/DataflowGraph.h"
 #include "TritonToGraph/EntryArgPointerAliasAnalysis.h"
+#include "TritonToGraph/ProgramAxisDependenceAnalysis.h"
 
 using namespace mlir;
 using namespace triton;
@@ -48,6 +49,12 @@ GraphOptimizationContext::ensure(AnalysisRequirement requirements) {
       hasAnalysisRequirement(requirements,
                              AnalysisRequirement::EntryArgPointerAlias)) {
     if (failed(ensureControlFlowGraph()))
+      return failure();
+  }
+
+  if (hasAnalysisRequirement(requirements,
+                             AnalysisRequirement::ProgramAxisDependence)) {
+    if (failed(ensureProgramAxisDependenceAnalysis()))
       return failure();
   }
 
@@ -76,6 +83,7 @@ GraphOptimizationContext::ensure(AnalysisRequirement requirements) {
 }
 
 void GraphOptimizationContext::invalidate() {
+  programAxisDependenceAnalysis.reset();
   dataFlowGraph.reset();
   entryArgPointerAliasAnalysis.reset();
   aliasAnalysis.reset();
@@ -125,5 +133,15 @@ LogicalResult GraphOptimizationContext::ensureDataFlowGraph() {
   dataFlowGraph =
       std::make_unique<DataFlowGraph>(*controlFlowGraph, *aliasAnalysis);
   dataFlowGraph->build();
+  return success();
+}
+
+LogicalResult GraphOptimizationContext::ensureProgramAxisDependenceAnalysis() {
+  if (programAxisDependenceAnalysis)
+    return success();
+  if (!function.getOperation())
+    return failure();
+  programAxisDependenceAnalysis =
+      std::make_unique<ProgramAxisDependenceAnalysis>(function);
   return success();
 }

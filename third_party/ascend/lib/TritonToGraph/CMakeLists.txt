@@ -10,6 +10,8 @@ add_triton_library(TritonToGraph
   MemorySsaBuilder.cpp
   MergeConcatLoadBuffer.cpp
   PermutationAnalysis.cpp
+  ProgramAxisDependenceAnalysis.cpp
+  ProgramGridTransform.cpp
   MergeConcatLoadBuffer.cpp
   Passes.cpp
   LegacyMemoryAccess/ChunkCoalescing.cpp

@@ -68,6 +68,13 @@ from triton.backends.ascend.utils import (
     get_cann_version_file_hash,
 )
 from triton.backends.ascend.driver import (NPUUtils)
+from triton.backends.ascend.program_grid import (
+    PROGRAM_GRID_TRANSFORMS_ATTR,
+    PROGRAM_GRID_TRANSFORMS_VERSION,
+    ProgramGridContractError,
+    canonical_program_grid_transforms_json,
+    normalize_program_grid_transforms,
+)
 from triton.backends.compiler import (
     BaseBackend,
     GPUTarget,
@@ -87,7 +94,14 @@ def _get_then_remove_rc(mod, attr_name: str) -> int:
 
     if get_int_attr is None:
         return -1
-    attr_value = get_int_attr(mod, attr_name)
+    # Keep metadata-only legacy callers usable when this Python module is
+    # imported next to an installed C++ extension: their stand-in is not an
+    # OpState, so pybind rightfully rejects it.  A real compiler module still
+    # always takes the binding path below.
+    try:
+        attr_value = get_int_attr(mod, attr_name)
+    except TypeError:
+        return -1
 
     if remove_attr:
         remove_attr(mod, attr_name)
@@ -96,6 +110,38 @@ def _get_then_remove_rc(mod, attr_name: str) -> int:
         return -1
 
     return attr_value
+
+
+def _get_then_remove_program_grid_transforms(mod):
+    """Read the C++-validated generic attr and always remove it from MLIR.
+
+    The vendor compilers below this boundary reject unknown ``hacc.*`` attrs.
+    A missing binding is safe only when the module demonstrably has no contract;
+    otherwise fail rather than sending an unrecognized attr to a backend.
+    """
+    get_transforms = getattr(ascend.ir, "get_program_grid_transforms", None)
+    remove_attr = getattr(ascend.ir, "remove_attr", None)
+    if get_transforms is None:
+        if PROGRAM_GRID_TRANSFORMS_ATTR in str(mod):
+            raise RuntimeError(
+                "hacc.program_grid_transforms requires the matching Ascend C++ binding")
+        return None
+    # The production pipeline always passes an MLIR OpState.  Some legacy
+    # metadata-only callers, however, use a lightweight module stand-in that
+    # deliberately has no C++ OpState binding.  Preserve that old no-attr
+    # behavior while remaining fail-closed if the stand-in advertises the new
+    # contract (which must be parsed by the C++ validator).
+    try:
+        raw = get_transforms(mod)
+    except TypeError:
+        if PROGRAM_GRID_TRANSFORMS_ATTR in str(mod):
+            raise RuntimeError(
+                "hacc.program_grid_transforms requires an MLIR module accepted by "
+                "the Ascend C++ binding")
+        return None
+    if raw is not None and remove_attr:
+        remove_attr(mod, PROGRAM_GRID_TRANSFORMS_ATTR)
+    return raw
 
 
 def _export_coalesce_metadata(mod, metadata, *, require_row_contract=False):
@@ -123,6 +169,61 @@ def _export_coalesce_metadata(mod, metadata, *, require_row_contract=False):
     if require_row_contract and has_any_contract_attr and not valid_ceil_div:
         raise RuntimeError("RowCoalescing requires hacc.coalesce_grid_ceil_div")
 
+    metadata["coalesce_factor"] = factor if valid_factor else 1
+    metadata["coalesce_axis"] = axis if valid_axis else -1
+    metadata["coalesce_grid_ceil_div"] = valid_ceil_div
+    metadata["row_coalescing_applied"] = metadata["coalesce_factor"] > 1
+
+
+def _export_program_grid_metadata(mod, metadata, *, require_row_contract=False):
+    """Export one launcher contract and strip all hacc launch attrs.
+
+    Migration policy is intentionally strict: a module may use the legacy
+    three-attribute coalesce contract *or* versioned program-grid transforms,
+    never both.  The legacy path is retained byte-for-byte in metadata so old
+    Row/Chunk artifacts continue to launch unchanged while new mapping rules
+    publish the richer schema.
+    """
+    raw_transforms = _get_then_remove_program_grid_transforms(mod)
+
+    # Read/remove the legacy attrs even when the new contract is present so no
+    # unknown hacc.* launch metadata can reach BishengIR/HIVM.
+    factor = _get_then_remove_rc(mod, "hacc.coalesce_factor")
+    axis = _get_then_remove_rc(mod, "hacc.coalesce_axis")
+    ceil_div = _get_then_remove_rc(mod, "hacc.coalesce_grid_ceil_div")
+    has_legacy_attrs = any(value != -1 for value in (factor, axis, ceil_div))
+
+    if raw_transforms is not None:
+        if has_legacy_attrs:
+            raise RuntimeError(
+                "hacc.program_grid_transforms conflicts with legacy hacc.coalesce_* metadata")
+        try:
+            transforms = normalize_program_grid_transforms(raw_transforms)
+        except ProgramGridContractError as error:
+            raise RuntimeError(f"invalid hacc.program_grid_transforms: {error}") from error
+        metadata["program_grid_transforms"] = transforms
+        metadata["program_grid_transform_schema_version"] = transforms["version"]
+        metadata["program_grid_transforms_cache_key"] = canonical_program_grid_transforms_json(transforms)
+        metadata["coalesce_factor"] = 1
+        metadata["coalesce_axis"] = -1
+        metadata["coalesce_grid_ceil_div"] = False
+        metadata["row_coalescing_applied"] = False
+        return
+
+    # Retain the exact legacy validation/defaults for modules that predate the
+    # new schema.  This preserves old metadata behavior when every new rule is
+    # disabled.
+    valid_factor = isinstance(factor, int) and factor > 1
+    valid_axis = isinstance(axis, int) and axis in (0, 1, 2)
+    valid_ceil_div = isinstance(ceil_div, int) and ceil_div > 0
+    if has_legacy_attrs and (not valid_factor or not valid_axis):
+        raise RuntimeError("invalid hacc.coalesce launch contract")
+    if require_row_contract and has_legacy_attrs and not valid_ceil_div:
+        raise RuntimeError("RowCoalescing requires hacc.coalesce_grid_ceil_div")
+
+    metadata["program_grid_transforms"] = None
+    metadata["program_grid_transform_schema_version"] = 0
+    metadata["program_grid_transforms_cache_key"] = "legacy"
     metadata["coalesce_factor"] = factor if valid_factor else 1
     metadata["coalesce_axis"] = axis if valid_axis else -1
     metadata["coalesce_grid_ceil_div"] = valid_ceil_div
@@ -301,7 +402,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         _adjust_metadata_by_module_result(mod, metadata, opt, enable_mixed_cv=enable_mixed_cv,
                                           disable_auto_inject_block_sync=disable_auto_inject_block_sync,
                                           set_workspace_multibuffer=set_workspace_multibuffer)
-        _export_coalesce_metadata(mod, metadata)
+        _export_program_grid_metadata(mod, metadata)
 
         if opt.debug:
             dump_manager = get_dump_manager(metadata["hash"])
@@ -1118,6 +1219,14 @@ class NPUOptions:
     # unmasked kernels whose grid dims are compile-time known.
     grid_num_tiles: int = None
 
+    # Versioned launcher ABI.  This is an option (rather than a module-only
+    # detail) so a wheel that changes the schema never reuses a cache entry
+    # produced by an older launcher/compiler pair.
+    program_grid_transform_schema_version: int = PROGRAM_GRID_TRANSFORMS_VERSION
+    # Future mapping rules may change arithmetic precision.  Preserve it in
+    # the cache key now, even while stage 00 only carries the policy through.
+    precision_policy: str = "strict_exact"
+
     def __post_init__(self, arch):
         from triton.backends.ascend import _apply_ascend_patch
 
@@ -1138,6 +1247,14 @@ class NPUOptions:
 
         if self.simt_stack_limit is not None:
             _validate_simt_stack_limit(self.simt_stack_limit)
+
+        if self.program_grid_transform_schema_version != PROGRAM_GRID_TRANSFORMS_VERSION:
+            raise ValueError(
+                "program_grid_transform_schema_version must equal "
+                f"{PROGRAM_GRID_TRANSFORMS_VERSION}")
+        if self.precision_policy not in ("off", "strict_exact", "relaxed"):
+            raise ValueError(
+                "precision_policy must be one of: off, strict_exact, relaxed")
 
         compile_mode = str(_normalize_compile_mode(self.compile_mode, arch))
         object.__setattr__(self, "compile_mode", compile_mode)
@@ -1213,9 +1330,9 @@ def ttir_to_npubin(mod, metadata, opt):
     metadata = _parse_ttir_metadata(ttir_code, metadata)
     if opt.is_pure_simt:
         # RowCoalescing is now the pure-SIMT graph rule in make_ttir().  This
-        # stage only transfers its complete launch contract to metadata before
-        # handing TTIR to pure-SIMT codegen.
-        _export_coalesce_metadata(mod, metadata, require_row_contract=True)
+        # stage transfers either its legacy contract or the new versioned
+        # launcher contract before handing TTIR to pure-SIMT codegen.
+        _export_program_grid_metadata(mod, metadata, require_row_contract=True)
         ttir_code = str(mod)
     with tempfile.TemporaryDirectory() as tmpdir:
         # prepare input
