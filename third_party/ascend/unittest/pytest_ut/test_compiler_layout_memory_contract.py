@@ -775,6 +775,43 @@ def test_export_program_grid_metadata_is_versioned_and_strips_module_attrs(
     assert metadata["coalesce_axis"] == -1
 
 
+@pytest.mark.parametrize(
+    "transforms",
+    [
+        [_program_grid_transform(0, 0, 2, 65)],
+        [
+            _program_grid_transform(0, 0, 2, 65),
+            _program_grid_transform(1, 0, 3, 65),
+        ],
+        [
+            _program_grid_transform(0, 0, 4, 17),
+            _program_grid_transform(1, 1, 3, 10),
+        ],
+    ],
+)
+def test_export_program_grid_metadata_preserves_composable_transform_order(
+    compiler_module, monkeypatch, transforms,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={
+        "hacc.program_grid_transforms": {"version": 1, "transforms": transforms},
+    })
+    metadata = {}
+
+    compiler_module._export_program_grid_metadata(module, metadata)
+
+    assert module.attrs == {}
+    assert metadata["program_grid_transforms"] == {
+        "version": 1,
+        "transforms": transforms,
+    }
+    assert metadata["program_grid_transforms_cache_key"] == (
+        compiler_module.canonical_program_grid_transforms_json(
+            metadata["program_grid_transforms"],
+        )
+    )
+
+
 def test_program_grid_and_legacy_coalesce_metadata_are_mutually_exclusive(
     compiler_module, monkeypatch,
 ):

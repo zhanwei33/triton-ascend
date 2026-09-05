@@ -30,6 +30,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+#include "ascend/include/TritonToGraph/ProgramAxisDependenceAnalysis.h"
 #include "ascend/include/TritonToGraph/ProgramGridTransform.h"
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
@@ -642,6 +643,68 @@ void init_ascend_ir(py::module &&m) {
     result["transforms"] = std::move(transforms);
     return std::move(result);
   });
+  m.def(
+      "analyze_program_axis_dependence",
+      [](OpState &op) -> py::list {
+        auto function =
+            llvm::dyn_cast<mlir::triton::FuncOp>(op.getOperation());
+        if (!function)
+          throw std::invalid_argument(
+              "analyze_program_axis_dependence expects a tt.func operation");
+
+        mlir::triton::cfg::ProgramAxisDependenceAnalysis analysis(function);
+        py::list axes;
+        for (int32_t axis = 0; axis < 3; ++axis) {
+          const mlir::triton::cfg::ProgramAxisDependence &facts =
+              analysis.get(axis);
+          py::dict result;
+          result["axis"] = facts.axis;
+          result["program_id_count"] = facts.programIds.size();
+          result["escapes"] = facts.escapes;
+          result["has_side_effects"] = facts.hasSideEffects;
+          result["has_unsupported_side_effects"] =
+              facts.hasUnsupportedSideEffects;
+          result["reads_num_programs"] = facts.readsNumPrograms;
+          result["is_independent_axis_transform_candidate"] =
+              facts.isIndependentAxisTransformCandidate();
+
+          py::list closure;
+          for (Operation *operation : facts.dependenceClosure)
+            closure.append(operation->getName().getStringRef().str());
+          result["dependence_closure"] = std::move(closure);
+
+          py::list reductions;
+          for (int32_t reductionAxis : facts.reductionAxes)
+            reductions.append(reductionAxis);
+          result["reduction_axes"] = std::move(reductions);
+
+          py::list stores;
+          for (const mlir::triton::cfg::StoreAddressDependence &store :
+               facts.stores) {
+            py::dict summary;
+            summary["pointer_depends_on_axis"] = store.pointerDependsOnAxis;
+            switch (store.independence) {
+            case mlir::triton::cfg::StoreAddressIndependence::
+                NotProgramDependent:
+              summary["address_independence"] = "not_program_dependent";
+              break;
+            case mlir::triton::cfg::StoreAddressIndependence::ProvenDisjoint:
+              summary["address_independence"] = "proven_disjoint";
+              break;
+            case mlir::triton::cfg::StoreAddressIndependence::Unknown:
+              summary["address_independence"] = "unknown";
+              break;
+            }
+            stores.append(std::move(summary));
+          }
+          result["stores"] = std::move(stores);
+          axes.append(std::move(result));
+        }
+        return axes;
+      },
+      py::arg("function"),
+      "Return conservative per-axis ProgramAxisDependenceAnalysis facts for a "
+      "tt.func.");
   m.def("remove_attr",
         [](OpState &op, std::string &name) -> void { op->removeAttr(name); });
   py::class_<StringAttr, Attribute>(m, "str_attr", py::module_local());
