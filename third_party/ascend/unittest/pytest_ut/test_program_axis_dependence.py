@@ -180,3 +180,54 @@ def test_cxx_program_grid_schema_rejects_invalid_version_axis_or_factor(
 
     with pytest.raises(RuntimeError, match="invalid hacc.program_grid_transforms contract"):
         ascend_ir.get_program_grid_transforms(module)
+
+
+def test_cxx_grid_specialization_is_versioned_and_cleared_from_module_and_function(tmp_path):
+    context = ir.context()
+    ir.load_dialects(context)
+    ascend_ir.load_dialects(context)
+    path = Path(tmp_path) / "grid-specialization.mlir"
+    path.write_text("""
+module {
+  tt.func public @grid_specialization_fixture() {
+    tt.return
+  }
+}
+""")
+    module = ir.parse_mlir_module(str(path), context)
+    function = module.get_function("grid_specialization_fixture")
+
+    ascend_ir.set_program_grid_specialization(module, 1, 8, 65, 1, 512)
+    expected = {"version": 1, "grid": [8, 65, 1], "rule_mask": 512}
+    assert ascend_ir.get_program_grid_specialization(module) == expected
+    assert ascend_ir.get_program_grid_specialization(function) == expected
+    assert "hacc.grid_specialization" in str(module)
+
+    ascend_ir.clear_program_grid_specialization(module)
+    assert ascend_ir.get_program_grid_specialization(module) is None
+    assert ascend_ir.get_program_grid_specialization(function) is None
+
+
+@pytest.mark.parametrize(
+    ("version", "grid0", "rule_mask"),
+    [(2, 8, 512), (1, 0, 512), (1, 8, 1), (1, 8, 1 << 32)],
+)
+def test_cxx_grid_specialization_rejects_invalid_static_inputs(
+    tmp_path, version, grid0, rule_mask,
+):
+    context = ir.context()
+    ir.load_dialects(context)
+    ascend_ir.load_dialects(context)
+    path = Path(tmp_path) / "invalid-grid-specialization.mlir"
+    path.write_text("""
+module {
+  tt.func public @grid_specialization_fixture() {
+    tt.return
+  }
+}
+""")
+    module = ir.parse_mlir_module(str(path), context)
+
+    with pytest.raises((RuntimeError, ValueError), match="grid_specialization|rule_mask"):
+        ascend_ir.set_program_grid_specialization(
+            module, version, grid0, 1, 1, rule_mask)

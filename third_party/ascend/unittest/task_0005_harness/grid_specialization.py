@@ -336,13 +336,23 @@ def _extent_attr_observation(kernel: Any) -> dict[str, Any]:
         for marker in GRID_EXTENT_ATTR_MARKERS:
             if marker in text:
                 matches.setdefault(marker, set()).add(source)
+    metadata = _metadata_payload(kernel)
+    raw_specialization = metadata.get("program_grid_specialization")
+    canonical_grid = None
+    if isinstance(raw_specialization, Mapping):
+        raw_grid = raw_specialization.get("grid")
+        try:
+            canonical_grid = list(_canonical_grid(raw_grid))
+        except AssertionError:
+            canonical_grid = None
     return {
         "present": bool(matches),
         "markers": sorted(matches),
         "sources": {marker: sorted(sources) for marker, sources in sorted(matches.items())},
-        # task_0002 v2 must fill this from its versioned attr parser.  Absence
-        # is intentional in the baseline and is rejected by the on-state check.
-        "canonical_grid": None,
+        # The compiled metadata is exported from the same C++-validated attr
+        # before downstream lowering strips hacc.*.  Do not infer it from the
+        # actual launch grid: only recorded compiler metadata is acceptable.
+        "canonical_grid": canonical_grid,
     }
 
 
@@ -382,6 +392,8 @@ class GridSpecializationObserver:
     def __init__(self, module: Any, *, rule_mask: int = LEGACY_DEFAULT_GRAPH_RULE_MASK):
         self.module = module
         self.mode = grid_rule_mode(rule_mask)
+        self._grid_specialization_enabled = self.mode[
+            "any_grid_specialization_bit_enabled"]
         # Capture this before ``capture()`` monkey-patches JITFunction.run.
         self._legacy_grid_evaluation_phase = _legacy_grid_evaluation_phase()
         self._targets = {
@@ -415,6 +427,9 @@ class GridSpecializationObserver:
         from triton.runtime.jit import compute_cache_key
 
         observed_kwargs = dict(kwargs)
+        if self._grid_specialization_enabled:
+            observed_kwargs.setdefault(
+                "program_mapping_rule_mask", self.mode["effective_rule_mask"])
         observed_kwargs["debug"] = (
             observed_kwargs.get("debug", getattr(jit_function, "debug", False))
             or knobs.runtime.debug
@@ -423,8 +438,27 @@ class GridSpecializationObserver:
         device = driver.active.get_current_device()
         kernel_cache, kernel_key_cache, _, _, binder = jit_function.device_caches[device]
         bound_args, specialization, options = binder(*args, **observed_kwargs)
+        prepared = None
+        if self._grid_specialization_enabled:
+            prepare = getattr(backend, "prepare_program_grid_specialization", None)
+            if not callable(prepare):
+                raise RuntimeError(
+                    "enabled grid-specialization run has no backend pre-cache hook")
+            prepared = prepare(grid, bound_args, options)
+            if prepared is None:
+                raise RuntimeError(
+                    "enabled grid-specialization run did not resolve an original grid")
+            original_grid, compiler_options = prepared
+            if not isinstance(compiler_options, Mapping):
+                raise RuntimeError("program-grid specialization hook returned invalid compiler options")
+            options.update(compiler_options)
+            observed_kwargs.update(compiler_options)
         cache_key = compute_cache_key(kernel_key_cache, specialization, options)
-        phase = self._legacy_grid_evaluation_phase
+        phase = (
+            GRID_EVALUATION_BEFORE_CACHE_LOOKUP
+            if self._grid_specialization_enabled
+            else self._legacy_grid_evaluation_phase
+        )
         context = self._context or _CaseContext(label="unlabeled", wrapper="unknown")
         event: dict[str, Any] = {
             "sequence": len(self.events) + 1,
@@ -446,7 +480,7 @@ class GridSpecializationObserver:
                 "legacy_jit_cache_key": _identity_payload(cache_key),
                 "binder_specialization": _identity_payload(specialization),
                 "cache_hit_before_launch": cache_key in kernel_cache,
-                "grid_in_specialization": False,
+                "grid_in_specialization": self._grid_specialization_enabled,
             },
             "original_extent_attr": {
                 "present": False,
@@ -464,6 +498,10 @@ class GridSpecializationObserver:
             "actual_launch_grid": None,
             "actual_launch_grid_observation": "not_intercepted",
         }
+
+        if prepared is not None:
+            event["original_grid"] = list(original_grid)
+            return event, grid
 
         if callable(grid):
             original_callable = grid
@@ -510,14 +548,18 @@ class GridSpecializationObserver:
             target_name = self._targets.get(id(jit_function))
             if target_name is None or warmup:
                 return original_run(jit_function, *args, grid=grid, warmup=warmup, **kwargs)
+            forwarded_kwargs = dict(kwargs)
+            if self._grid_specialization_enabled:
+                forwarded_kwargs.setdefault(
+                    "program_mapping_rule_mask", self.mode["effective_rule_mask"])
             event, forwarded_grid = self._event_before_run(
-                jit_function, target_name, args, kwargs, grid
+                jit_function, target_name, args, forwarded_kwargs, grid
             )
             self.events.append(event)
             self._active_events.append(event)
             try:
                 kernel = original_run(
-                    jit_function, *args, grid=forwarded_grid, warmup=warmup, **kwargs
+                    jit_function, *args, grid=forwarded_grid, warmup=warmup, **forwarded_kwargs
                 )
             except Exception as error:
                 event["error"] = f"{type(error).__name__}: {error}"
@@ -737,7 +779,10 @@ def run_unchanged_dsl_grid_baseline(
         "correctness": correctness,
         "passed": all(entry["passed"] for entry in correctness),
     }
-    assert_grid_specialization_off(report)
+    if observer.mode["any_grid_specialization_bit_enabled"]:
+        assert_grid_specialization_enabled(report)
+    else:
+        assert_grid_specialization_off(report)
     return report
 
 
