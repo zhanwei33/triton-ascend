@@ -35,6 +35,11 @@ from triton.backends.compiler import GPUTarget
 from triton.backends.ascend.utils import (_build_npu_ext, _check_cxx11_abi, convert_sigtype_to_int,
                                           _is_auto_map_parallel_blocks_enabled, is_ffts_supported, force_disable_ffts,
                                           get_backend_func, get_cann_version)
+from triton.backends.ascend.program_grid import (
+    ProgramGridContractError,
+    get_persistent_transform,
+    normalize_program_grid_transforms,
+)
 # Bind the already-imported utils module once so the launch hot path can write
 # TRITON_PROFILER_REGISTERED without a per-launch `import triton` + attribute walk.
 import triton.backends.ascend.utils as _ascend_utils
@@ -1025,6 +1030,57 @@ static void release_npu_tensor_handle(void* handle) {{
 }}
 """
 
+    # New program-grid transforms own their complete host-launch contract.  They
+    # are applied once here, in the shared source used by both Python's launch()
+    # entry point and exported triton_launch_kernel().  The old coalesce ABI
+    # remains below as a migration-only path for existing artifacts.
+    raw_program_grid_transforms = getattr(metadata, "program_grid_transforms", None)
+    if raw_program_grid_transforms is not None:
+        try:
+            program_grid_transforms = normalize_program_grid_transforms(raw_program_grid_transforms)
+        except ProgramGridContractError as error:
+            raise RuntimeError(f"invalid program_grid_transforms launcher metadata: {error}") from error
+    else:
+        program_grid_transforms = None
+
+    program_grid_transform_apply = ""
+    persistent_grid_cap = ""
+    if program_grid_transforms is not None:
+        grid_vars = {0: "gridX", 1: "gridY", 2: "gridZ"}
+        logical_extent_by_axis = {}
+        transform_lines = [
+            "// hacc.program_grid_transforms v1: retain pre-transform logical extents for tail proofs.",
+        ]
+        for transform in program_grid_transforms["transforms"]:
+            axis = transform["axis"]
+            grid_var = grid_vars[axis]
+            logical_extent = transform["logical_extent"]
+            if axis not in logical_extent_by_axis:
+                logical_extent_by_axis[axis] = logical_extent
+                transform_lines.extend((
+                    f"const int logicalGrid{axis} = {grid_var};",
+                    f"assert(logicalGrid{axis} == {logical_extent} && "
+                    f"\"program_grid_transforms: grid[{axis}] differs from its proven logical_extent\");",
+                ))
+            factor = transform["factor"]
+            transform_lines.append(
+                f"{grid_var} = ({grid_var} + {factor} - 1) / {factor};")
+        program_grid_transform_apply = "\n  ".join(transform_lines)
+
+        persistent_transform = get_persistent_transform(program_grid_transforms)
+        if persistent_transform is not None:
+            persistent_axis = persistent_transform["axis"]
+            persistent_grid_var = grid_vars[persistent_axis]
+            other_grid_vars = [grid_vars[axis] for axis in range(3) if axis != persistent_axis]
+            persistent_grid_cap = f"""// Persistent coverage is proven to stride by the capped tt.num_programs({persistent_axis}).
+  const uint64_t programGridOtherAxes = static_cast<uint64_t>({other_grid_vars[0]}) *
+      static_cast<uint64_t>({other_grid_vars[1]});
+  if (programGridOtherAxes <= static_cast<uint64_t>({num_physical_blocks})) {{
+    const uint32_t programGridAxisCap = static_cast<uint32_t>(std::max<uint64_t>(
+        1, static_cast<uint64_t>({num_physical_blocks}) / programGridOtherAxes));
+    {persistent_grid_var} = std::min({persistent_grid_var}, static_cast<int>(programGridAxisCap));
+  }}"""
+
     # Full-TA tile/strided coalescing: the compiler recorded a coalesce factor H
     # and the program-id/grid axis it applies to. Each program now covers H tiles
     # along that axis, so the host shrinks the matching grid dim by H here (the
@@ -1170,7 +1226,9 @@ static void release_npu_tensor_handle(void* handle) {{
     _launch_preamble = f"""
   void* workspace_addr_ptr = nullptr;
   void* workspace_handle = nullptr;
-  {coalesce_grid_div}
+  {program_grid_transform_apply}
+  {persistent_grid_cap}
+  {coalesce_grid_div if program_grid_transforms is None else ''}
   uint32_t blockNum4Workspace = gridX * gridY * gridZ;
   {get_backend_func("pre_launch", True)}
   {f'''
@@ -1193,7 +1251,7 @@ static void release_npu_tensor_handle(void* handle) {{
         warned = true;
     }}
     #endif
-    {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}
+    {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks and program_grid_transforms is None else ''}
     // set mixBlockNumRation for nodeBasicBlockDim for msprof report
     uint32_t mixBlockNumRation = {mix_block_dim_ratio};
     uint32_t nodeBasicBlockDim = (mixBlockNumRation << 16) + blockNum;

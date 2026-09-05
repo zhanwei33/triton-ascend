@@ -30,6 +30,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+#include "ascend/include/TritonToGraph/ProgramGridTransform.h"
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "bishengir/Dialect/Scope/IR/Scope.h"
@@ -612,6 +613,34 @@ void init_ascend_ir(py::module &&m) {
       return py::none();
     }
     return py::cast(ret.getInt());
+  });
+  m.def("get_program_grid_transforms", [](OpState &op) -> py::object {
+    Attribute attribute =
+        op->getAttr(mlir::triton::cfg::kProgramGridTransformsAttr);
+    if (!attribute)
+      return py::none();
+    FailureOr<mlir::triton::cfg::ProgramGridTransformContract> contract =
+        mlir::triton::cfg::parseProgramGridTransformContract(attribute);
+    if (failed(contract))
+      throw std::runtime_error("invalid hacc.program_grid_transforms contract");
+
+    py::dict result;
+    result["version"] = contract->version;
+    py::list transforms;
+    for (const mlir::triton::cfg::ProgramGridTransform &transform :
+         contract->transforms) {
+      py::dict item;
+      item["order"] = transform.order;
+      item["kind"] = "ceil_div";
+      item["axis"] = transform.axis;
+      item["factor"] = transform.factor;
+      item["logical_extent"] = transform.logicalExtent;
+      item["persistent_coverage"] = transform.persistentCoverage;
+      item["grid_stride_abi_verified"] = transform.gridStrideAbiVerified;
+      transforms.append(std::move(item));
+    }
+    result["transforms"] = std::move(transforms);
+    return std::move(result);
   });
   m.def("remove_attr",
         [](OpState &op, std::string &name) -> void { op->removeAttr(name); });
