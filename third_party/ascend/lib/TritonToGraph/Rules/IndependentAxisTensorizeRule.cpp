@@ -288,7 +288,7 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
 
   const LiveByteEstimate &liveBytes =
       context.getResourceCostAnalysis().getLiveByteEstimate();
-  SmallVector<CandidateEvaluation> evaluations;
+  SmallVector<CandidateEvaluation, 4> evaluations;
   for (unsigned factor : kTensorizeFactors) {
     std::array<int64_t, 3> transformedGrid = specialization->grid;
     transformedGrid[kTargetAxis] =
@@ -646,7 +646,8 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
       const int64_t axis =
           scan.getAxis() + (scan.getAxis() >= oldLaneAxis ? 1 : 0);
       auto replacement = rewriter.create<triton::ScanOp>(
-          operation->getLoc(), sources, axis, scan.getReverse());
+          operation->getLoc(), sources, static_cast<uint32_t>(axis),
+          scan.getReverse());
       rewriter.cloneRegionBefore(scan.getCombineOp(),
                                  replacement.getCombineOp(),
                                  replacement.getCombineOp().end());
