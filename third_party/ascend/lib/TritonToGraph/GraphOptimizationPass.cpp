@@ -23,6 +23,7 @@
 #include "TritonToGraph/GraphOptimizationContext.h"
 #include "TritonToGraph/GraphOptimizationRule.h"
 #include "TritonToGraph/Passes.h"
+#include "TritonToGraph/ResourceCostModel.h"
 #include "Utils/Utils.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -101,6 +102,10 @@ public:
     this->ruleMask = options.enabledRuleMask;
     this->maxRewritesPerFunction = options.maxRewritesPerFunction;
     this->ubCapacityBytes = options.ubCapacityBytes;
+    this->deviceCoreCount = options.deviceCoreCount;
+    this->minProgramsPerCore = options.minProgramsPerCore;
+    this->ubSafetyPercent = options.ubSafetyPercent;
+    this->reservedUBBytes = options.reservedUBBytes;
     this->compileMode = options.compileMode;
   }
 
@@ -119,6 +124,10 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
   const uint64_t cliRuleMask = this->ruleMask;
   const uint64_t cliMaxRewrites = this->maxRewritesPerFunction;
   const uint64_t cliUBCapacityBytes = this->ubCapacityBytes;
+  const uint64_t cliDeviceCoreCount = this->deviceCoreCount;
+  const uint64_t cliMinProgramsPerCore = this->minProgramsPerCore;
+  const uint64_t cliUBSafetyPercent = this->ubSafetyPercent;
+  const uint64_t cliReservedUBBytes = this->reservedUBBytes;
 
   if (cliRuleMask > std::numeric_limits<uint16_t>::max() ||
       !isValidGraphOptimizationRuleMask(static_cast<uint16_t>(cliRuleMask))) {
@@ -142,6 +151,21 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
     return failure();
   }
 
+  if (cliDeviceCoreCount > std::numeric_limits<unsigned>::max() ||
+      cliMinProgramsPerCore == 0 ||
+      cliMinProgramsPerCore > std::numeric_limits<unsigned>::max() ||
+      cliUBSafetyPercent == 0 || cliUBSafetyPercent > 100 ||
+      cliReservedUBBytes > std::numeric_limits<unsigned>::max() ||
+      cliReservedUBBytes > cliUBCapacityBytes) {
+    getOperation().emitError()
+        << "graph-optimize resource options are invalid: cores="
+        << cliDeviceCoreCount
+        << " min-programs-per-core=" << cliMinProgramsPerCore
+        << " ub-safety-percent=" << cliUBSafetyPercent
+        << " reserved-ub-bytes=" << cliReservedUBBytes;
+    return failure();
+  }
+
   if (!triton::ascend::parseCompileMode(this->compileMode)) {
     getOperation().emitError()
         << "graph-optimize compile-mode is invalid: " << this->compileMode;
@@ -151,6 +175,10 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
   options.enabledRuleMask = static_cast<uint16_t>(cliRuleMask);
   options.maxRewritesPerFunction = static_cast<unsigned>(cliMaxRewrites);
   options.ubCapacityBytes = static_cast<unsigned>(cliUBCapacityBytes);
+  options.deviceCoreCount = static_cast<unsigned>(cliDeviceCoreCount);
+  options.minProgramsPerCore = static_cast<unsigned>(cliMinProgramsPerCore);
+  options.ubSafetyPercent = static_cast<unsigned>(cliUBSafetyPercent);
+  options.reservedUBBytes = static_cast<unsigned>(cliReservedUBBytes);
   options.compileMode = this->compileMode;
   return success();
 }
@@ -173,7 +201,11 @@ void GraphOptimizePass::runOnOperation() {
 
   ModuleOp module = getOperation();
   for (triton::FuncOp function : module.getOps<triton::FuncOp>()) {
-    GraphOptimizationContext context(function);
+    const ResourceSnapshot resources = ResourceSnapshot::fromExplicit(
+        options.ubCapacityBytes, options.deviceCoreCount,
+        options.minProgramsPerCore, options.ubSafetyPercent,
+        options.reservedUBBytes);
+    GraphOptimizationContext context(function, resources);
     unsigned rewriteCount = 0;
 
     for (GraphOptimizationRuleId phase : kRulePhases) {

@@ -5,6 +5,7 @@ add_triton_library(TritonToGraph
   DataflowGraph.cpp
   EntryArgPointerAliasAnalysis.cpp
   GraphOptimizationContext.cpp
+  ResourceCostModel.cpp
   GraphOptimizationPass.cpp
   LayoutMemoryCompatibilityPass.cpp
   MemorySsaBuilder.cpp

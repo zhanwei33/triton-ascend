@@ -31,8 +31,9 @@ using namespace mlir;
 using namespace triton;
 using namespace cfg;
 
-GraphOptimizationContext::GraphOptimizationContext(triton::FuncOp function)
-    : function(function) {
+GraphOptimizationContext::GraphOptimizationContext(triton::FuncOp function,
+                                                   ResourceSnapshot resources)
+    : function(function), resources(resources) {
   assert(this->function.getOperation() &&
          "GraphOptimizationContext requires a valid tt.func");
 }
@@ -72,10 +73,16 @@ GraphOptimizationContext::ensure(AnalysisRequirement requirements) {
       return failure();
   }
 
+  if (hasAnalysisRequirement(requirements, AnalysisRequirement::ResourceCost)) {
+    if (failed(ensureResourceCostAnalysis()))
+      return failure();
+  }
+
   return success();
 }
 
 void GraphOptimizationContext::invalidate() {
+  resourceCostAnalysis.reset();
   dataFlowGraph.reset();
   entryArgPointerAliasAnalysis.reset();
   aliasAnalysis.reset();
@@ -125,5 +132,16 @@ LogicalResult GraphOptimizationContext::ensureDataFlowGraph() {
   dataFlowGraph =
       std::make_unique<DataFlowGraph>(*controlFlowGraph, *aliasAnalysis);
   dataFlowGraph->build();
+  return success();
+}
+
+LogicalResult GraphOptimizationContext::ensureResourceCostAnalysis() {
+  if (resourceCostAnalysis)
+    return success();
+  if (!function.getOperation())
+    return failure();
+
+  resourceCostAnalysis = std::make_unique<ResourceCostAnalysis>(
+      function.getOperation(), resources);
   return success();
 }
