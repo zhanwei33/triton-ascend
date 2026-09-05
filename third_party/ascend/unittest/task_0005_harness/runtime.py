@@ -146,11 +146,16 @@ def make_logits_inputs(
     }
 
 
-def _compile_kwargs(graph_optimize: bool) -> dict[str, Any]:
-    return {
+def _compile_kwargs(
+    graph_optimize: bool, *, program_mapping_rule_mask: int = 0
+) -> dict[str, Any]:
+    kwargs = {
         "compile_mode": COMPILE_MODE,
         "enable_graph_optimize": graph_optimize,
     }
+    if program_mapping_rule_mask:
+        kwargs["program_mapping_rule_mask"] = program_mapping_rule_mask
+    return kwargs
 
 
 def launch_merge_split(
@@ -212,6 +217,7 @@ def _launch_norm_specialization(
     subtract_mean: bool,
     weight_bias: float,
     graph_optimize: bool,
+    program_mapping_rule_mask: int,
 ) -> tuple[int, ...]:
     grid = (case.tokens, num_heads)
     module._indexer_norm_rope_kernel[grid](
@@ -233,7 +239,10 @@ def _launch_norm_specialization(
         HAS_BIAS=has_bias,
         BLOCK_D=triton.next_power_of_2(case.head_dim),
         BLOCK_R=triton.next_power_of_2(case.rotary_dim),
-        **_compile_kwargs(graph_optimize),
+        **_compile_kwargs(
+            graph_optimize,
+            program_mapping_rule_mask=program_mapping_rule_mask,
+        ),
     )
     return grid
 
@@ -243,6 +252,8 @@ def launch_norm_rope(
     case: NormRopeCase,
     *,
     graph_optimize: bool,
+    q_program_mapping_rule_mask: int = 0,
+    k_program_mapping_rule_mask: int = 0,
 ) -> LaunchResult:
     module = load_fixture("norm_rope")
     q_out = torch.empty_like(inputs["q"])
@@ -262,6 +273,7 @@ def launch_norm_rope(
         subtract_mean=False,
         weight_bias=1.0,
         graph_optimize=graph_optimize,
+        program_mapping_rule_mask=q_program_mapping_rule_mask,
     )
     k_grid = _launch_norm_specialization(
         module,
@@ -278,6 +290,7 @@ def launch_norm_rope(
         subtract_mean=True,
         weight_bias=0.0,
         graph_optimize=graph_optimize,
+        program_mapping_rule_mask=k_program_mapping_rule_mask,
     )
     return LaunchResult(
         outputs=(q_out, k_out, inputs["z"].contiguous()),
@@ -292,6 +305,7 @@ def launch_indexer_logits(
     case: LogitsCase = LOGITS_PRIMARY,
     *,
     graph_optimize: bool,
+    program_mapping_rule_mask: int = 0,
 ) -> LaunchResult:
     module = load_fixture("indexer_logits")
     q = module.round_activations_e4m3(inputs["q"])
@@ -318,7 +332,10 @@ def launch_indexer_logits(
         proxy_dim=case.proxy_dim,
         BLOCK_Q=case.block_q,
         BLOCK_K=case.block_k,
-        **_compile_kwargs(graph_optimize),
+        **_compile_kwargs(
+            graph_optimize,
+            program_mapping_rule_mask=program_mapping_rule_mask,
+        ),
     )
     return LaunchResult(
         outputs=(out,),

@@ -8,9 +8,9 @@
 
 // CHECK: hacc.persistent_task_strip_mining
 // CHECK: hacc.program_grid_transforms
+// CHECK: grid_stride_abi_verified = true
 // CHECK: logical_extent = 19 : i64
 // CHECK: persistent_coverage = true
-// CHECK: grid_stride_abi_verified = true
 // CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
 // CHECK: tt.get_program_id x
 // CHECK: tt.get_num_programs x

@@ -322,7 +322,11 @@ struct IndependentAxisTensorizeRuleOptions {
   // rule registered for mask compatibility, but must remain a semantic no-op.
   bool enabledForCompileMode = true;
 };
-struct StaticProgramAxisFusionRuleOptions {};
+struct StaticProgramAxisFusionRuleOptions {
+  // SPAF materializes SIMD tensor work inside an scf loop.  Preserve mask ABI
+  // in simt_only mode while rejecting the structural rewrite itself.
+  bool enabledForCompileMode = true;
+};
 struct PersistentTaskStripMiningRuleOptions {
   // PTSM creates SIMD tensor shapes and a grid-stride loop. Keep the rule
   // registered for ABI compatibility in simt_only mode, but make it a no-op.

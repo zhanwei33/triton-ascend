@@ -186,6 +186,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
         options.ubSafetyPercent = static_cast<unsigned>(ubSafetyPercent);
         options.reservedUBBytes = static_cast<unsigned>(reservedUBBytes);
         options.compileMode = compileMode;
+        options.deviceCoreCount = static_cast<unsigned>(deviceCoreCount);
         pm.addPass(mlir::triton::cfg::createGraphOptimizePass(options));
       },
       py::arg("pm"),

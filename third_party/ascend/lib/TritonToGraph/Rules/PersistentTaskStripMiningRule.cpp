@@ -230,6 +230,39 @@ std::optional<uint64_t> getGridProduct(
   return result;
 }
 
+// The launcher applies existing non-persistent transforms before it caps the
+// persistent token axis.  Price PTSM with that same post-transform product:
+// using the original head extent here can falsely reject Q after IAT even
+// though the launcher will have already reduced that axis.
+std::optional<uint64_t> getTransformedOtherAxisPrograms(
+    const ProgramGridSpecialization &specialization,
+    const ProgramGridTransformContract &contract) {
+  std::array<uint64_t, 3> transformedGrid;
+  for (unsigned axis = 0; axis < transformedGrid.size(); ++axis) {
+    const int64_t extent = specialization.grid[axis];
+    if (extent < 1)
+      return std::nullopt;
+    transformedGrid[axis] = static_cast<uint64_t>(extent);
+  }
+
+  for (const ProgramGridTransform &transform : contract.transforms) {
+    if (transform.axis == kTokenAxis || transform.axis < 0 ||
+        transform.axis >= static_cast<int32_t>(transformedGrid.size()) ||
+        transform.factor < 2 || transform.logicalExtent !=
+                                    specialization.grid[transform.axis])
+      return std::nullopt;
+    const unsigned axis = static_cast<unsigned>(transform.axis);
+    const uint64_t factor = static_cast<uint64_t>(transform.factor);
+    transformedGrid[axis] = transformedGrid[axis] / factor +
+                            (transformedGrid[axis] % factor != 0);
+  }
+
+  uint64_t otherAxes = 0;
+  if (!checkedMul(transformedGrid[1], transformedGrid[2], otherAxes))
+    return std::nullopt;
+  return otherAxes;
+}
+
 std::optional<uint64_t> getCappedProgramCount(uint64_t logicalTiles,
                                                uint64_t otherAxes,
                                                const ResourceSnapshot &resources) {
@@ -328,11 +361,9 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark) {
     return std::nullopt;
 
   std::optional<uint64_t> tasksBefore = getGridProduct(specialization->grid);
-  uint64_t otherAxisPrograms = 0;
-  if (!tasksBefore ||
-      !checkedMul(static_cast<uint64_t>(specialization->grid[1]),
-                  static_cast<uint64_t>(specialization->grid[2]),
-                  otherAxisPrograms))
+  std::optional<uint64_t> otherAxisPrograms =
+      getTransformedOtherAxisPrograms(*specialization, *launchContract);
+  if (!tasksBefore || !otherAxisPrograms)
     return std::nullopt;
 
   const LiveByteEstimate &liveBytes =
@@ -346,10 +377,10 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark) {
         (static_cast<uint64_t>(logicalTokens) % blockT != 0);
     uint64_t logicalTasksAfter = 0;
     if (logicalTiles == 0 ||
-        !checkedMul(logicalTiles, otherAxisPrograms, logicalTasksAfter))
+        !checkedMul(logicalTiles, *otherAxisPrograms, logicalTasksAfter))
       continue;
     std::optional<uint64_t> actualProgramsAfter =
-        getCappedProgramCount(logicalTiles, otherAxisPrograms, resources);
+        getCappedProgramCount(logicalTiles, *otherAxisPrograms, resources);
     if (!actualProgramsAfter)
       continue;
 
@@ -358,7 +389,7 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark) {
     prototype.anchor = tokenPid->getOperation();
     prototype.logicalTokens = logicalTokens;
     prototype.logicalTiles = logicalTiles;
-    prototype.otherAxisPrograms = otherAxisPrograms;
+    prototype.otherAxisPrograms = *otherAxisPrograms;
     prototype.blockT = blockT;
     prototype.existingTransformCount = launchContract->transforms.size();
     CandidateEvaluation evaluation = context.getResourceCostAnalysis().evaluate(
@@ -383,7 +414,7 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark) {
   candidate.logicalTiles =
       static_cast<uint64_t>(logicalTokens) / candidate.blockT +
       (static_cast<uint64_t>(logicalTokens) % candidate.blockT != 0);
-  candidate.otherAxisPrograms = otherAxisPrograms;
+  candidate.otherAxisPrograms = *otherAxisPrograms;
   candidate.existingTransformCount = launchContract->transforms.size();
   candidate.evaluation = std::move(evaluations.front());
   return candidate;

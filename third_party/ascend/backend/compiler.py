@@ -366,6 +366,45 @@ def _with_debug_line(npubin_stage, options):
     return stage
 
 
+def _graph_optimize_device_core_count() -> int:
+    """Return an explicit target fact for resource-gated mapping rules.
+
+    A failed runtime query deliberately becomes zero.  The C++ cost model
+    treats zero as unknown and rejects a candidate instead of applying a
+    program-axis transformation using a target-name guess.
+    """
+    try:
+        # Program-mapping kernels execute on the vector path, so the cap and
+        # resource model must observe the same physical-program limit as the
+        # launcher rather than the cube-core count.
+        count = NPUUtils().get_aivector_core_num()
+    except Exception:
+        return 0
+    if isinstance(count, bool) or not isinstance(count, int):
+        return 0
+    return count if 0 < count <= (2**32 - 1) else 0
+
+
+def _graph_optimize_kwargs(opt):
+    """Keep legacy graph optimization byte-for-byte unchanged by default."""
+    kwargs = {
+        "ub_capacity_bytes": graph_ub_budget_bytes_for_arch(opt.target_arch),
+        "compile_mode": opt.compile_mode,
+    }
+    mapping_mask = normalize_program_mapping_rule_mask(
+        getattr(opt, "program_mapping_rule_mask", 0))
+    if mapping_mask:
+        # Mapping bits have a distinct enablement boundary from the legacy
+        # graph bundle.  Forward the exact mask so RowCoalescing cannot
+        # compete with a program-grid transform through the legacy mask.
+        kwargs["rule_mask"] = mapping_mask
+        kwargs["device_core_count"] = _graph_optimize_device_core_count()
+        kwargs["min_programs_per_core"] = 1
+        kwargs["ub_safety_percent"] = 80
+        kwargs["reserved_ub_bytes"] = 0
+    return kwargs
+
+
 def make_ttir(mod, metadata, opt):
     if "hash" not in metadata:
         metadata["hash"] = hashlib.sha256(f"{mod}-{metadata}".encode()).hexdigest()
@@ -384,27 +423,7 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
     if opt.enable_graph_optimize:
-        graph_optimize_options = {
-            "ub_capacity_bytes": graph_ub_budget_bytes_for_arch(opt.target_arch),
-            "compile_mode": opt.compile_mode,
-        }
-        # A program-mapping rule has a different enablement boundary from the
-        # legacy default graph bundle.  Passing its exact mask makes an IAT
-        # request observable by the native pass and prevents RowCoalescing
-        # from competing through the legacy mask.  The resource snapshot is
-        # deliberately explicit: an unavailable device fact remains zero and
-        # makes resource-gated candidates fail closed in C++.
-        program_mapping_rule_mask = normalize_program_mapping_rule_mask(
-            getattr(opt, "program_mapping_rule_mask", 0))
-        if program_mapping_rule_mask:
-            graph_optimize_options.update({
-                "rule_mask": program_mapping_rule_mask,
-                "device_core_count": NPUUtils().get_aivector_core_num(),
-                "min_programs_per_core": 1,
-                "ub_safety_percent": 80,
-                "reserved_ub_bytes": 0,
-            })
-        ascend.passes.ttir.add_graph_optimize(pm, **graph_optimize_options)
+        ascend.passes.ttir.add_graph_optimize(pm, **_graph_optimize_kwargs(opt))
     pm.run(mod, 'make_ttir')
     if opt.debug:
         dump_manager = get_dump_manager(metadata["hash"])

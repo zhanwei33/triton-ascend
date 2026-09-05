@@ -28,6 +28,8 @@
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -143,7 +145,22 @@ public:
 
 private:
   LogicalResult getStableOptions(GraphOptimizationOptions &options);
+  LogicalResult runStructuralCleanup();
 };
+
+LogicalResult GraphOptimizePass::runStructuralCleanup() {
+  // Program-mapping rules introduce loop bodies and new broadcast chains.
+  // Canonicalize/CSE/LICM immediately after each successful structural rewrite
+  // so the next phase discovers candidates against a stable IR epoch rather
+  // than stale pre-rewrite definitions.
+  PassManager cleanup(&getContext(), getOperation().getOperationName());
+  cleanup.addPass(createCanonicalizerPass());
+  cleanup.addPass(createCSEPass());
+  cleanup.addPass(createLoopInvariantCodeMotionPass());
+  cleanup.addPass(createCanonicalizerPass());
+  cleanup.addPass(createCSEPass());
+  return runPipeline(cleanup, getOperation());
+}
 
 LogicalResult
 GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
@@ -209,6 +226,8 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
   options.reservedUBBytes = static_cast<unsigned>(cliReservedUBBytes);
   options.compileMode = this->compileMode;
   options.independentAxisTensorize.enabledForCompileMode =
+      *compileMode != triton::ascend::CompileMode::SimtOnly;
+  options.staticProgramAxisFusion.enabledForCompileMode =
       *compileMode != triton::ascend::CompileMode::SimtOnly;
   options.persistentTaskStripMining.enabledForCompileMode =
       *compileMode != triton::ascend::CompileMode::SimtOnly;
@@ -334,6 +353,14 @@ void GraphOptimizePass::runOnOperation() {
           signalPassFailure();
           return;
         }
+        if (failed(runStructuralCleanup())) {
+          selectedPlan.reset();
+          plans.clear();
+          function.emitError()
+              << "graph-optimize failed structural rewrite cleanup";
+          signalPassFailure();
+          return;
+        }
 
         LLVM_DEBUG(llvm::dbgs()
                    << "[" DEBUG_TYPE "] applied graph optimization rule "
@@ -424,6 +451,13 @@ void GraphOptimizePass::runOnOperation() {
       selectedRowPlan.reset();
       rowPlans.clear();
       function.emitError() << "graph-optimize failed to apply Row rewrite";
+      signalPassFailure();
+      return;
+    }
+    if (failed(runStructuralCleanup())) {
+      selectedRowPlan.reset();
+      rowPlans.clear();
+      function.emitError() << "graph-optimize failed Row rewrite cleanup";
       signalPassFailure();
       return;
     }
