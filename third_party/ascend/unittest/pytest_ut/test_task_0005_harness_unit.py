@@ -1,0 +1,170 @@
+"""Pure-Python contracts for the standalone task_0005 test harness."""
+
+from __future__ import annotations
+
+import csv
+import sys
+from pathlib import Path
+
+import pytest
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from task_0005_harness.contracts import (  # noqa: E402
+    COMPILE_MODE,
+    LOGITS_PRIMARY,
+    MERGE_PRIMARY_CASES,
+    MINIMAL_NEGATIVE_VARIANTS,
+    NON_ORACLE_AFTER_DIFFERENCES,
+    NORM_PRIMARY_TOKENS,
+    SMOKE_SUITE,
+    TARGET_STRUCTURES,
+    artifact_schema,
+    assert_fixture_integrity,
+    expected_grid,
+    expected_program_count,
+    fixture_path,
+)
+from task_0005_harness.reference import (  # noqa: E402
+    ref_indexer_logits,
+    ref_indexer_norm_rope,
+    ref_merge_split_states,
+)
+from task_0005_harness.run_baselines import _target_samples  # noqa: E402
+
+pytestmark = pytest.mark.backend("none")
+
+
+def test_frozen_dsl_fixtures_have_the_recorded_hashes():
+    assert_fixture_integrity()
+
+
+def test_primary_program_contracts_match_the_before_grids():
+    merge = MERGE_PRIMARY_CASES[0]
+    assert expected_grid("merge_split", merge) == (8, 64)
+    assert expected_program_count("merge_split", merge) == 512
+
+    norm = __import__(
+        "task_0005_harness.contracts", fromlist=["NormRopeCase"]
+    ).NormRopeCase(tokens=16)
+    assert expected_grid("norm_rope", norm, specialization="q") == (16, 16)
+    assert expected_grid("norm_rope", norm, specialization="k") == (16, 1)
+    assert expected_program_count("norm_rope", norm, specialization="q") == 256
+    assert expected_program_count("norm_rope", norm, specialization="k") == 16
+
+    assert expected_grid("indexer_logits", LOGITS_PRIMARY) == (1, 1, 4)
+    assert expected_program_count("indexer_logits", LOGITS_PRIMARY) == 4
+
+
+def test_primary_contract_is_template_simd_not_explicit_simt_only():
+    assert COMPILE_MODE == "simd_simt_template"
+    assert "simt_only" not in COMPILE_MODE
+
+
+def test_after_variants_are_explicitly_non_oracles():
+    assert set(TARGET_STRUCTURES) == {
+        "merge_split",
+        "norm_rope",
+        "indexer_logits",
+    }
+    assert set(NON_ORACLE_AFTER_DIFFERENCES) == set(TARGET_STRUCTURES)
+    assert set(MINIMAL_NEGATIVE_VARIANTS) == set(TARGET_STRUCTURES)
+    assert "BLOCK_D=head_dim" in NON_ORACLE_AFTER_DIFFERENCES["merge_split"]
+    assert "overwrites" in NON_ORACLE_AFTER_DIFFERENCES["norm_rope"]
+    assert "num_stages=2" in NON_ORACLE_AFTER_DIFFERENCES["indexer_logits"]
+
+
+def test_fixture_sources_do_not_depend_on_a_task_book_absolute_import():
+    for operator in TARGET_STRUCTURES:
+        for variant in ("before", "after"):
+            source = fixture_path(operator, variant).read_text()
+            assert "/home/w00609825/triton_workspace/.tasks/" not in source
+            assert "from operator_parity" not in source
+
+
+def test_reference_merge_matches_a_hand_computed_weighted_mean():
+    partial_out = torch.tensor([[[[2.0, 4.0]]], [[[6.0, 8.0]]]])
+    partial_lse = torch.tensor([[[0.0]], [[0.0]]])
+    output, lse = ref_merge_split_states(partial_out, partial_lse)
+    assert torch.equal(output, torch.tensor([[[4.0, 6.0]]]))
+    assert torch.equal(lse, torch.tensor([[torch.log(torch.tensor(2.0))]]))
+
+
+def test_reference_norm_rope_keeps_z_bitwise_and_rejects_bad_span():
+    q = torch.arange(8, dtype=torch.bfloat16).reshape(1, 8)
+    k = torch.arange(8, 16, dtype=torch.bfloat16).reshape(1, 8)
+    z = torch.tensor([[1.0, -0.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]], dtype=torch.bfloat16)
+    weight = torch.ones(4, dtype=torch.bfloat16)
+    bias = torch.zeros(4, dtype=torch.bfloat16)
+    cos = torch.ones((2, 1), dtype=torch.bfloat16)
+    sin = torch.zeros((2, 1), dtype=torch.bfloat16)
+    positions = torch.zeros(1, dtype=torch.int32)
+    _, _, z_out = ref_indexer_norm_rope(
+        q,
+        k,
+        z,
+        weight,
+        weight,
+        bias,
+        cos,
+        sin,
+        positions,
+        head_dim=4,
+        num_q_heads=2,
+        num_k_heads=2,
+        rotary_dim=1,
+    )
+    assert torch.equal(z_out, z)
+    with pytest.raises(ValueError, match="rotary span"):
+        ref_indexer_norm_rope(
+            q,
+            k,
+            z,
+            weight,
+            weight,
+            bias,
+            cos,
+            sin,
+            positions,
+            head_dim=4,
+            num_q_heads=2,
+            num_k_heads=2,
+            rotary_dim=3,
+        )
+
+
+def test_reference_logits_has_group_major_shape():
+    q = torch.ones((2, 2, 1, 4), dtype=torch.bfloat16)
+    weights = torch.ones((2, 2, 1), dtype=torch.bfloat16)
+    k = torch.ones((3, 1, 4), dtype=torch.bfloat16)
+    output = ref_indexer_logits(q, weights, k)
+    assert output.shape == (4, 3)
+    assert torch.all(output >= 0)
+
+
+def test_profiler_parser_requires_an_exact_target_name(tmp_path):
+    profiler = tmp_path / "profile"
+    profiler.mkdir()
+    path = profiler / "op_summary_fixture.csv"
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("Op Name", "Task Duration(us)"))
+        writer.writeheader()
+        writer.writerow({"Op Name": "not_target", "Task Duration(us)": "1.0"})
+        writer.writerow({"Op Name": "_merge_split_states_kernel", "Task Duration(us)": "2.0"})
+        writer.writerow({"Op Name": "_merge_split_states_kernel", "Task Duration(us)": "3.0"})
+    samples = _target_samples(profiler, "_merge_split_states_kernel")
+    assert [sample[2] for sample in samples] == [2.0, 3.0]
+
+
+def test_artifact_schema_and_smoke_suite_cover_required_outputs():
+    schema = artifact_schema()
+    assert set(schema["required_files"]) == {
+        "environment.md",
+        "correctness.json",
+        "program_count.json",
+        "performance.csv",
+    }
+    assert "kernel_name" in schema["performance_columns"]
+    assert len(SMOKE_SUITE) == 3
+    assert NORM_PRIMARY_TOKENS == (1, 16, 512, 4096, 8192, 32768)
