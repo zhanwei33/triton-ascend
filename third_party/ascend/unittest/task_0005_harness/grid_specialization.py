@@ -903,8 +903,16 @@ def assert_grid_specialization_enabled(report: Mapping[str, Any]) -> None:
                 extent = event.get("original_extent_attr", {})
                 if not extent.get("present") or _grid_tuple(extent, "canonical_grid") != tuple(grid):
                     raise AssertionError(f"{target}: original extent attr does not match grid {grid}: {extent}")
-                if _grid_tuple(event, "actual_launch_grid") is None:
-                    raise AssertionError(f"{target}: actual launcher grid was not captured")
+            # The prime pass creates the launcher and cannot be intercepted
+            # retrospectively.  The subsequent observe pass must intercept at
+            # least one launch for this exact original grid.
+            if not any(
+                _grid_tuple(event, "actual_launch_grid") == tuple(grid)
+                and event.get("actual_launch_grid_observation")
+                == "generated_launcher_intercept"
+                for event in matching
+            ):
+                raise AssertionError(f"{target}: actual launcher grid was not captured for {grid}")
 
         key_by_grid: dict[tuple[int, int, int], set[str]] = {}
         for event in events:
