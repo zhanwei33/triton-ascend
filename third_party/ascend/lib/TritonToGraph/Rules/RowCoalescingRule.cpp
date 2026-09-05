@@ -54,6 +54,12 @@ constexpr llvm::StringLiteral kCoalesceFactorAttr = "hacc.coalesce_factor";
 constexpr llvm::StringLiteral kCoalesceAxisAttr = "hacc.coalesce_axis";
 constexpr llvm::StringLiteral kCoalesceGridCeilDivAttr =
     "hacc.coalesce_grid_ceil_div";
+// IndependentAxisTensorize owns an incompatible launcher contract.  A module
+// carrying this marker must never receive the legacy Row rewrite afterwards.
+constexpr llvm::StringLiteral kIndependentAxisTensorizeMarkerAttr =
+    "hacc.independent_axis_tensorize";
+constexpr llvm::StringLiteral kPersistentTaskStripMiningMarkerAttr =
+    "hacc.persistent_task_strip_mining";
 
 constexpr int64_t kDefaultRowsPerProgram = 8;
 constexpr int64_t kMaxBaseElementsPerLift = 1024;
@@ -235,9 +241,9 @@ bool hasEscapingWorkResult(ArrayRef<Operation *> ordered, Block *workBlock) {
   return false;
 }
 
-std::optional<RowSeed>
-matchRowSeed(triton::FuncOp function,
-             const ProgramAxisDependenceAnalysis *programAxisAnalysis = nullptr) {
+std::optional<RowSeed> matchRowSeed(
+    triton::FuncOp function,
+    const ProgramAxisDependenceAnalysis *programAxisAnalysis = nullptr) {
   SmallVector<triton::GetProgramIdOp> pids;
   function.walk([&](triton::GetProgramIdOp pid) { pids.push_back(pid); });
   if (pids.size() != 1)
@@ -292,6 +298,8 @@ analyzeRow(triton::FuncOp function,
   if (!module || !isPublicEntry(function) ||
       !isOnlyPublicEntry(module, function) || function->getNumRegions() != 1 ||
       function->getRegion(0).empty() || hasDirectCall(function) ||
+      module->hasAttr(kIndependentAxisTensorizeMarkerAttr) ||
+      module->hasAttr(kPersistentTaskStripMiningMarkerAttr) ||
       module->hasAttr(kCoalesceFactorAttr) ||
       module->hasAttr(kCoalesceAxisAttr) ||
       module->hasAttr(kCoalesceGridCeilDivAttr))
@@ -403,8 +411,9 @@ public:
   LogicalResult findCandidates(
       GraphOptimizationContext &context,
       SmallVectorImpl<std::unique_ptr<RewritePlan>> &plans) override {
-    if (std::optional<RowCandidate> candidate = analyzeRow(
-            context.getFunction(), &context.getProgramAxisDependenceAnalysis())) {
+    if (std::optional<RowCandidate> candidate =
+            analyzeRow(context.getFunction(),
+                       &context.getProgramAxisDependenceAnalysis())) {
       LLVM_DEBUG(llvm::dbgs()
                  << "[" DEBUG_TYPE "] matched graph optimization rule "
                  << static_cast<unsigned>(getId()) << " ("

@@ -297,6 +297,46 @@ def test_graph_optimize_pass_accepts_zero_rule_mask(tmp_path):
     assert_reparseable(module, tmp_path, "zero-rule-mask")
 
 
+@pytest.mark.parametrize(
+    "rule_mask",
+    (512, 1024, 2048, 4096, 8192, 16384, 32768, 65024),
+    ids=(
+        "independent-axis-tensorize",
+        "static-program-axis-fusion",
+        "persistent-task-strip-mining",
+        "resident-load-forwarding",
+        "intermediate-precision-boundary-elision",
+        "store-coverage-planning",
+        "contiguous-block-access-formation",
+        "all-stage00-rules",
+    ),
+)
+def test_graph_optimize_binding_accepts_stage00_rule_masks(rule_mask, tmp_path):
+    """The pybind route accepts every reserved 32-bit rule independently.
+
+    Stage 00 deliberately wires no-op factories, so these runs must preserve
+    valid TTIR while proving that mask parsing and factory registration reach
+    the actual pass.
+    """
+    module = make_ast_ttir(NPUOptions(arch="Ascend910_95"))
+    pm = ir.pass_manager(module.context)
+    ascend.passes.ttir.add_graph_optimize(pm, rule_mask=rule_mask)
+    pm.run(module, "")
+
+    assert "tt.func" in str(module)
+    assert_reparseable(module, tmp_path, f"stage00-rule-mask-{rule_mask}")
+
+
+def test_graph_optimize_binding_rejects_unknown_and_out_of_range_masks():
+    module = make_ast_ttir(NPUOptions(arch="Ascend910_95"))
+    pm = ir.pass_manager(module.context)
+
+    with pytest.raises(ValueError, match="unknown graph rule bits"):
+        ascend.passes.ttir.add_graph_optimize(pm, rule_mask=1 << 16)
+    with pytest.raises(ValueError, match="fit in uint32_t"):
+        ascend.passes.ttir.add_graph_optimize(pm, rule_mask=1 << 32)
+
+
 def test_default_generic_graph_mask_excludes_legacy_memory_compatibility(tmp_path, ):
     """The 8/16/32/64 identities are enabled by default, not generic rules.
 

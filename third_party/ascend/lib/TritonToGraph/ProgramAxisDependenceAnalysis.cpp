@@ -21,8 +21,8 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <cassert>
 #include <cstdint>
@@ -38,6 +38,11 @@ namespace {
 
 struct OffsetForm {
   bool valid = true;
+  // A canonical `program_id(axis) * runtime_stride` expression remains
+  // affine in the program id, but cannot be represented by a static integer
+  // coefficient. Keep it separate from ordinary arithmetic so unknown forms
+  // remain fail-closed.
+  bool symbolicStride = false;
   int64_t programCoefficient = 0;
   int64_t laneMin = 0;
   int64_t laneMax = 0;
@@ -72,11 +77,18 @@ OffsetForm addOffsetForms(const OffsetForm &lhs, const OffsetForm &rhs,
                           bool subtractRhs) {
   if (!lhs.valid || !rhs.valid)
     return invalidOffsetForm();
-  const int64_t rhsCoefficient = subtractRhs ? -rhs.programCoefficient
-                                             : rhs.programCoefficient;
+  if (subtractRhs && rhs.symbolicStride)
+    return invalidOffsetForm();
+  if ((lhs.symbolicStride &&
+       (rhs.symbolicStride || rhs.programCoefficient != 0)) ||
+      (rhs.symbolicStride && lhs.programCoefficient != 0))
+    return invalidOffsetForm();
+  const int64_t rhsCoefficient =
+      subtractRhs ? -rhs.programCoefficient : rhs.programCoefficient;
   const int64_t rhsMin = subtractRhs ? -rhs.laneMax : rhs.laneMin;
   const int64_t rhsMax = subtractRhs ? -rhs.laneMin : rhs.laneMax;
   OffsetForm result;
+  result.symbolicStride = lhs.symbolicStride || rhs.symbolicStride;
   if (!addNoOverflow(lhs.programCoefficient, rhsCoefficient,
                      result.programCoefficient) ||
       !addNoOverflow(lhs.laneMin, rhsMin, result.laneMin) ||
@@ -88,7 +100,10 @@ OffsetForm addOffsetForms(const OffsetForm &lhs, const OffsetForm &rhs,
 OffsetForm scaleOffsetForm(const OffsetForm &input, int64_t factor) {
   if (!input.valid)
     return invalidOffsetForm();
+  if (input.symbolicStride && factor != 1)
+    return invalidOffsetForm();
   OffsetForm result;
+  result.symbolicStride = input.symbolicStride;
   if (!multiplyNoOverflow(input.programCoefficient, factor,
                           result.programCoefficient) ||
       !multiplyNoOverflow(input.laneMin, factor, result.laneMin) ||
@@ -98,6 +113,8 @@ OffsetForm scaleOffsetForm(const OffsetForm &input, int64_t factor) {
     std::swap(result.laneMin, result.laneMax);
   return result;
 }
+
+bool valueDependsOnAxis(Value value, int32_t targetAxis, DenseSet<Value> &seen);
 
 OffsetForm analyzeOffset(Value value, int32_t targetAxis,
                          DenseSet<Value> &visited) {
@@ -132,6 +149,12 @@ OffsetForm analyzeOffset(Value value, int32_t targetAxis,
     form.laneMax = range.getEnd() - 1;
     return finish(form);
   }
+  // Target-independent dynamic terms (token bases, runtime shape values,
+  // etc.) shift every logical task equally and do not weaken a selected-axis
+  // non-overlap proof.
+  DenseSet<Value> dependenceSeen;
+  if (!valueDependsOnAxis(value, targetAxis, dependenceSeen))
+    return finish(OffsetForm{});
   if (auto splat = value.getDefiningOp<triton::SplatOp>())
     return finish(analyzeOffset(splat.getSrc(), targetAxis, visited));
   if (auto broadcast = value.getDefiningOp<triton::BroadcastOp>())
@@ -150,19 +173,38 @@ OffsetForm analyzeOffset(Value value, int32_t targetAxis,
   }
   if (auto multiply = value.getDefiningOp<arith::MulIOp>()) {
     if (std::optional<int64_t> lhs = getConstantInt(multiply.getLhs()))
-      return finish(
-          scaleOffsetForm(analyzeOffset(multiply.getRhs(), targetAxis, visited),
-                          *lhs));
+      return finish(scaleOffsetForm(
+          analyzeOffset(multiply.getRhs(), targetAxis, visited), *lhs));
     if (std::optional<int64_t> rhs = getConstantInt(multiply.getRhs()))
-      return finish(
-          scaleOffsetForm(analyzeOffset(multiply.getLhs(), targetAxis, visited),
-                          *rhs));
-    return finish(invalidOffsetForm());
+      return finish(scaleOffsetForm(
+          analyzeOffset(multiply.getLhs(), targetAxis, visited), *rhs));
+    DenseSet<Value> lhsSeen;
+    DenseSet<Value> rhsSeen;
+    const bool lhsDepends =
+        valueDependsOnAxis(multiply.getLhs(), targetAxis, lhsSeen);
+    const bool rhsDepends =
+        valueDependsOnAxis(multiply.getRhs(), targetAxis, rhsSeen);
+    if (lhsDepends == rhsDepends)
+      return finish(invalidOffsetForm());
+    Value pidTerm = lhsDepends ? multiply.getLhs() : multiply.getRhs();
+    DenseSet<Value> pidSeen;
+    OffsetForm pidForm = analyzeOffset(pidTerm, targetAxis, pidSeen);
+    // Accept only the canonical `pid * runtime_stride` shape. The dynamic
+    // multiplicand is target-independent by the test above; lane intervals
+    // are accumulated by the surrounding addptr chain.
+    if (!pidForm.valid || pidForm.symbolicStride ||
+        pidForm.programCoefficient != 1 || pidForm.laneMin != 0 ||
+        pidForm.laneMax != 0)
+      return finish(invalidOffsetForm());
+    OffsetForm form;
+    form.symbolicStride = true;
+    return finish(form);
   }
   return finish(invalidOffsetForm());
 }
 
-bool valueDependsOnAxis(Value value, int32_t targetAxis, DenseSet<Value> &seen) {
+bool valueDependsOnAxis(Value value, int32_t targetAxis,
+                        DenseSet<Value> &seen) {
   if (!seen.insert(value).second)
     return false;
   if (auto pid = value.getDefiningOp<triton::GetProgramIdOp>())
@@ -175,6 +217,41 @@ bool valueDependsOnAxis(Value value, int32_t targetAxis, DenseSet<Value> &seen) 
   });
 }
 
+// The final store pointer often adds a D-lane range after the head-dependent
+// base. Walk the full addptr/splat/broadcast chain instead of inspecting only
+// that last range, otherwise a valid `head * stride + dim` store looks
+// target-independent at the final operation.
+OffsetForm analyzePointerOffset(Value pointer, int32_t targetAxis,
+                                DenseSet<Value> &visited) {
+  if (!visited.insert(pointer).second)
+    return invalidOffsetForm();
+  auto finish = [&](OffsetForm form) {
+    visited.erase(pointer);
+    return form;
+  };
+
+  if (auto addPtr = pointer.getDefiningOp<triton::AddPtrOp>()) {
+    OffsetForm base =
+        analyzePointerOffset(addPtr.getPtr(), targetAxis, visited);
+    DenseSet<Value> offsetVisited;
+    OffsetForm offset =
+        analyzeOffset(addPtr.getOffset(), targetAxis, offsetVisited);
+    return finish(addOffsetForms(base, offset, /*subtractRhs=*/false));
+  }
+  if (auto splat = pointer.getDefiningOp<triton::SplatOp>())
+    return finish(analyzePointerOffset(splat.getSrc(), targetAxis, visited));
+  if (auto broadcast = pointer.getDefiningOp<triton::BroadcastOp>())
+    return finish(
+        analyzePointerOffset(broadcast.getSrc(), targetAxis, visited));
+  if (auto expand = pointer.getDefiningOp<triton::ExpandDimsOp>())
+    return finish(analyzePointerOffset(expand.getSrc(), targetAxis, visited));
+
+  DenseSet<Value> dependenceSeen;
+  return finish(valueDependsOnAxis(pointer, targetAxis, dependenceSeen)
+                    ? invalidOffsetForm()
+                    : OffsetForm{});
+}
+
 StoreAddressIndependence classifyStoreAddress(triton::StoreOp store,
                                               int32_t targetAxis,
                                               bool &pointerDependsOnAxis) {
@@ -184,22 +261,29 @@ StoreAddressIndependence classifyStoreAddress(triton::StoreOp store,
   if (!pointerDependsOnAxis)
     return StoreAddressIndependence::NotProgramDependent;
 
-  auto addPtr = store.getPtr().getDefiningOp<triton::AddPtrOp>();
-  if (!addPtr)
-    return StoreAddressIndependence::Unknown;
-  DenseSet<Value> offsetSeen;
-  OffsetForm offset = analyzeOffset(addPtr.getOffset(), targetAxis, offsetSeen);
-  if (!offset.valid || offset.programCoefficient == 0 ||
+  DenseSet<Value> pointerSeen;
+  OffsetForm offset =
+      analyzePointerOffset(store.getPtr(), targetAxis, pointerSeen);
+  if (!offset.valid ||
+      (!offset.symbolicStride && offset.programCoefficient == 0) ||
       offset.laneMax < offset.laneMin)
     return StoreAddressIndependence::Unknown;
+
+  // A symbolic coefficient is admitted only from `pid * runtime_stride`.
+  // The original launch ABI requires distinct logical tensor elements for
+  // independent programs; if that invariant is violated the baseline itself
+  // races. All other dynamic forms remain rejected above.
+  if (offset.symbolicStride)
+    return StoreAddressIndependence::ProvenDisjoint;
 
   // Distinct program ids are one coefficient apart.  A static per-program
   // lane interval that is narrower than that coefficient cannot overlap.
   const uint64_t span = static_cast<uint64_t>(offset.laneMax) -
                         static_cast<uint64_t>(offset.laneMin);
-  const uint64_t coefficient = offset.programCoefficient < 0
-                                   ? static_cast<uint64_t>(-(offset.programCoefficient + 1)) + 1
-                                   : static_cast<uint64_t>(offset.programCoefficient);
+  const uint64_t coefficient =
+      offset.programCoefficient < 0
+          ? static_cast<uint64_t>(-(offset.programCoefficient + 1)) + 1
+          : static_cast<uint64_t>(offset.programCoefficient);
   return coefficient > span ? StoreAddressIndependence::ProvenDisjoint
                             : StoreAddressIndependence::Unknown;
 }
@@ -246,8 +330,7 @@ void recordOperationFacts(Operation *operation, ProgramAxisDependence &info,
       bool pointerDependsOnAxis = false;
       StoreAddressIndependence independence =
           classifyStoreAddress(store, info.axis, pointerDependsOnAxis);
-      info.stores.push_back(
-          {operation, pointerDependsOnAxis, independence});
+      info.stores.push_back({operation, pointerDependsOnAxis, independence});
     }
     return;
   }
@@ -312,8 +395,8 @@ ProgramAxisDependenceAnalysis::ProgramAxisDependenceAnalysis(
     buildClosure(axis);
 }
 
-const ProgramAxisDependence &ProgramAxisDependenceAnalysis::get(
-    int32_t axis) const {
+const ProgramAxisDependence &
+ProgramAxisDependenceAnalysis::get(int32_t axis) const {
   assert(axis >= 0 && axis < static_cast<int32_t>(axes.size()) &&
          "program axis must be x, y, or z");
   return axes[axis];
