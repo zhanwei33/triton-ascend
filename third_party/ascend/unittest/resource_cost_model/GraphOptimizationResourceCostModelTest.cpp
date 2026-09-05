@@ -201,7 +201,7 @@ TEST(GraphOptimizationResourceCostModelTest,
   lhs.storeCountAfter = rhs.storeCountAfter;
   lhs.addressCalculationsAfter = rhs.addressCalculationsAfter;
   lhs.estimatedPeakLiveBytes = rhs.estimatedPeakLiveBytes;
-  llvm::SmallVector<CandidateEvaluation> evaluations = {
+  llvm::SmallVector<CandidateEvaluation, 2> evaluations = {
       evaluateCandidateCost(knownResources(), lhs),
       evaluateCandidateCost(knownResources(), rhs)};
   sortCandidateEvaluations(evaluations);
