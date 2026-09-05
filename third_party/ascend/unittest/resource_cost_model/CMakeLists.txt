@@ -16,6 +16,8 @@ target_link_libraries(GraphOptimizationResourceCostModelTest
   MLIRSCFDialect
   MLIRSupport
   MLIRTensorDialect
+  TritonGPUTransforms
+  TritonNvidiaGPUTransforms
 )
 
 if(NOT MSVC)
