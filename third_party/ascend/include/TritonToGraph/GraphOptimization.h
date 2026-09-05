@@ -191,7 +191,7 @@ constexpr std::array<GraphOptimizationRuleId, 16>
         GraphOptimizationRuleId::IntermediatePrecisionBoundaryElision,
         GraphOptimizationRuleId::StoreCoveragePlanning,
         GraphOptimizationRuleId::ContiguousBlockAccessFormation,
-    };
+};
 
 constexpr bool hasUniqueSingleBitGraphOptimizationRuleIds() {
   for (std::size_t index = 0; index < kGraphOptimizationRuleRegistry.size();
@@ -202,8 +202,8 @@ constexpr bool hasUniqueSingleBitGraphOptimizationRuleIds() {
       return false;
     for (std::size_t other = index + 1;
          other < kGraphOptimizationRuleRegistry.size(); ++other) {
-      if (mask == getGraphOptimizationRuleMask(
-                      kGraphOptimizationRuleRegistry[other]))
+      if (mask ==
+          getGraphOptimizationRuleMask(kGraphOptimizationRuleRegistry[other]))
         return false;
     }
   }
@@ -291,21 +291,18 @@ static_assert((kDefaultEligibleGraphOptimizationRuleMask &
 static_assert((kDefaultGraphOptimizationRuleMask &
                ~kDefaultEligibleGraphOptimizationRuleMask) == 0,
               "default graph rules must stay within the approved candidates");
-static_assert(
-    getGraphOptimizationRulePhase(
-        GraphOptimizationRuleId::IndependentAxisTensorize) ==
-        getGraphOptimizationRulePhase(
-            GraphOptimizationRuleId::StaticProgramAxisFusion),
-    "program-mapping rules must compete in one deterministic phase");
-static_assert(static_cast<unsigned>(
+static_assert(getGraphOptimizationRulePhase(
+                  GraphOptimizationRuleId::IndependentAxisTensorize) ==
                   getGraphOptimizationRulePhase(
-                      GraphOptimizationRuleId::ResidentLoadForwarding)) <
+                      GraphOptimizationRuleId::StaticProgramAxisFusion),
+              "program-mapping rules must compete in one deterministic phase");
+static_assert(static_cast<unsigned>(getGraphOptimizationRulePhase(
+                  GraphOptimizationRuleId::ResidentLoadForwarding)) <
                   static_cast<unsigned>(getGraphOptimizationRulePhase(
                       GraphOptimizationRuleId::StoreCoveragePlanning)),
               "resident forwarding must run before store planning");
-static_assert(static_cast<unsigned>(
-                  getGraphOptimizationRulePhase(
-                      GraphOptimizationRuleId::StoreCoveragePlanning)) <
+static_assert(static_cast<unsigned>(getGraphOptimizationRulePhase(
+                  GraphOptimizationRuleId::StoreCoveragePlanning)) <
                   static_cast<unsigned>(getGraphOptimizationRulePhase(
                       GraphOptimizationRuleId::ContiguousBlockAccessFormation)),
               "store planning must run before access formation");
@@ -320,7 +317,11 @@ isValidGraphOptimizationRuleMask(GraphOptimizationRuleMask ruleMask) {
 // Stage 00 reserves one option namespace per new rule. The rule mask remains
 // the only enablement control until a matcher/materializer exists; notably no
 // num_stages or mayDiscretememaccess knobs are introduced here.
-struct IndependentAxisTensorizeRuleOptions {};
+struct IndependentAxisTensorizeRuleOptions {
+  // IAT changes a vector/SIMD TTIR shape.  The pure-SIMT pipeline keeps the
+  // rule registered for mask compatibility, but must remain a semantic no-op.
+  bool enabledForCompileMode = true;
+};
 struct StaticProgramAxisFusionRuleOptions {};
 struct PersistentTaskStripMiningRuleOptions {};
 struct ResidentLoadForwardingRuleOptions {};
@@ -332,8 +333,7 @@ struct GraphOptimizationOptions {
   // A zero mask intentionally disables every native GraphOptimizationRule.
   // Layout/memory compatibility stages retain their original fixed scheduling
   // and do not use this option as a new opt-out.
-  GraphOptimizationRuleMask enabledRuleMask =
-      kDefaultGraphOptimizationRuleMask;
+  GraphOptimizationRuleMask enabledRuleMask = kDefaultGraphOptimizationRuleMask;
   unsigned maxRewritesPerFunction = 64;
   unsigned ubCapacityBytes = 0;
   // Resource/cost rules must receive target facts explicitly.  Zero UB/core

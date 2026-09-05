@@ -20,6 +20,7 @@
  * THE SOFTWARE.
  */
 
+#include "TritonToGraph/EntryArgPointerAliasAnalysis.h"
 #include "TritonToGraph/GraphOptimizationRule.h"
 #include "TritonToGraph/ProgramAxisDependenceAnalysis.h"
 #include "TritonToGraph/ProgramGridSpecialization.h"
@@ -78,15 +79,27 @@ struct IATCandidate {
   Operation *anchor = nullptr;
   TensorizeForm form = TensorizeForm::MergeSplit;
   int32_t axis = 1;
-  int64_t laneInsertAxis = 0;
+  // The split and D extents make the merge form's lane placement explicit:
+  // [S, D] becomes [S, F, D], while values already reduced over S become
+  // [F, D].  A single global insertion index cannot represent both shapes.
+  int64_t splitExtent = 0;
+  int64_t dimExtent = 0;
   int64_t logicalExtent = 0;
   unsigned factor = 1;
   CandidateEvaluation evaluation;
 };
 
+struct TensorizeReductionShape {
+  int64_t splitExtent = 0;
+  int64_t dimExtent = 0;
+};
+
 struct MappedValue {
   Value value;
   bool tensorized = false;
+  // Position of the newly introduced F dimension in `value` when tensorized.
+  // Scalars tensorize to tensor<F>, so their lane axis is always zero.
+  int64_t laneAxis = 0;
 };
 
 bool multiplyNoOverflow(uint64_t lhs, uint64_t rhs, uint64_t &result) {
@@ -126,8 +139,9 @@ std::optional<triton::GetProgramIdOp> findOnlyProgramId(triton::FuncOp function,
   return count == 1 ? result : std::nullopt;
 }
 
-bool hasExpectedReductionShape(triton::FuncOp function, TensorizeForm form) {
-  bool matched = false;
+std::optional<TensorizeReductionShape>
+getExpectedReductionShape(triton::FuncOp function, TensorizeForm form) {
+  std::optional<TensorizeReductionShape> matched;
   function.walk([&](triton::ReduceOp reduce) {
     if (matched || reduce.getSrcs().size() != 1 ||
         reduce.getResults().size() != 1 || reduce.getAxis() != 0)
@@ -139,11 +153,17 @@ bool hasExpectedReductionShape(triton::FuncOp function, TensorizeForm form) {
     Type result = reduce.getResults().front().getType();
     if (form == TensorizeForm::MergeSplit) {
       auto rankedResult = dyn_cast<RankedTensorType>(result);
-      matched = source.getRank() == 2 && rankedResult &&
-                rankedResult.getRank() == 1 && rankedResult.hasStaticShape();
+      if (source.getRank() == 2 && rankedResult &&
+          rankedResult.getRank() == 1 && rankedResult.hasStaticShape() &&
+          source.getShape()[1] == rankedResult.getShape()[0]) {
+        matched =
+            TensorizeReductionShape{source.getShape()[0], source.getShape()[1]};
+      }
       return;
     }
-    matched = source.getRank() == 1 && !isa<RankedTensorType>(result);
+    if (source.getRank() == 1 && !isa<RankedTensorType>(result))
+      matched = TensorizeReductionShape{/*splitExtent=*/0,
+                                        /*dimExtent=*/source.getShape()[0]};
   });
   return matched;
 }
@@ -196,6 +216,29 @@ bool hasConflictingLaunchContract(ModuleOp module) {
          module->hasAttr(kCoalesceFactorAttr) ||
          module->hasAttr(kCoalesceAxisAttr) ||
          module->hasAttr(kCoalesceGridCeilDivAttr);
+}
+
+// Every transformed store has its own selected-axis disjointness proof from
+// ProgramAxisDependenceAnalysis.  A write/read relation still needs a pointer
+// root proof: an in-place or unknown-alias read could observe another lane's
+// write even when each store interval is individually disjoint.
+bool hasDisjointWriteReadRoots(
+    const ProgramAxisDependence &dependence,
+    const EntryArgPointerAliasAnalysis &entryPointerAliases) {
+  for (const StoreAddressDependence &store : dependence.stores) {
+    auto storeOp = dyn_cast_or_null<triton::StoreOp>(store.store);
+    if (!storeOp)
+      return false;
+    for (Operation *operation : dependence.dependenceClosure) {
+      auto load = dyn_cast<triton::LoadOp>(operation);
+      if (!load)
+        continue;
+      if (entryPointerAliases.classify(storeOp.getPtr(), load.getPtr()) !=
+          EntryArgPointerRelation::DistinctEntryRoots)
+        return false;
+    }
+  }
+  return true;
 }
 
 CandidateCost buildResourceCandidate(const IATCandidate &candidate,
@@ -256,7 +299,11 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
     return std::nullopt;
 
   std::optional<TensorizeForm> form = getTensorizeForm(function);
-  if (!form || !hasExpectedReductionShape(function, *form))
+  if (!form)
+    return std::nullopt;
+  std::optional<TensorizeReductionShape> reductionShape =
+      getExpectedReductionShape(function, *form);
+  if (!reductionShape)
     return std::nullopt;
 
   std::optional<ProgramGridSpecialization> specialization =
@@ -275,7 +322,9 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
 
   const ProgramAxisDependence &dependence =
       context.getProgramAxisDependenceAnalysis().get(kTargetAxis);
-  if (!dependence.isIndependentAxisTransformCandidate())
+  if (!dependence.isIndependentAxisTransformCandidate() ||
+      !hasDisjointWriteReadRoots(dependence,
+                                 context.getEntryArgPointerAliasAnalysis()))
     return std::nullopt;
   std::optional<triton::GetProgramIdOp> targetPid =
       findOnlyProgramId(function, kTargetAxis);
@@ -302,7 +351,8 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
     prototype.anchor = targetPid->getOperation();
     prototype.form = *form;
     prototype.axis = kTargetAxis;
-    prototype.laneInsertAxis = *form == TensorizeForm::MergeSplit ? 1 : 0;
+    prototype.splitExtent = reductionShape->splitExtent;
+    prototype.dimExtent = reductionShape->dimExtent;
     prototype.logicalExtent = logicalExtent;
     prototype.factor = factor;
     evaluations.push_back(
@@ -324,7 +374,8 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
   candidate.anchor = targetPid->getOperation();
   candidate.form = *form;
   candidate.axis = kTargetAxis;
-  candidate.laneInsertAxis = *form == TensorizeForm::MergeSplit ? 1 : 0;
+  candidate.splitExtent = reductionShape->splitExtent;
+  candidate.dimExtent = reductionShape->dimExtent;
   candidate.logicalExtent = logicalExtent;
   candidate.factor =
       static_cast<unsigned>(evaluations.front().candidate.plan.tensorizeFactor);
@@ -334,26 +385,61 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
 
 bool sameCandidate(const IATCandidate &lhs, const IATCandidate &rhs) {
   return lhs.function == rhs.function && lhs.form == rhs.form &&
-         lhs.axis == rhs.axis && lhs.laneInsertAxis == rhs.laneInsertAxis &&
+         lhs.axis == rhs.axis && lhs.splitExtent == rhs.splitExtent &&
+         lhs.dimExtent == rhs.dimExtent &&
          lhs.logicalExtent == rhs.logicalExtent && lhs.factor == rhs.factor;
 }
 
-Type getLiftedType(Type type, const IATCandidate &candidate) {
-  if (auto tensor = dyn_cast<RankedTensorType>(type)) {
-    SmallVector<int64_t> shape(tensor.getShape().begin(),
-                               tensor.getShape().end());
-    const int64_t laneAxis =
-        std::min<int64_t>(candidate.laneInsertAxis, shape.size());
-    shape.insert(shape.begin() + laneAxis, candidate.factor);
-    return RankedTensorType::get(shape, tensor.getElementType());
-  }
-  return RankedTensorType::get({candidate.factor}, type);
+// Keep the lane next to the logical dimension which carries the data, rather
+// than applying a fixed insertion point to every value.  In merge, S-shaped
+// values carry the split reduction and become [S, F, ...]; D-shaped values
+// live after that reduction and become [F, D].  Norm has only the D dimension
+// and always puts F first.
+int64_t getPreferredLaneAxis(Type originalType, const IATCandidate &candidate) {
+  auto tensor = dyn_cast<RankedTensorType>(originalType);
+  if (!tensor || candidate.form == TensorizeForm::NormRope)
+    return 0;
+  const int64_t rank = tensor.getRank();
+  if (rank == 0)
+    return 0;
+  if (rank == 1)
+    return tensor.getShape().front() == candidate.splitExtent ? 1 : 0;
+  // Scalars broadcast over a leading split dimension retain that dimension on
+  // the left of F as well (for example tensor<1xD> -> tensor<1xF xD>).
+  if (tensor.getShape().front() == candidate.splitExtent ||
+      tensor.getShape().front() == 1)
+    return 1;
+  return 0;
 }
 
-int64_t getLaneAxisForType(Type originalType, const IATCandidate &candidate) {
+std::optional<RankedTensorType>
+getLiftedTensorType(Type originalType, const IATCandidate &candidate,
+                    int64_t laneAxis) {
+  Type elementType = originalType;
+  SmallVector<int64_t> shape;
+  if (auto tensor = dyn_cast<RankedTensorType>(originalType)) {
+    if (laneAxis < 0 || laneAxis > tensor.getRank())
+      return std::nullopt;
+    shape.assign(tensor.getShape().begin(), tensor.getShape().end());
+    elementType = tensor.getElementType();
+  } else if (laneAxis != 0) {
+    return std::nullopt;
+  }
+  shape.insert(shape.begin() + laneAxis, candidate.factor);
+  return RankedTensorType::get(shape, elementType);
+}
+
+std::optional<RankedTensorType>
+getSameShapeTensorType(Type originalType, ArrayRef<int64_t> shape) {
+  Type elementType = originalType;
   if (auto tensor = dyn_cast<RankedTensorType>(originalType))
-    return std::min<int64_t>(candidate.laneInsertAxis, tensor.getRank());
-  return 0;
+    elementType = tensor.getElementType();
+  return RankedTensorType::get(shape, elementType);
+}
+
+bool hasSameShape(RankedTensorType lhs, RankedTensorType rhs) {
+  return lhs.getRank() == rhs.getRank() &&
+         llvm::equal(lhs.getShape(), rhs.getShape());
 }
 
 Value makeZero(IRRewriter &rewriter, Location loc, Type type) {
@@ -401,29 +487,111 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
   DenseMap<Value, MappedValue> values;
   auto lookup = [&](Value value) -> MappedValue {
     auto it = values.find(value);
-    return it == values.end() ? MappedValue{value, false} : it->second;
+    return it == values.end() ? MappedValue{value, false, 0} : it->second;
   };
 
-  auto promoteUniform = [&](Value value, Type oldType) -> Value {
-    Type liftedType = getLiftedType(oldType, candidate);
-    auto liftedTensor = dyn_cast<RankedTensorType>(liftedType);
-    if (!liftedTensor)
+  auto broadcastTo = [&](Location loc, Value value,
+                         RankedTensorType target) -> Value {
+    auto source = dyn_cast<RankedTensorType>(value.getType());
+    if (!source || source.getElementType() != target.getElementType() ||
+        source.getRank() != target.getRank())
       return Value();
-    if (isa<RankedTensorType>(oldType)) {
-      const int64_t laneAxis = getLaneAxisForType(oldType, candidate);
-      Value expanded = rewriter.create<triton::ExpandDimsOp>(value.getLoc(),
-                                                             value, laneAxis);
-      return rewriter.create<triton::BroadcastOp>(value.getLoc(), liftedTensor,
-                                                  expanded);
-    }
-    return rewriter.create<triton::SplatOp>(value.getLoc(), liftedTensor,
-                                            value);
+    for (auto [sourceDim, targetDim] :
+         llvm::zip(source.getShape(), target.getShape()))
+      if (sourceDim != targetDim && sourceDim != 1)
+        return Value();
+    return hasSameShape(source, target)
+               ? value
+               : rewriter.create<triton::BroadcastOp>(loc, target, value);
   };
 
-  auto liftOperand = [&](Value value) -> Value {
+  // Embed an already tensorized value in a target shape without moving data:
+  // only singleton dimensions are inserted and all non-singleton dimensions
+  // must preserve their relative order.  This rejects instead of guessing a
+  // transpose when an unfamiliar shape relation reaches the MVP.
+  auto alignTensorized = [&](Location loc, MappedValue mapped,
+                             RankedTensorType target,
+                             int64_t targetLaneAxis) -> Value {
+    auto source = dyn_cast<RankedTensorType>(mapped.value.getType());
+    if (!source || mapped.laneAxis < 0 || mapped.laneAxis >= source.getRank() ||
+        targetLaneAxis < 0 || targetLaneAxis >= target.getRank() ||
+        source.getElementType() != target.getElementType())
+      return Value();
+    const int64_t sourceLaneAxis = mapped.laneAxis;
+    const int64_t sourceTail = source.getRank() - sourceLaneAxis - 1;
+    const int64_t targetTail = target.getRank() - targetLaneAxis - 1;
+    if (sourceLaneAxis > targetLaneAxis || sourceTail > targetTail ||
+        source.getShape()[sourceLaneAxis] != candidate.factor ||
+        target.getShape()[targetLaneAxis] != candidate.factor)
+      return Value();
+
+    SmallVector<int64_t> sourceToTarget(source.getRank(), -1);
+    for (int64_t index = 0; index < sourceLaneAxis; ++index)
+      sourceToTarget[index] = index;
+    sourceToTarget[sourceLaneAxis] = targetLaneAxis;
+    for (int64_t index = 0; index < sourceTail; ++index)
+      sourceToTarget[sourceLaneAxis + 1 + index] =
+          target.getRank() - sourceTail + index;
+
+    SmallVector<bool> targetMapped(target.getRank(), false);
+    for (int64_t sourceIndex = 0; sourceIndex < source.getRank();
+         ++sourceIndex) {
+      const int64_t targetIndex = sourceToTarget[sourceIndex];
+      if (targetIndex < 0 || targetIndex >= target.getRank() ||
+          targetMapped[targetIndex])
+        return Value();
+      targetMapped[targetIndex] = true;
+      const int64_t sourceDim = source.getShape()[sourceIndex];
+      const int64_t targetDim = target.getShape()[targetIndex];
+      if (sourceDim != targetDim && sourceDim != 1)
+        return Value();
+    }
+
+    Value current = mapped.value;
+    int64_t currentAxis = 0;
+    for (int64_t targetIndex = 0; targetIndex < target.getRank();
+         ++targetIndex) {
+      if (targetMapped[targetIndex]) {
+        ++currentAxis;
+        continue;
+      }
+      current =
+          rewriter.create<triton::ExpandDimsOp>(loc, current, currentAxis);
+      ++currentAxis;
+    }
+    return broadcastTo(loc, current, target);
+  };
+
+  auto promoteUniform = [&](Location loc, Value value, Type oldType,
+                            RankedTensorType target,
+                            int64_t targetLaneAxis) -> Value {
+    if (targetLaneAxis < 0 || targetLaneAxis >= target.getRank())
+      return Value();
+    if (auto oldTensor = dyn_cast<RankedTensorType>(oldType)) {
+      if (oldTensor.getRank() != target.getRank() - 1 ||
+          oldTensor.getElementType() != target.getElementType())
+        return Value();
+      SmallVector<int64_t> shape(target.getShape().begin(),
+                                 target.getShape().end());
+      shape.erase(shape.begin() + targetLaneAxis);
+      auto unlaned = RankedTensorType::get(shape, target.getElementType());
+      Value base = broadcastTo(loc, value, unlaned);
+      if (!base)
+        return Value();
+      Value expanded =
+          rewriter.create<triton::ExpandDimsOp>(loc, base, targetLaneAxis);
+      return broadcastTo(loc, expanded, target);
+    }
+    return rewriter.create<triton::SplatOp>(loc, target, value);
+  };
+
+  auto liftOperandTo = [&](Value value, RankedTensorType target,
+                           int64_t targetLaneAxis) -> Value {
     MappedValue mapped = lookup(value);
-    return mapped.tensorized ? mapped.value
-                             : promoteUniform(mapped.value, value.getType());
+    return mapped.tensorized
+               ? alignTensorized(value.getLoc(), mapped, target, targetLaneAxis)
+               : promoteUniform(value.getLoc(), mapped.value, value.getType(),
+                                target, targetLaneAxis);
   };
 
   auto copyMissingAttrs = [](Operation *from, Operation *to) {
@@ -433,40 +601,94 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
   };
 
   Value laneMask;
-  auto maskForPointerType = [&](Location loc, Type pointerType) -> Value {
-    auto pointerTensor = dyn_cast<RankedTensorType>(pointerType);
-    if (!pointerTensor || !laneMask)
+  auto maskForPointerType = [&](Location loc, RankedTensorType pointerType,
+                                int64_t laneAxis) -> Value {
+    if (!laneMask)
       return Value();
-    const int64_t rank = pointerTensor.getRank();
-    if (rank < 1)
-      return Value();
-    const int64_t laneAxis =
-        std::min<int64_t>(candidate.laneInsertAxis, rank - 1);
-    Value current = laneMask;
-    for (int64_t index = 0; index < laneAxis; ++index)
-      current = rewriter.create<triton::ExpandDimsOp>(loc, current, 0);
-    while (cast<RankedTensorType>(current.getType()).getRank() < rank) {
-      current = rewriter.create<triton::ExpandDimsOp>(
-          loc, current, cast<RankedTensorType>(current.getType()).getRank());
-    }
     auto maskType =
-        RankedTensorType::get(pointerTensor.getShape(), rewriter.getI1Type());
-    return rewriter.create<triton::BroadcastOp>(loc, maskType, current);
+        RankedTensorType::get(pointerType.getShape(), rewriter.getI1Type());
+    return alignTensorized(loc, MappedValue{laneMask, true, 0}, maskType,
+                           laneAxis);
   };
 
-  auto createGeneric = [&](Operation *operation, bool tensorized) -> bool {
+  auto createUnchanged = [&](Operation *operation) -> bool {
     SmallVector<Value> operands;
     operands.reserve(operation->getNumOperands());
     for (Value operand : operation->getOperands()) {
-      Value mapped = tensorized ? liftOperand(operand) : lookup(operand).value;
+      Value mapped = lookup(operand).value;
       if (!mapped)
         return false;
       operands.push_back(mapped);
     }
+    Operation *replacement = rewriter.create(
+        operation->getLoc(), operation->getName().getIdentifier(), operands,
+        operation->getResultTypes(), operation->getAttrs());
+    if (replacement->getNumResults() != operation->getNumResults())
+      return false;
+    for (auto [oldResult, newResult] :
+         llvm::zip(operation->getResults(), replacement->getResults()))
+      values[oldResult] = {newResult, false, 0};
+    return true;
+  };
+
+  auto originalTypesHaveSameShape = [](Type lhs, Type rhs) {
+    auto left = dyn_cast<RankedTensorType>(lhs);
+    auto right = dyn_cast<RankedTensorType>(rhs);
+    if (!left || !right)
+      return !left && !right;
+    return hasSameShape(left, right);
+  };
+
+  auto createElementwise = [&](Operation *operation) -> bool {
+    if (operation->getNumResults() == 0)
+      return false;
+    const bool isReshape = isa<triton::ReshapeOp>(operation);
+    if (!operation->hasTrait<OpTrait::Elementwise>() && !isReshape)
+      return false;
+    if (isReshape &&
+        (!originalTypesHaveSameShape(operation->getOperand(0).getType(),
+                                     operation->getResult(0).getType())))
+      return false;
+
+    int64_t laneAxis =
+        getPreferredLaneAxis(operation->getResult(0).getType(), candidate);
+    for (Value operand : operation->getOperands()) {
+      MappedValue mapped = lookup(operand);
+      if (!mapped.tensorized ||
+          !originalTypesHaveSameShape(operand.getType(),
+                                      operation->getResult(0).getType()))
+        continue;
+      laneAxis = mapped.laneAxis;
+      break;
+    }
+    std::optional<RankedTensorType> firstResultType = getLiftedTensorType(
+        operation->getResult(0).getType(), candidate, laneAxis);
+    if (!firstResultType)
+      return false;
+
     SmallVector<Type> resultTypes;
     resultTypes.reserve(operation->getNumResults());
-    for (Type type : operation->getResultTypes())
-      resultTypes.push_back(tensorized ? getLiftedType(type, candidate) : type);
+    for (Type resultType : operation->getResultTypes()) {
+      std::optional<RankedTensorType> lifted =
+          getLiftedTensorType(resultType, candidate, laneAxis);
+      if (!lifted || !hasSameShape(*lifted, *firstResultType))
+        return false;
+      resultTypes.push_back(*lifted);
+    }
+
+    SmallVector<Value> operands;
+    operands.reserve(operation->getNumOperands());
+    for (Value operand : operation->getOperands()) {
+      std::optional<RankedTensorType> operandType = getSameShapeTensorType(
+          operand.getType(), firstResultType->getShape());
+      if (!operandType)
+        return false;
+      Value lifted = liftOperandTo(operand, *operandType, laneAxis);
+      if (!lifted)
+        return false;
+      operands.push_back(lifted);
+    }
+
     Operation *replacement = rewriter.create(
         operation->getLoc(), operation->getName().getIdentifier(), operands,
         resultTypes, operation->getAttrs());
@@ -474,7 +696,7 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
       return false;
     for (auto [oldResult, newResult] :
          llvm::zip(operation->getResults(), replacement->getResults()))
-      values[oldResult] = {newResult, tensorized};
+      values[oldResult] = {newResult, true, laneAxis};
     return true;
   };
 
@@ -508,7 +730,7 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
       laneMask = rewriter.create<arith::CmpIOp>(operation->getLoc(),
                                                 arith::CmpIPredicate::slt,
                                                 logicalIds, extentSplat);
-      values[operation->getResult(0)] = {logicalIds, true};
+      values[operation->getResult(0)] = {logicalIds, true, 0};
       continue;
     }
 
@@ -518,76 +740,79 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
 
     if (auto splat = dyn_cast<triton::SplatOp>(operation)) {
       if (!tensorized) {
-        if (!createGeneric(operation, false))
+        if (!createUnchanged(operation))
           return false;
         continue;
       }
-      Value source = liftOperand(splat.getSrc());
-      auto sourceType = dyn_cast<RankedTensorType>(source.getType());
-      auto resultType =
-          dyn_cast<RankedTensorType>(getLiftedType(splat.getType(), candidate));
-      if (!sourceType || !resultType || sourceType.getRank() != 1 ||
-          sourceType.getShape().front() != candidate.factor)
+      const int64_t laneAxis = getPreferredLaneAxis(splat.getType(), candidate);
+      std::optional<RankedTensorType> resultType =
+          getLiftedTensorType(splat.getType(), candidate, laneAxis);
+      if (!resultType)
         return false;
-      Value current = source;
-      const int64_t laneAxis =
-          std::min<int64_t>(candidate.laneInsertAxis, resultType.getRank() - 1);
-      for (int64_t index = 0; index < laneAxis; ++index)
-        current = rewriter.create<triton::ExpandDimsOp>(operation->getLoc(),
-                                                        current, 0);
-      while (cast<RankedTensorType>(current.getType()).getRank() <
-             resultType.getRank()) {
-        current = rewriter.create<triton::ExpandDimsOp>(
-            operation->getLoc(), current,
-            cast<RankedTensorType>(current.getType()).getRank());
-      }
-      values[splat.getResult()] = {
-          rewriter.create<triton::BroadcastOp>(operation->getLoc(), resultType,
-                                               current),
-          true};
+      Value result = liftOperandTo(splat.getSrc(), *resultType, laneAxis);
+      if (!result)
+        return false;
+      values[splat.getResult()] = {result, true, laneAxis};
       continue;
     }
 
     if (auto expand = dyn_cast<triton::ExpandDimsOp>(operation)) {
       if (!tensorized) {
-        if (!createGeneric(operation, false))
+        if (!createUnchanged(operation))
           return false;
         continue;
       }
-      Value source = liftOperand(expand.getSrc());
+      MappedValue sourceMapped = lookup(expand.getSrc());
       const int64_t oldLaneAxis =
-          getLaneAxisForType(expand.getSrc().getType(), candidate);
+          sourceMapped.tensorized
+              ? sourceMapped.laneAxis
+              : getPreferredLaneAxis(expand.getSrc().getType(), candidate);
+      std::optional<RankedTensorType> sourceType = getLiftedTensorType(
+          expand.getSrc().getType(), candidate, oldLaneAxis);
+      if (!sourceType)
+        return false;
+      Value source = liftOperandTo(expand.getSrc(), *sourceType, oldLaneAxis);
+      if (!source)
+        return false;
       const int64_t newAxis =
           expand.getAxis() + (expand.getAxis() >= oldLaneAxis ? 1 : 0);
+      const int64_t resultLaneAxis =
+          oldLaneAxis + (expand.getAxis() < oldLaneAxis ? 1 : 0);
       Value result = rewriter.create<triton::ExpandDimsOp>(operation->getLoc(),
                                                            source, newAxis);
-      if (result.getType() != getLiftedType(expand.getType(), candidate))
+      std::optional<RankedTensorType> expected =
+          getLiftedTensorType(expand.getType(), candidate, resultLaneAxis);
+      if (!expected || result.getType() != *expected)
         return false;
-      values[expand.getResult()] = {result, true};
+      values[expand.getResult()] = {result, true, resultLaneAxis};
       continue;
     }
 
     if (auto broadcast = dyn_cast<triton::BroadcastOp>(operation)) {
       if (!tensorized) {
-        if (!createGeneric(operation, false))
+        if (!createUnchanged(operation))
           return false;
         continue;
       }
-      Value source = liftOperand(broadcast.getSrc());
-      auto resultType = dyn_cast<RankedTensorType>(
-          getLiftedType(broadcast.getType(), candidate));
+      MappedValue sourceMapped = lookup(broadcast.getSrc());
+      const int64_t laneAxis =
+          sourceMapped.tensorized
+              ? sourceMapped.laneAxis
+              : getPreferredLaneAxis(broadcast.getSrc().getType(), candidate);
+      std::optional<RankedTensorType> resultType =
+          getLiftedTensorType(broadcast.getType(), candidate, laneAxis);
       if (!resultType)
         return false;
-      values[broadcast.getResult()] = {
-          rewriter.create<triton::BroadcastOp>(operation->getLoc(), resultType,
-                                               source),
-          true};
+      Value result = liftOperandTo(broadcast.getSrc(), *resultType, laneAxis);
+      if (!result)
+        return false;
+      values[broadcast.getResult()] = {result, true, laneAxis};
       continue;
     }
 
     if (auto reduce = dyn_cast<triton::ReduceOp>(operation)) {
       if (!tensorized) {
-        if (!createGeneric(operation, false))
+        if (!createUnchanged(operation))
           return false;
         continue;
       }
@@ -597,16 +822,29 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
           dyn_cast<RankedTensorType>(reduce.getSrcs().front().getType());
       if (!oldInputType)
         return false;
+      MappedValue firstSource = lookup(reduce.getSrcs().front());
+      const int64_t laneAxis =
+          firstSource.tensorized
+              ? firstSource.laneAxis
+              : getPreferredLaneAxis(oldInputType, candidate);
+      std::optional<RankedTensorType> firstSourceType =
+          getLiftedTensorType(oldInputType, candidate, laneAxis);
+      if (!firstSourceType)
+        return false;
       SmallVector<Value> sources;
       for (Value source : reduce.getSrcs()) {
-        Value lifted = liftOperand(source);
+        std::optional<RankedTensorType> sourceType =
+            getLiftedTensorType(source.getType(), candidate, laneAxis);
+        if (!sourceType || !hasSameShape(*sourceType, *firstSourceType))
+          return false;
+        Value lifted = liftOperandTo(source, *sourceType, laneAxis);
         if (!lifted)
           return false;
         sources.push_back(lifted);
       }
-      const int64_t oldLaneAxis = getLaneAxisForType(oldInputType, candidate);
       const int64_t axis =
-          reduce.getAxis() + (reduce.getAxis() >= oldLaneAxis ? 1 : 0);
+          reduce.getAxis() + (reduce.getAxis() >= laneAxis ? 1 : 0);
+      const int64_t resultLaneAxis = laneAxis - (axis < laneAxis ? 1 : 0);
       auto replacement =
           rewriter.create<triton::ReduceOp>(operation->getLoc(), sources, axis);
       rewriter.cloneRegionBefore(reduce.getCombineOp(),
@@ -615,17 +853,18 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
       copyMissingAttrs(operation, replacement.getOperation());
       for (auto [oldResult, newResult] :
            llvm::zip(reduce.getResults(), replacement.getResults())) {
-        if (newResult.getType() !=
-            getLiftedType(oldResult.getType(), candidate))
+        std::optional<RankedTensorType> expected =
+            getLiftedTensorType(oldResult.getType(), candidate, resultLaneAxis);
+        if (!expected || newResult.getType() != *expected)
           return false;
-        values[oldResult] = {newResult, true};
+        values[oldResult] = {newResult, true, resultLaneAxis};
       }
       continue;
     }
 
     if (auto scan = dyn_cast<triton::ScanOp>(operation)) {
       if (!tensorized) {
-        if (!createGeneric(operation, false))
+        if (!createUnchanged(operation))
           return false;
         continue;
       }
@@ -635,16 +874,28 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
           dyn_cast<RankedTensorType>(scan.getSrcs().front().getType());
       if (!oldInputType)
         return false;
+      MappedValue firstSource = lookup(scan.getSrcs().front());
+      const int64_t laneAxis =
+          firstSource.tensorized
+              ? firstSource.laneAxis
+              : getPreferredLaneAxis(oldInputType, candidate);
+      std::optional<RankedTensorType> firstSourceType =
+          getLiftedTensorType(oldInputType, candidate, laneAxis);
+      if (!firstSourceType)
+        return false;
       SmallVector<Value> sources;
       for (Value source : scan.getSrcs()) {
-        Value lifted = liftOperand(source);
+        std::optional<RankedTensorType> sourceType =
+            getLiftedTensorType(source.getType(), candidate, laneAxis);
+        if (!sourceType || !hasSameShape(*sourceType, *firstSourceType))
+          return false;
+        Value lifted = liftOperandTo(source, *sourceType, laneAxis);
         if (!lifted)
           return false;
         sources.push_back(lifted);
       }
-      const int64_t oldLaneAxis = getLaneAxisForType(oldInputType, candidate);
       const int64_t axis =
-          scan.getAxis() + (scan.getAxis() >= oldLaneAxis ? 1 : 0);
+          scan.getAxis() + (scan.getAxis() >= laneAxis ? 1 : 0);
       auto replacement = rewriter.create<triton::ScanOp>(
           operation->getLoc(), sources, static_cast<uint32_t>(axis),
           scan.getReverse());
@@ -654,58 +905,88 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
       copyMissingAttrs(operation, replacement.getOperation());
       for (auto [oldResult, newResult] :
            llvm::zip(scan.getResults(), replacement.getResults())) {
-        if (newResult.getType() !=
-            getLiftedType(oldResult.getType(), candidate))
+        std::optional<RankedTensorType> expected =
+            getLiftedTensorType(oldResult.getType(), candidate, laneAxis);
+        if (!expected || newResult.getType() != *expected)
           return false;
-        values[oldResult] = {newResult, true};
+        values[oldResult] = {newResult, true, laneAxis};
       }
       continue;
     }
 
     if (auto load = dyn_cast<triton::LoadOp>(operation)) {
       if (!tensorized) {
-        if (!createGeneric(operation, false))
+        if (!createUnchanged(operation))
           return false;
         continue;
       }
-      Value pointer = liftOperand(load.getPtr());
-      Value mask = load.getMask() ? liftOperand(load.getMask()) : Value();
+      MappedValue pointerMapped = lookup(load.getPtr());
+      const int64_t laneAxis =
+          pointerMapped.tensorized
+              ? pointerMapped.laneAxis
+              : getPreferredLaneAxis(load.getPtr().getType(), candidate);
+      std::optional<RankedTensorType> pointerType =
+          getLiftedTensorType(load.getPtr().getType(), candidate, laneAxis);
+      if (!pointerType)
+        return false;
+      Value pointer = liftOperandTo(load.getPtr(), *pointerType, laneAxis);
+      std::optional<RankedTensorType> maskType =
+          getSameShapeTensorType(rewriter.getI1Type(), pointerType->getShape());
+      Value mask = load.getMask()
+                       ? liftOperandTo(load.getMask(), *maskType, laneAxis)
+                       : Value();
       Value laneMaskForLoad =
-          maskForPointerType(operation->getLoc(), pointer.getType());
+          maskForPointerType(operation->getLoc(), *pointerType, laneAxis);
       if (laneMaskForLoad)
         mask = mask ? rewriter.create<arith::AndIOp>(operation->getLoc(), mask,
                                                      laneMaskForLoad)
                     : laneMaskForLoad;
-      Value other =
-          load.getOther()
-              ? liftOperand(load.getOther())
-              : makeZero(rewriter, operation->getLoc(),
-                         getLiftedType(load.getResult().getType(), candidate));
-      if (!pointer || !other)
+      std::optional<RankedTensorType> otherType = getSameShapeTensorType(
+          load.getResult().getType(), pointerType->getShape());
+      Value other = load.getOther()
+                        ? liftOperandTo(load.getOther(), *otherType, laneAxis)
+                        : makeZero(rewriter, operation->getLoc(), *otherType);
+      if (!pointer || !maskType || !otherType || !other)
         return false;
       auto replacement = rewriter.create<triton::LoadOp>(
           operation->getLoc(), pointer, mask, other, load.getBoundaryCheck(),
           load.getPadding(), load.getCache(), load.getEvict(),
           load.getIsVolatile());
       copyMissingAttrs(operation, replacement.getOperation());
-      if (replacement.getResult().getType() !=
-          getLiftedType(load.getResult().getType(), candidate))
+      if (replacement.getResult().getType() != *otherType)
         return false;
-      values[load.getResult()] = {replacement.getResult(), true};
+      values[load.getResult()] = {replacement.getResult(), true, laneAxis};
       continue;
     }
 
     if (auto store = dyn_cast<triton::StoreOp>(operation)) {
       if (!tensorized) {
-        if (!createGeneric(operation, false))
+        if (!createUnchanged(operation))
           return false;
         continue;
       }
-      Value pointer = liftOperand(store.getPtr());
-      Value value = liftOperand(store.getValue());
-      Value mask = store.getMask() ? liftOperand(store.getMask()) : Value();
+      MappedValue pointerMapped = lookup(store.getPtr());
+      const int64_t laneAxis =
+          pointerMapped.tensorized
+              ? pointerMapped.laneAxis
+              : getPreferredLaneAxis(store.getPtr().getType(), candidate);
+      std::optional<RankedTensorType> pointerType =
+          getLiftedTensorType(store.getPtr().getType(), candidate, laneAxis);
+      if (!pointerType)
+        return false;
+      Value pointer = liftOperandTo(store.getPtr(), *pointerType, laneAxis);
+      std::optional<RankedTensorType> valueType = getSameShapeTensorType(
+          store.getValue().getType(), pointerType->getShape());
+      if (!valueType)
+        return false;
+      Value value = liftOperandTo(store.getValue(), *valueType, laneAxis);
+      auto maskType =
+          RankedTensorType::get(pointerType->getShape(), rewriter.getI1Type());
+      Value mask = store.getMask()
+                       ? liftOperandTo(store.getMask(), maskType, laneAxis)
+                       : Value();
       Value laneMaskForStore =
-          maskForPointerType(operation->getLoc(), pointer.getType());
+          maskForPointerType(operation->getLoc(), *pointerType, laneAxis);
       if (laneMaskForStore)
         mask = mask ? rewriter.create<arith::AndIOp>(operation->getLoc(), mask,
                                                      laneMaskForStore)
@@ -725,12 +1006,17 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
       for (Value operand : operation->getOperands())
         if (lookup(operand).tensorized)
           return false;
-      if (!createGeneric(operation, false))
+      if (!createUnchanged(operation))
         return false;
       continue;
     }
 
-    if (!createGeneric(operation, tensorized))
+    if (!tensorized) {
+      if (!createUnchanged(operation))
+        return false;
+      continue;
+    }
+    if (!createElementwise(operation))
       return false;
   }
 
@@ -816,18 +1102,24 @@ private:
 
 class IndependentAxisTensorizeRule final : public GraphOptimizationRule {
 public:
+  explicit IndependentAxisTensorizeRule(bool enabledForCompileMode)
+      : enabledForCompileMode(enabledForCompileMode) {}
+
   GraphOptimizationRuleId getId() const override {
     return GraphOptimizationRuleId::IndependentAxisTensorize;
   }
 
   AnalysisRequirement getAnalysisRequirements() const override {
-    return AnalysisRequirement::ProgramAxisDependence |
+    return AnalysisRequirement::EntryArgPointerAlias |
+           AnalysisRequirement::ProgramAxisDependence |
            AnalysisRequirement::ResourceCost;
   }
 
   LogicalResult findCandidates(
       GraphOptimizationContext &context,
       SmallVectorImpl<std::unique_ptr<RewritePlan>> &plans) override {
+    if (!enabledForCompileMode)
+      return success();
     std::optional<IATCandidate> candidate = analyzeCandidate(context, true);
     if (!candidate)
       return success();
@@ -844,12 +1136,15 @@ public:
         std::move(*candidate), context.getEpoch()));
     return success();
   }
+
+private:
+  bool enabledForCompileMode;
 };
 
 } // namespace
 
 std::unique_ptr<GraphOptimizationRule> cfg::createIndependentAxisTensorizeRule(
     const IndependentAxisTensorizeRuleOptions &options) {
-  static_cast<void>(options);
-  return std::make_unique<IndependentAxisTensorizeRule>();
+  return std::make_unique<IndependentAxisTensorizeRule>(
+      options.enabledForCompileMode);
 }

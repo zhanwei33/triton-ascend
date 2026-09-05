@@ -115,8 +115,8 @@ constexpr bool isPlanHigherPriority(unsigned lhsBenefit, unsigned lhsOrder,
 // This is the mock/no-op scheduling contract: equal-benefit plans anchored at
 // the same operation receive a stable rule-ID tie break inside one phase.
 static_assert(isPlanHigherPriority(
-                  1, 7, GraphOptimizationRuleId::IndependentAxisTensorize, 1,
-                  7, GraphOptimizationRuleId::StaticProgramAxisFusion),
+                  1, 7, GraphOptimizationRuleId::IndependentAxisTensorize, 1, 7,
+                  GraphOptimizationRuleId::StaticProgramAxisFusion),
               "program-mapping phase tie breaks must be reproducible");
 
 class GraphOptimizePass final
@@ -193,7 +193,8 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
     return failure();
   }
 
-  if (!triton::ascend::parseCompileMode(this->compileMode)) {
+  const auto compileMode = triton::ascend::parseCompileMode(this->compileMode);
+  if (!compileMode) {
     getOperation().emitError()
         << "graph-optimize compile-mode is invalid: " << this->compileMode;
     return failure();
@@ -207,6 +208,8 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
   options.ubSafetyPercent = static_cast<unsigned>(cliUBSafetyPercent);
   options.reservedUBBytes = static_cast<unsigned>(cliReservedUBBytes);
   options.compileMode = this->compileMode;
+  options.independentAxisTensorize.enabledForCompileMode =
+      *compileMode != triton::ascend::CompileMode::SimtOnly;
   return success();
 }
 
@@ -280,9 +283,8 @@ void GraphOptimizePass::runOnOperation() {
         plans.erase(
             std::remove_if(plans.begin(), plans.end(),
                            [phase](const std::unique_ptr<RewritePlan> &plan) {
-                             return !plan ||
-                                    getGraphOptimizationRulePhase(
-                                        plan->getRuleId()) != phase;
+                             return !plan || getGraphOptimizationRulePhase(
+                                                 plan->getRuleId()) != phase;
                            }),
             plans.end());
         if (plans.empty())
@@ -294,9 +296,9 @@ void GraphOptimizePass::runOnOperation() {
                             const std::unique_ptr<RewritePlan> &rhs) {
               const unsigned lhsOrder = getProgramOrder(*lhs, programOrder);
               const unsigned rhsOrder = getProgramOrder(*rhs, programOrder);
-              return isPlanHigherPriority(
-                  lhs->getBenefit(), lhsOrder, lhs->getRuleId(),
-                  rhs->getBenefit(), rhsOrder, rhs->getRuleId());
+              return isPlanHigherPriority(lhs->getBenefit(), lhsOrder,
+                                          lhs->getRuleId(), rhs->getBenefit(),
+                                          rhsOrder, rhs->getRuleId());
             });
 
         std::unique_ptr<RewritePlan> selectedPlan;
@@ -392,17 +394,16 @@ void GraphOptimizePass::runOnOperation() {
       continue;
 
     ProgramOrderMap programOrder = buildProgramOrderMap(function);
-    std::stable_sort(rowPlans.begin(), rowPlans.end(),
-                     [&programOrder](const std::unique_ptr<RewritePlan> &lhs,
-                                     const std::unique_ptr<RewritePlan> &rhs) {
-                       const unsigned lhsOrder =
-                           getProgramOrder(*lhs, programOrder);
-                       const unsigned rhsOrder =
-                           getProgramOrder(*rhs, programOrder);
-                       return isPlanHigherPriority(
-                           lhs->getBenefit(), lhsOrder, lhs->getRuleId(),
-                           rhs->getBenefit(), rhsOrder, rhs->getRuleId());
-                     });
+    std::stable_sort(
+        rowPlans.begin(), rowPlans.end(),
+        [&programOrder](const std::unique_ptr<RewritePlan> &lhs,
+                        const std::unique_ptr<RewritePlan> &rhs) {
+          const unsigned lhsOrder = getProgramOrder(*lhs, programOrder);
+          const unsigned rhsOrder = getProgramOrder(*rhs, programOrder);
+          return isPlanHigherPriority(lhs->getBenefit(), lhsOrder,
+                                      lhs->getRuleId(), rhs->getBenefit(),
+                                      rhsOrder, rhs->getRuleId());
+        });
 
     std::unique_ptr<RewritePlan> selectedRowPlan;
     for (std::unique_ptr<RewritePlan> &plan : rowPlans) {
@@ -465,8 +466,8 @@ void populateBuiltinGraphOptimizationRules(
   }
   if (isRuleEnabled(options.enabledRuleMask,
                     GraphOptimizationRuleId::PersistentTaskStripMining)) {
-    rules.push_back(createPersistentTaskStripMiningRule(
-        options.persistentTaskStripMining));
+    rules.push_back(
+        createPersistentTaskStripMiningRule(options.persistentTaskStripMining));
   }
   if (isRuleEnabled(options.enabledRuleMask,
                     GraphOptimizationRuleId::LoadStoreTranspose)) {

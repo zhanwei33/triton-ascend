@@ -576,6 +576,39 @@ def test_make_ttir_passes_canonical_compile_mode_to_graph_optimize(compiler_modu
     assert events[-1] == "run_row"
 
 
+def test_make_ttir_forwards_iat_rule_and_explicit_resource_snapshot(
+    compiler_module, monkeypatch,
+):
+    """IAT must be opt-in and receive real target facts, never defaults."""
+    options = SimpleNamespace(
+        enable_graph_optimize=True,
+        target_arch="Ascend910B1",
+        compile_mode="simd_simt_template",
+        debug=False,
+        program_mapping_rule_mask=512,
+    )
+    monkeypatch.setattr(
+        compiler_module,
+        "NPUUtils",
+        lambda: SimpleNamespace(get_aivector_core_num=lambda: 40),
+    )
+
+    events, graph_calls = _run_make_ttir_with_recorded_graph_options(
+        compiler_module, monkeypatch, options,
+    )
+
+    assert graph_calls == [{
+        "ub_capacity_bytes": 96 * 1024,
+        "compile_mode": "simd_simt_template",
+        "rule_mask": 512,
+        "device_core_count": 40,
+        "min_programs_per_core": 1,
+        "ub_safety_percent": 80,
+        "reserved_ub_bytes": 0,
+    }]
+    assert events[-1] == "run_row"
+
+
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 def test_npu_options_do_not_expose_graph_remark_switch(compiler_module):
     """Graph rewrite logging is controlled by LLVM DEBUG, not an NPU option."""
