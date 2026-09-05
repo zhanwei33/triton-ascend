@@ -19,6 +19,9 @@ from task_0005_harness.reference import (  # noqa: E402
     ref_indexer_norm_rope,
     ref_merge_split_states,
 )
+from task_0005_harness.grid_specialization import (  # noqa: E402
+    run_unchanged_dsl_grid_baseline,
+)
 from task_0005_harness.runtime import (  # noqa: E402
     compiler_identity,
     launch_indexer_logits,
@@ -91,3 +94,18 @@ def test_logits_independent_runner_freezes_shape_and_oracle():
     for result in (baseline, control):
         assert torch.allclose(result.outputs[0], expected, rtol=1.0e-2, atol=5.0e-2)
         assert torch.isfinite(result.outputs[0]).all()
+
+
+@pytest.mark.skipif(
+    os.environ.get("TASK0005_ENABLE_GRID_E2E") != "1",
+    reason="set TASK0005_ENABLE_GRID_E2E=1 to run the original-wrapper grid contract",
+)
+def test_unchanged_dsl_grid_specialization_default_off_contract():
+    report = run_unchanged_dsl_grid_baseline()
+    assert report["passed"], report
+    assert report["mode"]["effective_rule_mask"] == 511
+    assert all(
+        event["actual_launch_grid_observation"] == "generated_launcher_intercept"
+        for event in report["events"]
+        if event["case"].startswith("observe:")
+    )

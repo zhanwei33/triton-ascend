@@ -146,7 +146,7 @@ MINIMAL_NEGATIVE_VARIANTS = {
 }
 
 SMOKE_SUITE = (
-    "pytest -q third_party/ascend/unittest/pytest_ut/test_task_0005_harness_unit.py",
+    "pytest -q third_party/ascend/unittest/pytest_ut/test_task_0005_harness_unit.py third_party/ascend/unittest/pytest_ut/test_task_0005_grid_specialization.py",
     "lit -sv third_party/ascend/unittest/Conversion/General/TritonToGraph/task-0005-*.mlir",
     "TASK0005_ENABLE_E2E=1 pytest -q third_party/ascend/unittest/pytest_ut/test_task_0005_harness_e2e.py",
 )

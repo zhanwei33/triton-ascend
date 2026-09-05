@@ -59,6 +59,10 @@ from .runtime import (
     npu_identity,
     validate_primary_metadata,
 )
+from .grid_specialization import (
+    expected_grid_coverage,
+    run_unchanged_dsl_grid_baseline,
+)
 
 _PERFORMANCE_COLUMNS = tuple(artifact_schema()["performance_columns"])
 
@@ -422,6 +426,46 @@ def run(args: argparse.Namespace) -> int:
     return 0 if record["passed"] else 1
 
 
+def run_grid_observation(args: argparse.Namespace) -> int:
+    """Emit the task_0002-v2-ready unchanged-DSL default-off observation."""
+
+    if not npu_available():
+        raise RuntimeError("NPU unavailable; grid observation cannot be claimed")
+    cache_root = _validate_cache_root()
+    root = args.artifact_root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    environment = _environment_payload()
+    _write_environment(root, environment)
+    if environment["npu"].get("physical_npu_env") != str(PHYSICAL_NPU):
+        raise RuntimeError(
+            f"ASCEND_RT_VISIBLE_DEVICES must be {PHYSICAL_NPU}, got "
+            f"{environment['npu'].get('physical_npu_env')!r}"
+        )
+    if not environment["compiler"].get("matches_expected"):
+        raise RuntimeError(
+            "external BiSheng compiler identity did not match task_0005 requirement"
+        )
+
+    label = args.label or f"grid-specialization-off-{_timestamp()}"
+    output = root / "grid_specialization" / f"{label}.json"
+    if output.exists():
+        raise RuntimeError(f"grid observation label already exists: {output}")
+    report = run_unchanged_dsl_grid_baseline()
+    target_names = tuple(expected_grid_coverage())
+    records = collect_cache_records(cache_root, target_names)
+    metadata_errors = validate_primary_metadata(records)
+    report["cache_root"] = str(cache_root)
+    report["environment"] = environment
+    report["cache_records"] = copy_cache_artifacts(
+        records, root / "golden" / "grid_specialization" / label
+    )
+    report["metadata_errors"] = metadata_errors
+    report["passed"] = bool(report["passed"] and not metadata_errors)
+    _write_json(output, report)
+    print(json.dumps({"grid_observation": str(output), "passed": report["passed"]}))
+    return 0 if report["passed"] else 1
+
+
 def _csv_name_column(fieldnames: list[str] | None) -> str:
     for candidate in ("Name", "Op Name", "Kernel Name", "op_name"):
         if fieldnames and candidate in fieldnames:
@@ -590,6 +634,12 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     run_parser = subparsers.add_parser("run", help="compile, check, and emit golden artifacts")
     _common_run_arguments(run_parser)
+    grid_parser = subparsers.add_parser(
+        "grid-observation",
+        help="run original wrappers across raw grids and emit the default-off contract",
+    )
+    grid_parser.add_argument("--artifact-root", type=Path, required=True)
+    grid_parser.add_argument("--label")
     profile_parser = subparsers.add_parser(
         "ingest-profile", help="filter an explicit profiler tree by exact kernel name"
     )
@@ -606,6 +656,8 @@ def main() -> int:
         if args.warmup < 0 or args.active_samples < 20:
             raise RuntimeError("use non-negative warmup and at least 20 active samples")
         return run(args)
+    if args.command == "grid-observation":
+        return run_grid_observation(args)
     return ingest_profile(args)
 
 

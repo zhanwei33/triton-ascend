@@ -267,4 +267,5 @@ def test_artifact_schema_and_smoke_suite_cover_required_outputs():
     }
     assert "kernel_name" in schema["performance_columns"]
     assert len(SMOKE_SUITE) == 3
+    assert "test_task_0005_grid_specialization.py" in SMOKE_SUITE[0]
     assert NORM_PRIMARY_TOKENS == (1, 16, 512, 4096, 8192, 32768)
