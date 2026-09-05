@@ -64,13 +64,25 @@ def _cache_evidence(cache: Path, kernel_name: str) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     for record in records:
         manifest = Path(record["manifest"])
-        manifest_text = manifest.read_text(errors="replace") if manifest.is_file() else ""
-        copied = dict(record)
-        copied["program_grid_transform_seen"] = (
-            "program_grid_transforms" in manifest_text
-            or "hacc.program_grid_transforms" in manifest_text
+        manifest_data: dict[str, Any] = {}
+        if manifest.is_file():
+            try:
+                parsed = json.loads(manifest.read_text(errors="replace"))
+                if isinstance(parsed, dict):
+                    manifest_data = parsed
+            except json.JSONDecodeError:
+                pass
+        transforms = manifest_data.get("program_grid_transforms")
+        transform_items = (
+            transforms.get("transforms", []) if isinstance(transforms, dict) else []
         )
-        copied["spaf_rule_mask_seen"] = "1024" in manifest_text
+        specialization = manifest_data.get("program_grid_specialization")
+        rule_mask = manifest_data.get("program_mapping_rule_mask")
+        if rule_mask is None and isinstance(specialization, dict):
+            rule_mask = specialization.get("rule_mask")
+        copied = dict(record)
+        copied["program_grid_transform_seen"] = bool(transform_items)
+        copied["spaf_rule_mask_seen"] = rule_mask == SPAF_RULE_MASK
         evidence.append(copied)
     return evidence
 

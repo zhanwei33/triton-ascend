@@ -42,6 +42,7 @@ from task_0005_harness.runtime import (  # noqa: E402
     collect_cache_records,
     validate_primary_metadata,
 )
+from task_0102_static_program_axis_fusion_runner import _cache_evidence  # noqa: E402
 
 pytestmark = pytest.mark.backend("none")
 
@@ -84,6 +85,40 @@ def test_logits_runner_compile_options_keep_legacy_default_and_allow_spaf():
         "enable_graph_optimize": True,
         "program_mapping_rule_mask": 1024,
     }
+
+
+def test_spaf_cache_evidence_requires_a_real_transform_contract(tmp_path):
+    kernel = "_indexer_logits_kernel"
+    legacy = tmp_path / "legacy"
+    fused = tmp_path / "fused"
+    legacy.mkdir()
+    fused.mkdir()
+    (legacy / f"{kernel}.json").write_text(
+        json.dumps(
+            {
+                "program_mapping_rule_mask": None,
+                "program_grid_transforms": None,
+            }
+        )
+    )
+    (fused / f"{kernel}.json").write_text(
+        json.dumps(
+            {
+                "program_mapping_rule_mask": 1024,
+                "program_grid_transforms": {
+                    "version": 1,
+                    "transforms": [{"axis": 2, "factor": 4}],
+                },
+            }
+        )
+    )
+
+    records = _cache_evidence(tmp_path, kernel)
+    by_parent = {Path(record["manifest"]).parent.name: record for record in records}
+    assert by_parent["legacy"]["program_grid_transform_seen"] is False
+    assert by_parent["legacy"]["spaf_rule_mask_seen"] is False
+    assert by_parent["fused"]["program_grid_transform_seen"] is True
+    assert by_parent["fused"]["spaf_rule_mask_seen"] is True
 
 
 def test_after_variants_are_explicitly_non_oracles():
