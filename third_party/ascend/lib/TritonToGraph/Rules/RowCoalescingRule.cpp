@@ -58,6 +58,8 @@ constexpr llvm::StringLiteral kCoalesceGridCeilDivAttr =
 // carrying this marker must never receive the legacy Row rewrite afterwards.
 constexpr llvm::StringLiteral kIndependentAxisTensorizeMarkerAttr =
     "hacc.independent_axis_tensorize";
+constexpr llvm::StringLiteral kPersistentTaskStripMiningMarkerAttr =
+    "hacc.persistent_task_strip_mining";
 
 constexpr int64_t kDefaultRowsPerProgram = 8;
 constexpr int64_t kMaxBaseElementsPerLift = 1024;
@@ -297,6 +299,7 @@ analyzeRow(triton::FuncOp function,
       !isOnlyPublicEntry(module, function) || function->getNumRegions() != 1 ||
       function->getRegion(0).empty() || hasDirectCall(function) ||
       module->hasAttr(kIndependentAxisTensorizeMarkerAttr) ||
+      module->hasAttr(kPersistentTaskStripMiningMarkerAttr) ||
       module->hasAttr(kCoalesceFactorAttr) ||
       module->hasAttr(kCoalesceAxisAttr) ||
       module->hasAttr(kCoalesceGridCeilDivAttr))

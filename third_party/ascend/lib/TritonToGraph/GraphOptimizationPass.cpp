@@ -210,6 +210,8 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
   options.compileMode = this->compileMode;
   options.independentAxisTensorize.enabledForCompileMode =
       *compileMode != triton::ascend::CompileMode::SimtOnly;
+  options.persistentTaskStripMining.enabledForCompileMode =
+      *compileMode != triton::ascend::CompileMode::SimtOnly;
   return success();
 }
 

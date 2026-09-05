@@ -323,7 +323,11 @@ struct IndependentAxisTensorizeRuleOptions {
   bool enabledForCompileMode = true;
 };
 struct StaticProgramAxisFusionRuleOptions {};
-struct PersistentTaskStripMiningRuleOptions {};
+struct PersistentTaskStripMiningRuleOptions {
+  // PTSM creates SIMD tensor shapes and a grid-stride loop. Keep the rule
+  // registered for ABI compatibility in simt_only mode, but make it a no-op.
+  bool enabledForCompileMode = true;
+};
 struct ResidentLoadForwardingRuleOptions {};
 struct IntermediatePrecisionBoundaryElisionRuleOptions {};
 struct StoreCoveragePlanningRuleOptions {};

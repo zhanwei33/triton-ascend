@@ -167,7 +167,7 @@ def test_callable_grid_is_resolved_twice_before_cache_and_must_be_reproducible(p
             lambda _bound: next(values), {})
 
 
-@pytest.mark.parametrize("logical_tiles", (4, 8, 19))
+@pytest.mark.parametrize("logical_tiles", (1, 7, 8, 9, 19))
 def test_persistent_coverage_caps_only_verified_grid_stride_and_covers_every_tile_once(
     program_grid, logical_tiles,
 ):
@@ -184,6 +184,32 @@ def test_persistent_coverage_caps_only_verified_grid_stride_and_covers_every_til
         tile
         for program_id in range(actual_programs)
         for tile in range(program_id, logical_tiles, actual_programs)
+    ]
+    assert sorted(covered) == list(range(logical_tiles))
+    assert len(covered) == len(set(covered))
+
+
+def test_persistent_coverage_composes_with_a_nonpersistent_head_mapping(
+    program_grid,
+):
+    """Only the verified token transform may cap its own launch axis."""
+    contract = _contract(
+        _transform(0, 1, 4, 16),
+        _transform(1, 0, 2, 19, persistent=True),
+    )
+
+    # IAT first compresses 16 heads to four.  A core budget of eight then
+    # gives the token grid two physical programs per head; the loop stride is
+    # therefore two and every one of ceil_div(19, 2) logical token tiles is
+    # owned exactly once for each mapped head.
+    assert program_grid.apply_program_grid_transforms(
+        (19, 16, 1), contract, physical_core_count=8,
+    ) == (2, 4, 1)
+    logical_tiles = (19 + 2 - 1) // 2
+    covered = [
+        tile
+        for program_id in range(2)
+        for tile in range(program_id, logical_tiles, 2)
     ]
     assert sorted(covered) == list(range(logical_tiles))
     assert len(covered) == len(set(covered))
