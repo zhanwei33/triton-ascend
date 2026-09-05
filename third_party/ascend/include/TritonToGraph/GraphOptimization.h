@@ -246,6 +246,28 @@ constexpr GraphOptimizationRuleMask kKnownGraphOptimizationRuleMask =
     getGraphOptimizationRuleMask(
         GraphOptimizationRuleId::ContiguousBlockAccessFormation);
 
+// The Stage-06 release gate may evaluate only the active program-mapping
+// rules for future default enablement.  The four out-of-scope reservations
+// remain explicitly opt-in even after their identities are known.
+constexpr GraphOptimizationRuleMask kDefaultEligibleGraphOptimizationRuleMask =
+    kLegacyGraphOptimizationRuleMask |
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::IndependentAxisTensorize) |
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::StaticProgramAxisFusion) |
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::PersistentTaskStripMining);
+
+constexpr GraphOptimizationRuleMask kFixedDefaultOffGraphOptimizationRuleMask =
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::ResidentLoadForwarding) |
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::IntermediatePrecisionBoundaryElision) |
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::StoreCoveragePlanning) |
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::ContiguousBlockAccessFormation);
+
 constexpr GraphOptimizationRuleMask kDefaultGraphOptimizationRuleMask =
     kLegacyGraphOptimizationRuleMask;
 
@@ -259,6 +281,16 @@ static_assert(kLegacyGraphOptimizationRuleMask == 511,
 static_assert(kDefaultGraphOptimizationRuleMask ==
                   kLegacyGraphOptimizationRuleMask,
               "stage-00 rules must remain disabled by default");
+static_assert(kKnownGraphOptimizationRuleMask ==
+                  (kDefaultEligibleGraphOptimizationRuleMask |
+                   kFixedDefaultOffGraphOptimizationRuleMask),
+              "known graph rule identities must retain their scope partition");
+static_assert((kDefaultEligibleGraphOptimizationRuleMask &
+               kFixedDefaultOffGraphOptimizationRuleMask) == 0,
+              "fixed-default-off rules must not become default candidates");
+static_assert((kDefaultGraphOptimizationRuleMask &
+               ~kDefaultEligibleGraphOptimizationRuleMask) == 0,
+              "default graph rules must stay within the approved candidates");
 static_assert(
     getGraphOptimizationRulePhase(
         GraphOptimizationRuleId::IndependentAxisTensorize) ==
