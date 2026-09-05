@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,10 @@ from task_0005_harness.reference import (  # noqa: E402
     ref_merge_split_states,
 )
 from task_0005_harness.run_baselines import _target_samples  # noqa: E402
+from task_0005_harness.runtime import (  # noqa: E402
+    collect_cache_records,
+    validate_primary_metadata,
+)
 
 pytestmark = pytest.mark.backend("none")
 
@@ -155,6 +160,36 @@ def test_profiler_parser_requires_an_exact_target_name(tmp_path):
         writer.writerow({"Op Name": "_merge_split_states_kernel", "Task Duration(us)": "3.0"})
     samples = _target_samples(profiler, "_merge_split_states_kernel")
     assert [sample[2] for sample in samples] == [2.0, 3.0]
+
+
+def test_cache_artifact_discovery_supports_flat_ascend_manifests(tmp_path):
+    entry = tmp_path / "flat-entry"
+    entry.mkdir()
+    kernel = "_merge_split_states_kernel"
+    (entry / f"{kernel}.json").write_text(
+        json.dumps(
+            {
+                "target": {"backend": "npu", "arch": "Ascend950PR_9579"},
+                "compile_mode": COMPILE_MODE,
+                "parallel_mode": "simd",
+                "mix_mode": "aiv",
+                "is_pure_simt": False,
+            }
+        )
+    )
+    (entry / f"{kernel}.ttadapter").write_text(
+        'module attributes {hacc.target = #hacc.target<"Ascend950PR_9579">} {}\n'
+        'func.func @kernel() attributes {parallel_mode = "simd"}\n'
+    )
+    (entry / f"{kernel}.ttir").write_text("module {}\n")
+
+    records = collect_cache_records(tmp_path, (kernel,))
+    assert len(records) == 1
+    assert records[0]["target_arch"] == "Ascend950PR_9579"
+    assert records[0]["parallel_mode"] == "simd"
+    assert records[0]["compile_mode"] == COMPILE_MODE
+    assert f"{kernel}.ttadapter" in records[0]["files"]
+    assert validate_primary_metadata(records) == []
 
 
 def test_artifact_schema_and_smoke_suite_cover_required_outputs():

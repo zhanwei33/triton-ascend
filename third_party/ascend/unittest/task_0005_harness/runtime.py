@@ -384,6 +384,17 @@ def collect_cache_records(
                 for name, path in child_paths.items()
                 if isinstance(path, str)
             }
+            # Newer Ascend cache manifests are flat: the compile options live
+            # directly in ``<kernel>.json`` and sibling TTIR/TTAdapter files
+            # share its directory.  Older manifests carry ``child_paths``.
+            # Support both layouts so artifact collection is tied to the
+            # exact manifest we found, never to a recency heuristic.
+            if not files:
+                files = {
+                    path.name: str(path)
+                    for path in sorted(manifest.parent.glob(f"{kernel_name}.*"))
+                    if path.is_file()
+                }
             adapter = next(
                 (
                     Path(path)
@@ -398,17 +409,29 @@ def collect_cache_records(
             target = _TARGET_RE.search(adapter_text)
             parallel = _PARALLEL_RE.search(adapter_text)
             mix = _MIX_RE.search(adapter_text)
+            manifest_target = data.get("target_arch")
+            if not manifest_target and isinstance(data.get("target"), dict):
+                manifest_target = data["target"].get("arch")
+            manifest_parallel = data.get("parallel_mode")
+            manifest_mix = data.get("mix_mode")
+            manifest_compile_mode = data.get("compile_mode")
             records.append(
                 {
                     "kernel_name": kernel_name,
                     "manifest": str(manifest),
                     "files": files,
-                    "target_arch": target.group(1) if target else None,
-                    "parallel_mode": parallel.group(1) if parallel else None,
-                    "mix_mode": mix.group(1) if mix else None,
-                    "compile_mode": COMPILE_MODE,
+                    "target_arch": target.group(1) if target else manifest_target,
+                    "parallel_mode": (
+                        parallel.group(1) if parallel else manifest_parallel
+                    ),
+                    "mix_mode": mix.group(1) if mix else manifest_mix,
+                    "compile_mode": manifest_compile_mode or COMPILE_MODE,
                     "is_pure_simt": bool(
-                        parallel is not None and parallel.group(1) == "simt"
+                        data.get(
+                            "is_pure_simt",
+                            (parallel.group(1) if parallel else manifest_parallel)
+                            == "simt",
+                        )
                     ),
                 }
             )
@@ -445,6 +468,10 @@ def validate_primary_metadata(records: list[dict[str, Any]]) -> list[str]:
         if record.get("target_arch") != TARGET_ARCH:
             errors.append(
                 f"{record['kernel_name']}: target={record.get('target_arch')!r}"
+            )
+        if record.get("compile_mode") != COMPILE_MODE:
+            errors.append(
+                f"{record['kernel_name']}: compile_mode={record.get('compile_mode')!r}"
             )
         if record.get("parallel_mode") not in ("simd", "mix_simd_simt"):
             errors.append(
