@@ -336,6 +336,12 @@ struct GraphOptimizationOptions {
       kDefaultGraphOptimizationRuleMask;
   unsigned maxRewritesPerFunction = 64;
   unsigned ubCapacityBytes = 0;
+  // Resource/cost rules must receive target facts explicitly.  Zero UB/core
+  // values mean unknown and make such candidates fail closed.
+  unsigned deviceCoreCount = 0;
+  unsigned minProgramsPerCore = 1;
+  unsigned ubSafetyPercent = 80;
+  unsigned reservedUBBytes = 0;
   // RowCoalescing changes the launch grid and is valid only for
   // compile_mode="simt_only".  Keep the source selector rather than a
   // second derived force flag so every consumer follows one mode contract.
