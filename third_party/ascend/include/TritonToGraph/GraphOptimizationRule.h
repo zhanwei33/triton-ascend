@@ -72,6 +72,18 @@ void populateBuiltinGraphOptimizationRules(
     const GraphOptimizationOptions &options,
     SmallVectorImpl<std::unique_ptr<GraphOptimizationRule>> &rules);
 
+// Stage-00 factories use this shared implementation until their dedicated
+// matcher/materializer lands. It registers a stable, diagnostic no-op rather
+// than silently dropping an explicitly enabled rule bit.
+struct ReservedGraphOptimizationRuleOptions {
+  GraphOptimizationRuleId id;
+  const char *optionNamespace;
+};
+
+std::unique_ptr<GraphOptimizationRule>
+createReservedGraphOptimizationRule(ReservedGraphOptimizationRuleOptions
+                                        options);
+
 std::unique_ptr<GraphOptimizationRule> createTransposePointwiseReorderRule();
 std::unique_ptr<GraphOptimizationRule> createLoadStoreTransposeRule();
 std::unique_ptr<GraphOptimizationRule>
@@ -79,6 +91,27 @@ createStoreCoalescingRule(unsigned ubCapacityBytes);
 std::unique_ptr<GraphOptimizationRule> createRowCoalescingRule();
 std::unique_ptr<GraphOptimizationRule> createDiagonalMaskRemovalRule();
 std::unique_ptr<GraphOptimizationRule> createConvertModuloToMaskRule();
+std::unique_ptr<GraphOptimizationRule>
+createIndependentAxisTensorizeRule(
+    const IndependentAxisTensorizeRuleOptions &options);
+std::unique_ptr<GraphOptimizationRule>
+createStaticProgramAxisFusionRule(
+    const StaticProgramAxisFusionRuleOptions &options);
+std::unique_ptr<GraphOptimizationRule>
+createPersistentTaskStripMiningRule(
+    const PersistentTaskStripMiningRuleOptions &options);
+std::unique_ptr<GraphOptimizationRule>
+createResidentLoadForwardingRule(
+    const ResidentLoadForwardingRuleOptions &options);
+std::unique_ptr<GraphOptimizationRule>
+createIntermediatePrecisionBoundaryElisionRule(
+    const IntermediatePrecisionBoundaryElisionRuleOptions &options);
+std::unique_ptr<GraphOptimizationRule>
+createStoreCoveragePlanningRule(
+    const StoreCoveragePlanningRuleOptions &options);
+std::unique_ptr<GraphOptimizationRule>
+createContiguousBlockAccessFormationRule(
+    const ContiguousBlockAccessFormationRuleOptions &options);
 
 } // namespace cfg
 } // namespace triton

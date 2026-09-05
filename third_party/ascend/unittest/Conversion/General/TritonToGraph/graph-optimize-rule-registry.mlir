@@ -1,0 +1,25 @@
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=0' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=511' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=512' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=1024' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=2048' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=4096' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=8192' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=16384' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=32768' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=65024' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=65535' -o - | FileCheck %s --check-prefix=NOOP
+// RUN: not triton-opt --verify-each %s -graph-optimize='rule-mask=65536' -o - 2>&1 | FileCheck %s --check-prefix=UNKNOWN
+// RUN: not triton-opt --verify-each %s -graph-optimize='rule-mask=4294967296' -o - 2>&1 | FileCheck %s --check-prefix=OUT-OF-RANGE
+
+// Every reserved rule must be a stable no-op until its matcher/materializer
+// implementation lands. The commands above also prove that every new bit is
+// independently accepted, while 0 still disables all native graph rules.
+// NOOP-LABEL: tt.func @registry_noop(
+// NOOP: tt.return
+tt.func @registry_noop(%value: i32) -> i32 {
+  tt.return %value : i32
+}
+
+// UNKNOWN: graph-optimize rule-mask contains unknown or out-of-range bits: 65536
+// OUT-OF-RANGE: graph-optimize rule-mask contains unknown or out-of-range bits: 4294967296

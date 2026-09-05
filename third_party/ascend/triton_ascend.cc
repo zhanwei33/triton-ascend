@@ -146,8 +146,14 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
       [](mlir::PassManager &pm, std::uint64_t ruleMask,
          std::uint64_t maxRewritesPerFunction, std::uint64_t ubCapacityBytes,
          const std::string &compileMode) {
-        if (ruleMask > std::numeric_limits<std::uint16_t>::max())
-          throw py::value_error("rule_mask must fit in uint16_t");
+        if (ruleMask > std::numeric_limits<std::uint32_t>::max())
+          throw py::value_error("rule_mask must fit in uint32_t");
+        const auto graphRuleMask = static_cast<
+            mlir::triton::cfg::GraphOptimizationRuleMask>(ruleMask);
+        if (!mlir::triton::cfg::isValidGraphOptimizationRuleMask(
+                graphRuleMask)) {
+          throw py::value_error("rule_mask contains unknown graph rule bits");
+        }
         if (maxRewritesPerFunction > std::numeric_limits<unsigned>::max())
           throw py::value_error(
               "max_rewrites_per_function must fit in unsigned");
@@ -155,14 +161,15 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
           throw py::value_error("ub_capacity_bytes must fit in unsigned");
 
         mlir::triton::cfg::GraphOptimizationOptions options;
-        options.enabledRuleMask = static_cast<std::uint16_t>(ruleMask);
+        options.enabledRuleMask = graphRuleMask;
         options.maxRewritesPerFunction =
             static_cast<unsigned>(maxRewritesPerFunction);
         options.ubCapacityBytes = static_cast<unsigned>(ubCapacityBytes);
         options.compileMode = compileMode;
         pm.addPass(mlir::triton::cfg::createGraphOptimizePass(options));
       },
-      py::arg("pm"), py::arg("rule_mask") = 511,
+      py::arg("pm"), py::arg("rule_mask") = static_cast<std::uint64_t>(
+                        mlir::triton::cfg::kDefaultGraphOptimizationRuleMask),
       py::arg("max_rewrites_per_function") = 64,
       py::arg("ub_capacity_bytes") = 0,
       py::arg("compile_mode") = "simd_simt_template");

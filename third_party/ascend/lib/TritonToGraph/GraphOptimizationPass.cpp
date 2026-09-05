@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -53,17 +54,22 @@ namespace triton {
 namespace cfg {
 namespace {
 
-constexpr std::array<GraphOptimizationRuleId, 5> kRulePhases = {
-    // DiagonalMaskRemoval runs first because it deletes a quadratic
-    // intermediate tensor, so the later phases match and budget UB against the
-    // already shrunken IR.
-    GraphOptimizationRuleId::DiagonalMaskRemoval,
-    // ConvertModuloToMask runs before the memory-access phases so that they see
-    // linear tile addresses instead of wrapped ones.
-    GraphOptimizationRuleId::ConvertModuloToMask,
-    GraphOptimizationRuleId::LoadStoreTranspose,
-    GraphOptimizationRuleId::TransposePointwiseReorder,
-    GraphOptimizationRuleId::StoreCoalescing,
+constexpr std::array<GraphOptimizationRulePhase, 11> kRulePhases = {
+    // Keep legacy phases separate so a default (0..511) compilation observes
+    // the same order as before stage 00.
+    GraphOptimizationRulePhase::DiagonalMaskRemoval,
+    GraphOptimizationRulePhase::ConvertModuloToMask,
+    // IndependentAxisTensorize and StaticProgramAxisFusion intentionally share
+    // this phase: candidates for one target axis compete by benefit.
+    GraphOptimizationRulePhase::ProgramMapping,
+    GraphOptimizationRulePhase::PersistentTaskMapping,
+    GraphOptimizationRulePhase::LoadStoreTranspose,
+    GraphOptimizationRulePhase::TransposePointwiseReorder,
+    GraphOptimizationRulePhase::ResidentLoadForwarding,
+    GraphOptimizationRulePhase::IntermediatePrecisionBoundaryElision,
+    GraphOptimizationRulePhase::StoreCoveragePlanning,
+    GraphOptimizationRulePhase::StoreCoalescing,
+    GraphOptimizationRulePhase::ContiguousBlockAccessFormation,
 };
 
 using ProgramOrderMap = llvm::DenseMap<Operation *, unsigned>;
@@ -88,9 +94,29 @@ unsigned getProgramOrder(const RewritePlan &plan,
   return it->second;
 }
 
-bool isRuleEnabled(uint16_t ruleMask, GraphOptimizationRuleId ruleId) {
+bool isRuleEnabled(GraphOptimizationRuleMask ruleMask,
+                   GraphOptimizationRuleId ruleId) {
   return (ruleMask & getGraphOptimizationRuleMask(ruleId)) != 0;
 }
+
+constexpr bool isPlanHigherPriority(unsigned lhsBenefit, unsigned lhsOrder,
+                                    GraphOptimizationRuleId lhsRuleId,
+                                    unsigned rhsBenefit, unsigned rhsOrder,
+                                    GraphOptimizationRuleId rhsRuleId) {
+  if (lhsBenefit != rhsBenefit)
+    return lhsBenefit > rhsBenefit;
+  if (lhsOrder != rhsOrder)
+    return lhsOrder < rhsOrder;
+  return getGraphOptimizationRuleMask(lhsRuleId) <
+         getGraphOptimizationRuleMask(rhsRuleId);
+}
+
+// This is the mock/no-op scheduling contract: equal-benefit plans anchored at
+// the same operation receive a stable rule-ID tie break inside one phase.
+static_assert(isPlanHigherPriority(
+                  1, 7, GraphOptimizationRuleId::IndependentAxisTensorize, 1,
+                  7, GraphOptimizationRuleId::StaticProgramAxisFusion),
+              "program-mapping phase tie breaks must be reproducible");
 
 class GraphOptimizePass final
     : public impl::GraphOptimizeBase<GraphOptimizePass> {
@@ -120,8 +146,9 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
   const uint64_t cliMaxRewrites = this->maxRewritesPerFunction;
   const uint64_t cliUBCapacityBytes = this->ubCapacityBytes;
 
-  if (cliRuleMask > std::numeric_limits<uint16_t>::max() ||
-      !isValidGraphOptimizationRuleMask(static_cast<uint16_t>(cliRuleMask))) {
+  if (cliRuleMask > std::numeric_limits<GraphOptimizationRuleMask>::max() ||
+      !isValidGraphOptimizationRuleMask(
+          static_cast<GraphOptimizationRuleMask>(cliRuleMask))) {
     getOperation().emitError()
         << "graph-optimize rule-mask contains unknown or out-of-range bits: "
         << cliRuleMask;
@@ -148,7 +175,7 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
     return failure();
   }
 
-  options.enabledRuleMask = static_cast<uint16_t>(cliRuleMask);
+  options.enabledRuleMask = static_cast<GraphOptimizationRuleMask>(cliRuleMask);
   options.maxRewritesPerFunction = static_cast<unsigned>(cliMaxRewrites);
   options.ubCapacityBytes = static_cast<unsigned>(cliUBCapacityBytes);
   options.compileMode = this->compileMode;
@@ -166,9 +193,28 @@ void GraphOptimizePass::runOnOperation() {
   populateBuiltinGraphOptimizationRules(options, ownedRules);
 
   SmallVector<GraphOptimizationRule *> enabledRules;
+  llvm::DenseSet<GraphOptimizationRuleMask> registeredRuleMasks;
   for (const std::unique_ptr<GraphOptimizationRule> &rule : ownedRules) {
-    if (rule && isRuleEnabled(options.enabledRuleMask, rule->getId()))
-      enabledRules.push_back(rule.get());
+    if (!rule) {
+      getOperation().emitError()
+          << "graph-optimize builtin rule factory returned null";
+      signalPassFailure();
+      return;
+    }
+
+    const GraphOptimizationRuleMask ruleMask =
+        getGraphOptimizationRuleMask(rule->getId());
+    if (ruleMask == 0 || !isValidGraphOptimizationRuleMask(ruleMask) ||
+        !isRuleEnabled(options.enabledRuleMask, rule->getId()) ||
+        !registeredRuleMasks.insert(ruleMask).second) {
+      getOperation().emitError()
+          << "graph-optimize registered an invalid, disabled, or duplicate "
+             "rule ID: "
+          << ruleMask;
+      signalPassFailure();
+      return;
+    }
+    enabledRules.push_back(rule.get());
   }
 
   ModuleOp module = getOperation();
@@ -176,16 +222,13 @@ void GraphOptimizePass::runOnOperation() {
     GraphOptimizationContext context(function);
     unsigned rewriteCount = 0;
 
-    for (GraphOptimizationRuleId phase : kRulePhases) {
-      if (!isRuleEnabled(options.enabledRuleMask, phase))
-        continue;
-
+    for (GraphOptimizationRulePhase phase : kRulePhases) {
       while (rewriteCount < options.maxRewritesPerFunction) {
         ProgramOrderMap programOrder = buildProgramOrderMap(function);
         SmallVector<std::unique_ptr<RewritePlan>> plans;
 
         for (GraphOptimizationRule *rule : enabledRules) {
-          if (rule->getId() != phase)
+          if (getGraphOptimizationRulePhase(rule->getId()) != phase)
             continue;
 
           if (failed(context.ensure(rule->getAnalysisRequirements()))) {
@@ -205,7 +248,9 @@ void GraphOptimizePass::runOnOperation() {
         plans.erase(
             std::remove_if(plans.begin(), plans.end(),
                            [phase](const std::unique_ptr<RewritePlan> &plan) {
-                             return !plan || plan->getRuleId() != phase;
+                             return !plan ||
+                                    getGraphOptimizationRulePhase(
+                                        plan->getRuleId()) != phase;
                            }),
             plans.end());
         if (plans.empty())
@@ -215,16 +260,11 @@ void GraphOptimizePass::runOnOperation() {
             plans.begin(), plans.end(),
             [&programOrder](const std::unique_ptr<RewritePlan> &lhs,
                             const std::unique_ptr<RewritePlan> &rhs) {
-              if (lhs->getBenefit() != rhs->getBenefit())
-                return lhs->getBenefit() > rhs->getBenefit();
-
               const unsigned lhsOrder = getProgramOrder(*lhs, programOrder);
               const unsigned rhsOrder = getProgramOrder(*rhs, programOrder);
-              if (lhsOrder != rhsOrder)
-                return lhsOrder < rhsOrder;
-
-              return static_cast<unsigned>(lhs->getRuleId()) <
-                     static_cast<unsigned>(rhs->getRuleId());
+              return isPlanHigherPriority(
+                  lhs->getBenefit(), lhsOrder, lhs->getRuleId(),
+                  rhs->getBenefit(), rhsOrder, rhs->getRuleId());
             });
 
         std::unique_ptr<RewritePlan> selectedPlan;
@@ -235,7 +275,7 @@ void GraphOptimizePass::runOnOperation() {
             LLVM_DEBUG(
                 llvm::dbgs()
                 << "[" DEBUG_TYPE "] dropped stale graph optimization rule "
-                << static_cast<unsigned>(plan->getRuleId()) << " ("
+                << getGraphOptimizationRuleMask(plan->getRuleId()) << " ("
                 << getGraphOptimizationRuleName(plan->getRuleId()) << ")\n");
             continue;
           }
@@ -261,7 +301,7 @@ void GraphOptimizePass::runOnOperation() {
 
         LLVM_DEBUG(llvm::dbgs()
                    << "[" DEBUG_TYPE "] applied graph optimization rule "
-                   << static_cast<unsigned>(appliedRuleId) << " ("
+                   << getGraphOptimizationRuleMask(appliedRuleId) << " ("
                    << getGraphOptimizationRuleName(appliedRuleId) << ")\n");
 
         // Plans can retain pointers into analysis results, so destroy all of
@@ -323,18 +363,13 @@ void GraphOptimizePass::runOnOperation() {
     std::stable_sort(rowPlans.begin(), rowPlans.end(),
                      [&programOrder](const std::unique_ptr<RewritePlan> &lhs,
                                      const std::unique_ptr<RewritePlan> &rhs) {
-                       if (lhs->getBenefit() != rhs->getBenefit())
-                         return lhs->getBenefit() > rhs->getBenefit();
-
                        const unsigned lhsOrder =
                            getProgramOrder(*lhs, programOrder);
                        const unsigned rhsOrder =
                            getProgramOrder(*rhs, programOrder);
-                       if (lhsOrder != rhsOrder)
-                         return lhsOrder < rhsOrder;
-
-                       return static_cast<unsigned>(lhs->getRuleId()) <
-                              static_cast<unsigned>(rhs->getRuleId());
+                       return isPlanHigherPriority(
+                           lhs->getBenefit(), lhsOrder, lhs->getRuleId(),
+                           rhs->getBenefit(), rhsOrder, rhs->getRuleId());
                      });
 
     std::unique_ptr<RewritePlan> selectedRowPlan;
@@ -360,7 +395,8 @@ void GraphOptimizePass::runOnOperation() {
 
     LLVM_DEBUG(llvm::dbgs()
                << "[" DEBUG_TYPE "] applied graph optimization rule "
-               << static_cast<unsigned>(GraphOptimizationRuleId::RowCoalescing)
+               << getGraphOptimizationRuleMask(
+                      GraphOptimizationRuleId::RowCoalescing)
                << " ("
                << getGraphOptimizationRuleName(
                       GraphOptimizationRuleId::RowCoalescing)
@@ -386,6 +422,21 @@ void populateBuiltinGraphOptimizationRules(
     rules.push_back(createConvertModuloToMaskRule());
   }
   if (isRuleEnabled(options.enabledRuleMask,
+                    GraphOptimizationRuleId::IndependentAxisTensorize)) {
+    rules.push_back(
+        createIndependentAxisTensorizeRule(options.independentAxisTensorize));
+  }
+  if (isRuleEnabled(options.enabledRuleMask,
+                    GraphOptimizationRuleId::StaticProgramAxisFusion)) {
+    rules.push_back(
+        createStaticProgramAxisFusionRule(options.staticProgramAxisFusion));
+  }
+  if (isRuleEnabled(options.enabledRuleMask,
+                    GraphOptimizationRuleId::PersistentTaskStripMining)) {
+    rules.push_back(createPersistentTaskStripMiningRule(
+        options.persistentTaskStripMining));
+  }
+  if (isRuleEnabled(options.enabledRuleMask,
                     GraphOptimizationRuleId::LoadStoreTranspose)) {
     rules.push_back(createLoadStoreTransposeRule());
   }
@@ -396,6 +447,27 @@ void populateBuiltinGraphOptimizationRules(
   if (isRuleEnabled(options.enabledRuleMask,
                     GraphOptimizationRuleId::StoreCoalescing)) {
     rules.push_back(createStoreCoalescingRule(options.ubCapacityBytes));
+  }
+  if (isRuleEnabled(options.enabledRuleMask,
+                    GraphOptimizationRuleId::ResidentLoadForwarding)) {
+    rules.push_back(
+        createResidentLoadForwardingRule(options.residentLoadForwarding));
+  }
+  if (isRuleEnabled(
+          options.enabledRuleMask,
+          GraphOptimizationRuleId::IntermediatePrecisionBoundaryElision)) {
+    rules.push_back(createIntermediatePrecisionBoundaryElisionRule(
+        options.intermediatePrecisionBoundaryElision));
+  }
+  if (isRuleEnabled(options.enabledRuleMask,
+                    GraphOptimizationRuleId::StoreCoveragePlanning)) {
+    rules.push_back(
+        createStoreCoveragePlanningRule(options.storeCoveragePlanning));
+  }
+  if (isRuleEnabled(options.enabledRuleMask,
+                    GraphOptimizationRuleId::ContiguousBlockAccessFormation)) {
+    rules.push_back(createContiguousBlockAccessFormationRule(
+        options.contiguousBlockAccessFormation));
   }
   const auto compileMode =
       triton::ascend::parseCompileMode(options.compileMode);

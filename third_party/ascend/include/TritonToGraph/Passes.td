@@ -74,7 +74,7 @@ def GraphOptimize : Pass<"graph-optimize", "mlir::ModuleOp"> {
   let constructor = "mlir::triton::cfg::createGraphOptimizePass()";
   let options = [
     Option<"ruleMask", "rule-mask", "uint64_t", "511",
-           "Bitmask of registered graph rule identities; this pass executes only native graph-rule phases">,
+           "Bitmask of known 32-bit graph rule identities; default 511 preserves the legacy native rule bundle and new stage-00 rules are opt-in">,
     Option<"maxRewritesPerFunction", "max-rewrites-per-function", "uint64_t",
            "64", "Maximum graph rewrites per function">,
     Option<"ubCapacityBytes", "ub-capacity-bytes", "uint64_t", "0",
