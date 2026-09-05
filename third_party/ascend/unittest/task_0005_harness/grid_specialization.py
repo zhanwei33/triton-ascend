@@ -436,7 +436,7 @@ class GridSpecializationObserver:
         )
         observed_kwargs["instrumentation_mode"] = knobs.compilation.instrumentation_mode
         device = driver.active.get_current_device()
-        kernel_cache, kernel_key_cache, _, _, binder = jit_function.device_caches[device]
+        kernel_cache, kernel_key_cache, _, backend, binder = jit_function.device_caches[device]
         bound_args, specialization, options = binder(*args, **observed_kwargs)
         prepared = None
         if self._grid_specialization_enabled:
