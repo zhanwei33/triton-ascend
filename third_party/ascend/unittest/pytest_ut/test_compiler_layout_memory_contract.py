@@ -576,6 +576,36 @@ def test_make_ttir_passes_canonical_compile_mode_to_graph_optimize(compiler_modu
     assert events[-1] == "run_row"
 
 
+def test_make_ttir_forwards_static_axis_fusion_mask_and_target_cores(
+    compiler_module, monkeypatch,
+):
+    class _NPU:
+        def get_aicore_num(self):
+            return 40
+
+    options = SimpleNamespace(
+        enable_graph_optimize=True,
+        target_arch="Ascend910B1",
+        compile_mode="simd_simt_template",
+        program_mapping_rule_mask=1024,
+        # An AOT-shaped caller can still request the rule. It deliberately
+        # carries no specialization attr and therefore remains a C++ no-op.
+        program_grid_specialization=None,
+        debug=False,
+    )
+    monkeypatch.setattr(compiler_module, "NPUUtils", _NPU)
+
+    _, graph_calls = _run_make_ttir_with_recorded_graph_options(
+        compiler_module, monkeypatch, options)
+
+    assert graph_calls == [{
+        "ub_capacity_bytes": 96 * 1024,
+        "compile_mode": "simd_simt_template",
+        "rule_mask": 511 | 1024,
+        "device_core_count": 40,
+    }]
+
+
 @pytest.mark.skip(reason="The case is not supported on A5, skipping for now. Will be fixed in future.")
 def test_npu_options_do_not_expose_graph_remark_switch(compiler_module):
     """Graph rewrite logging is controlled by LLVM DEBUG, not an NPU option."""

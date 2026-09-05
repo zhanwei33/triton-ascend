@@ -366,6 +366,39 @@ def _with_debug_line(npubin_stage, options):
     return stage
 
 
+def _graph_optimize_device_core_count() -> int:
+    """Return an explicit target fact for resource-gated mapping rules.
+
+    A failed runtime query deliberately becomes zero.  The C++ cost model
+    treats zero as unknown and rejects a candidate instead of applying a
+    program-axis transformation using a target-name guess.
+    """
+    try:
+        count = NPUUtils().get_aicore_num()
+    except Exception:
+        return 0
+    if isinstance(count, bool) or not isinstance(count, int):
+        return 0
+    return count if 0 < count <= (2**32 - 1) else 0
+
+
+def _graph_optimize_kwargs(opt):
+    """Keep legacy graph optimization byte-for-byte unchanged by default."""
+    kwargs = {
+        "ub_capacity_bytes": graph_ub_budget_bytes_for_arch(opt.target_arch),
+        "compile_mode": opt.compile_mode,
+    }
+    mapping_mask = normalize_program_mapping_rule_mask(
+        getattr(opt, "program_mapping_rule_mask", 0))
+    if mapping_mask:
+        # 0..511 remains the published legacy ABI.  Mapping bits are opt-in
+        # and must be forwarded to the same pass that consumes the injected
+        # original-grid specialization.
+        kwargs["rule_mask"] = 511 | mapping_mask
+        kwargs["device_core_count"] = _graph_optimize_device_core_count()
+    return kwargs
+
+
 def make_ttir(mod, metadata, opt):
     if "hash" not in metadata:
         metadata["hash"] = hashlib.sha256(f"{mod}-{metadata}".encode()).hexdigest()
@@ -384,11 +417,7 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
     if opt.enable_graph_optimize:
-        ascend.passes.ttir.add_graph_optimize(
-            pm,
-            ub_capacity_bytes=graph_ub_budget_bytes_for_arch(opt.target_arch),
-            compile_mode=opt.compile_mode,
-        )
+        ascend.passes.ttir.add_graph_optimize(pm, **_graph_optimize_kwargs(opt))
     pm.run(mod, 'make_ttir')
     if opt.debug:
         dump_manager = get_dump_manager(metadata["hash"])

@@ -145,7 +145,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
       "add_graph_optimize",
       [](mlir::PassManager &pm, std::uint64_t ruleMask,
          std::uint64_t maxRewritesPerFunction, std::uint64_t ubCapacityBytes,
-         const std::string &compileMode) {
+         const std::string &compileMode, std::uint64_t deviceCoreCount) {
         if (ruleMask > std::numeric_limits<std::uint32_t>::max())
           throw py::value_error("rule_mask must fit in uint32_t");
         const auto graphRuleMask = static_cast<
@@ -159,6 +159,8 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
               "max_rewrites_per_function must fit in unsigned");
         if (ubCapacityBytes > std::numeric_limits<unsigned>::max())
           throw py::value_error("ub_capacity_bytes must fit in unsigned");
+        if (deviceCoreCount > std::numeric_limits<unsigned>::max())
+          throw py::value_error("device_core_count must fit in unsigned");
 
         mlir::triton::cfg::GraphOptimizationOptions options;
         options.enabledRuleMask = graphRuleMask;
@@ -166,13 +168,15 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
             static_cast<unsigned>(maxRewritesPerFunction);
         options.ubCapacityBytes = static_cast<unsigned>(ubCapacityBytes);
         options.compileMode = compileMode;
+        options.deviceCoreCount = static_cast<unsigned>(deviceCoreCount);
         pm.addPass(mlir::triton::cfg::createGraphOptimizePass(options));
       },
       py::arg("pm"), py::arg("rule_mask") = static_cast<std::uint64_t>(
                         mlir::triton::cfg::kDefaultGraphOptimizationRuleMask),
       py::arg("max_rewrites_per_function") = 64,
       py::arg("ub_capacity_bytes") = 0,
-      py::arg("compile_mode") = "simd_simt_template");
+      py::arg("compile_mode") = "simd_simt_template",
+      py::arg("device_core_count") = 0);
 
   m.def("set_buffer_count", [](mlir::ModuleOp &module, const std::string &type,
                                int count) {
