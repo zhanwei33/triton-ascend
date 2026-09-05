@@ -6,6 +6,7 @@ import csv
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -32,7 +33,10 @@ from task_0005_harness.reference import (  # noqa: E402
     ref_indexer_norm_rope,
     ref_merge_split_states,
 )
-from task_0005_harness.run_baselines import _target_samples  # noqa: E402
+from task_0005_harness.run_baselines import (  # noqa: E402
+    _target_samples,
+    ingest_profile,
+)
 from task_0005_harness.runtime import (  # noqa: E402
     collect_cache_records,
     validate_primary_metadata,
@@ -190,6 +194,67 @@ def test_cache_artifact_discovery_supports_flat_ascend_manifests(tmp_path):
     assert records[0]["compile_mode"] == COMPILE_MODE
     assert f"{kernel}.ttadapter" in records[0]["files"]
     assert validate_primary_metadata(records) == []
+
+
+def test_profile_ingestion_keeps_both_norm_kernel_invocations(tmp_path):
+    artifact_root = tmp_path / "artifacts"
+    run_dir = artifact_root / "runs" / "norm-profile"
+    run_dir.mkdir(parents=True)
+    run_record = run_dir / "run_record.json"
+    run_record.write_text(
+        json.dumps(
+            {
+                "run_label": "norm-profile",
+                "variant": "baseline",
+                "cases": [
+                    {
+                        "operator": "norm_rope",
+                        "case": "norm-t16-q16-k1-d256",
+                        "kernel_names": ["_indexer_norm_rope_kernel"],
+                        "kernel_invocations_per_launch": {
+                            "_indexer_norm_rope_kernel": 2
+                        },
+                        "warmup_samples": 5,
+                        "active_samples": 20,
+                        "cache_records": [
+                            {
+                                "kernel_name": "_indexer_norm_rope_kernel",
+                                "parallel_mode": "simd",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    profiler = tmp_path / "profiler"
+    profiler.mkdir()
+    with (profiler / "op_summary_fixture.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("Op Name", "Task Duration(us)"))
+        writer.writeheader()
+        for value in range(40):
+            writer.writerow(
+                {
+                    "Op Name": "_indexer_norm_rope_kernel",
+                    "Task Duration(us)": str(value + 1),
+                }
+            )
+
+    assert (
+        ingest_profile(
+            SimpleNamespace(
+                artifact_root=artifact_root,
+                run_record=run_record,
+                profiler_root=profiler,
+                round=1,
+            )
+        )
+        == 0
+    )
+    with (artifact_root / "performance.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 40
+    assert {row["active_samples"] for row in rows} == {"40"}
 
 
 def test_artifact_schema_and_smoke_suite_cover_required_outputs():

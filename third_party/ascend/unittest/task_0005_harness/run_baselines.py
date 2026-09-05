@@ -282,7 +282,8 @@ def _run_case(
     passed, checks = check(inputs, initial)
 
     # Warm-ups and active launches stay in one profiler process. The profile
-    # parser selects exactly the last active_samples Name-matched rows.
+    # parser selects every final Name-matched invocation, including both Q and
+    # K launches of the shared norm+RoPE kernel name.
     for _ in range(warmup):
         launch()
     torch.npu.synchronize()
@@ -307,6 +308,7 @@ def _run_case(
         "checks": checks,
         "program_count": _program_rows(operator, case, initial),
         "kernel_names": list(initial.kernel_names),
+        "kernel_invocations_per_launch": initial.kernel_invocations,
         "warmup_samples": warmup,
         "active_samples": active_samples,
         "cache_records": copied_records,
@@ -476,13 +478,20 @@ def ingest_profile(args: argparse.Namespace) -> int:
     for case in run_record["cases"]:
         for kernel_name in case["kernel_names"]:
             samples = _target_samples(profiler_root, kernel_name)
-            if len(samples) < case["active_samples"]:
+            invocations = int(
+                case.get("kernel_invocations_per_launch", {}).get(kernel_name, 1)
+            )
+            exact_active_samples = case["active_samples"] * invocations
+            exact_warmup_samples = case["warmup_samples"] * invocations
+            if len(samples) < exact_active_samples:
                 raise RuntimeError(
                     f"{kernel_name}: found {len(samples)} exact samples, need "
-                    f"{case['active_samples']}"
+                    f"{exact_active_samples}"
                 )
             # Warmup target launches occur first, active target launches last.
-            active = samples[-case["active_samples"]:]
+            # ``invocations`` is 2 for norm+RoPE because Q and K intentionally
+            # share the frozen kernel symbol.
+            active = samples[-exact_active_samples:]
             durations = [value for _, _, value in active]
             parallel_mode = next(
                 (
@@ -503,8 +512,8 @@ def ingest_profile(args: argparse.Namespace) -> int:
                         "source_csv": str(path.relative_to(profiler_root)),
                         "source_row": row_index,
                         "duration_us": f"{duration:.6f}",
-                        "warmup_samples": case["warmup_samples"],
-                        "active_samples": case["active_samples"],
+                        "warmup_samples": exact_warmup_samples,
+                        "active_samples": exact_active_samples,
                         "physical_npu": PHYSICAL_NPU,
                         "compile_mode": COMPILE_MODE,
                         "parallel_mode": parallel_mode,
@@ -518,6 +527,8 @@ def ingest_profile(args: argparse.Namespace) -> int:
                     "case": case["case"],
                     "kernel_name": kernel_name,
                     "sample_count": len(durations),
+                    "active_launches": case["active_samples"],
+                    "kernel_invocations_per_launch": invocations,
                     "median_us": statistics.median(durations),
                     "p90_us": ordered[p90_index],
                     "min_us": min(durations),

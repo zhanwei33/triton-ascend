@@ -38,6 +38,10 @@ class LaunchResult:
     outputs: tuple[torch.Tensor, ...]
     grids: dict[str, tuple[int, ...]]
     kernel_names: tuple[str, ...]
+    # A logical launch may emit more than one invocation of the same named
+    # kernel (norm+RoPE launches Q then K).  Keep this explicit so a profiler
+    # parser cannot silently discard half of the active samples.
+    kernel_invocations: dict[str, int]
 
 
 def _generator(device: torch.device, seed: int) -> torch.Generator:
@@ -188,6 +192,7 @@ def launch_merge_split(
         outputs=(out, lse),
         grids={"merge": grid},
         kernel_names=("_merge_split_states_kernel",),
+        kernel_invocations={"_merge_split_states_kernel": 1},
     )
 
 
@@ -278,6 +283,7 @@ def launch_norm_rope(
         outputs=(q_out, k_out, inputs["z"].contiguous()),
         grids={"q": q_grid, "k": k_grid},
         kernel_names=("_indexer_norm_rope_kernel",),
+        kernel_invocations={"_indexer_norm_rope_kernel": 2},
     )
 
 
@@ -318,6 +324,7 @@ def launch_indexer_logits(
         outputs=(out,),
         grids={"logits": grid},
         kernel_names=("_indexer_logits_kernel",),
+        kernel_invocations={"_indexer_logits_kernel": 1},
     )
 
 
