@@ -93,6 +93,7 @@ def compiler_module():
     utils_name = "triton.backends.ascend.utils"
     driver_name = "triton.backends.ascend.driver"
     cache_name = "triton.runtime.cache"
+    program_grid_name = "triton.backends.ascend.program_grid"
 
     def return_false(*_args, **_kwargs):
         return False
@@ -155,10 +156,17 @@ def compiler_module():
     previous_utils = sys.modules.get(utils_name)
     previous_driver = sys.modules.get(driver_name)
     previous_cache = sys.modules.get(cache_name)
+    previous_program_grid = sys.modules.get(program_grid_name)
     sys.modules[utils_name] = utils_stub
     sys.modules[driver_name] = driver_stub
     sys.modules[cache_name] = cache_stub
     sys.modules.pop(module_name, None)
+    program_grid_spec = importlib.util.spec_from_file_location(
+        program_grid_name, compiler_path.with_name("program_grid.py"))
+    program_grid = importlib.util.module_from_spec(program_grid_spec)
+    assert program_grid_spec is not None and program_grid_spec.loader is not None
+    sys.modules[program_grid_name] = program_grid
+    program_grid_spec.loader.exec_module(program_grid)
     debug_line_rewriter_name = "triton.backends.ascend.debug_line_rewriter"
     previous_debug_line_rewriter = sys.modules.get(debug_line_rewriter_name)
     sys.modules.pop(debug_line_rewriter_name, None)
@@ -192,6 +200,10 @@ def compiler_module():
             sys.modules.pop(cache_name, None)
         else:
             sys.modules[cache_name] = previous_cache
+        if previous_program_grid is None:
+            sys.modules.pop(program_grid_name, None)
+        else:
+            sys.modules[program_grid_name] = previous_program_grid
     return module
 
 
@@ -337,7 +349,7 @@ def _run_ttir_to_npubin(
             "row_coalescing_applied": row_coalescing_applied,
         }
 
-    def export_coalesce_metadata(_mod, _metadata, *, require_row_contract=False):
+    def export_program_grid_metadata(_mod, _metadata, *, require_row_contract=False):
         events.append(f"export:{require_row_contract}")
 
     def run_bisheng(command, **_kwargs):
@@ -352,7 +364,7 @@ def _run_ttir_to_npubin(
         SimpleNamespace(pass_manager=lambda _context: (events.append("pass_manager") or pass_manager)),
     )
     monkeypatch.setattr(compiler, "_parse_ttir_metadata", parse_ttir_metadata)
-    monkeypatch.setattr(compiler, "_export_coalesce_metadata", export_coalesce_metadata)
+    monkeypatch.setattr(compiler, "_export_program_grid_metadata", export_program_grid_metadata)
     monkeypatch.setattr(
         compiler,
         "get_common_bishengir_compile_options",
@@ -699,3 +711,290 @@ def test_default_compile_mode_keeps_the_91095_layout_memory_gate_prepared(compil
 
     assert "force_simt_only" not in compiler_module.NPUOptions.__dataclass_fields__
     assert "force_simt_template" not in compiler_module.NPUOptions.__dataclass_fields__
+
+
+def _program_grid_transform(order, axis, factor, logical_extent, *, persistent=False):
+    return {
+        "order": order,
+        "kind": "ceil_div",
+        "axis": axis,
+        "factor": factor,
+        "logical_extent": logical_extent,
+        "persistent_coverage": persistent,
+        "grid_stride_abi_verified": persistent,
+    }
+
+
+def _install_program_grid_attr_shim(monkeypatch, compiler_module):
+    def get_int_attr(module, name):
+        return module.attrs.get(name)
+
+    def get_program_grid_transforms(module):
+        return module.attrs.get("hacc.program_grid_transforms")
+
+    def get_program_grid_specialization(module):
+        return module.attrs.get("hacc.grid_specialization")
+
+    def set_program_grid_specialization(module, version, grid_0, grid_1, grid_2, rule_mask):
+        module.attrs["hacc.grid_specialization"] = {
+            "version": version,
+            "grid": [grid_0, grid_1, grid_2],
+            "rule_mask": rule_mask,
+        }
+
+    def clear_program_grid_specialization(module):
+        module.attrs.pop("hacc.grid_specialization", None)
+
+    def remove_attr(module, name):
+        module.attrs.pop(name, None)
+
+    monkeypatch.setattr(
+        compiler_module,
+        "ascend",
+        SimpleNamespace(ir=SimpleNamespace(
+            get_int_attr=get_int_attr,
+            get_program_grid_transforms=get_program_grid_transforms,
+            get_program_grid_specialization=get_program_grid_specialization,
+            set_program_grid_specialization=set_program_grid_specialization,
+            clear_program_grid_specialization=clear_program_grid_specialization,
+            remove_attr=remove_attr,
+        )),
+    )
+
+
+def test_export_program_grid_metadata_is_versioned_and_strips_module_attrs(
+    compiler_module, monkeypatch,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={
+        "hacc.program_grid_transforms": {
+            "version": 1,
+            "transforms": [_program_grid_transform(0, 1, 4, 33)],
+        },
+    })
+    metadata = {}
+
+    compiler_module._export_program_grid_metadata(module, metadata)
+
+    assert module.attrs == {}
+    assert metadata["program_grid_transform_schema_version"] == 1
+    assert metadata["program_grid_transforms"] == {
+        "version": 1,
+        "transforms": [_program_grid_transform(0, 1, 4, 33)],
+    }
+    assert metadata["program_grid_transforms_cache_key"] == (
+        '{"transforms":[{"axis":1,"factor":4,"grid_stride_abi_verified":false,'
+        '"kind":"ceil_div","logical_extent":33,"order":0,"persistent_coverage":false}],'
+        '"version":1}'
+    )
+    assert metadata["coalesce_factor"] == 1
+    assert metadata["coalesce_axis"] == -1
+
+
+@pytest.mark.parametrize(
+    "transforms",
+    [
+        [_program_grid_transform(0, 0, 2, 65)],
+        [
+            _program_grid_transform(0, 0, 2, 65),
+            _program_grid_transform(1, 0, 3, 65),
+        ],
+        [
+            _program_grid_transform(0, 0, 4, 17),
+            _program_grid_transform(1, 1, 3, 10),
+        ],
+    ],
+)
+def test_export_program_grid_metadata_preserves_composable_transform_order(
+    compiler_module, monkeypatch, transforms,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={
+        "hacc.program_grid_transforms": {"version": 1, "transforms": transforms},
+    })
+    metadata = {}
+
+    compiler_module._export_program_grid_metadata(module, metadata)
+
+    assert module.attrs == {}
+    assert metadata["program_grid_transforms"] == {
+        "version": 1,
+        "transforms": transforms,
+    }
+    assert metadata["program_grid_transforms_cache_key"] == (
+        compiler_module.canonical_program_grid_transforms_json(
+            metadata["program_grid_transforms"],
+        )
+    )
+
+
+def test_program_grid_and_legacy_coalesce_metadata_are_mutually_exclusive(
+    compiler_module, monkeypatch,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={
+        "hacc.program_grid_transforms": {
+            "version": 1,
+            "transforms": [_program_grid_transform(0, 0, 2, 8)],
+        },
+        "hacc.coalesce_factor": 2,
+        "hacc.coalesce_axis": 0,
+        "hacc.coalesce_grid_ceil_div": 1,
+    })
+
+    with pytest.raises(RuntimeError, match="conflicts with legacy"):
+        compiler_module._export_program_grid_metadata(module, {})
+    # The rejection happens only after all hacc launch attrs were removed, so
+    # an unrecognized attr cannot leak to a downstream compiler.
+    assert module.attrs == {}
+
+
+def test_legacy_metadata_defaults_remain_unchanged_without_new_schema(
+    compiler_module, monkeypatch,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={})
+    metadata = {}
+
+    compiler_module._export_program_grid_metadata(module, metadata)
+
+    assert metadata == {
+        "program_grid_transforms": None,
+        "program_grid_transform_schema_version": 0,
+        "program_grid_transforms_cache_key": "legacy",
+        "coalesce_factor": 1,
+        "coalesce_axis": -1,
+        "coalesce_grid_ceil_div": False,
+        "row_coalescing_applied": False,
+    }
+
+
+def test_npu_options_hash_includes_program_grid_schema_and_precision_policy(
+    compiler_module, monkeypatch,
+):
+    current = compiler_module.NPUOptions(arch="Ascend910B1")
+    relaxed = compiler_module.NPUOptions(
+        arch="Ascend910B1", precision_policy="relaxed",
+    )
+    assert current.hash() != relaxed.hash()
+
+    # A future wheel that bumps the schema constant cannot collide with this
+    # wheel's cache entries even if all other compile options are unchanged.
+    with monkeypatch.context() as schema_v2:
+        schema_v2.setattr(compiler_module, "PROGRAM_GRID_TRANSFORMS_VERSION", 2)
+        next_schema = compiler_module.NPUOptions(
+            arch="Ascend910B1", program_grid_transform_schema_version=2,
+        )
+    assert current.hash() != next_schema.hash()
+
+
+def _program_grid_specialization(*, grid=(8, 65, 1), rule_mask=512):
+    return {"version": 1, "grid": list(grid), "rule_mask": rule_mask}
+
+
+def test_program_grid_specialization_options_preserve_legacy_state_when_disabled(
+    compiler_module,
+):
+    legacy = compiler_module.NPUOptions(arch="Ascend910B1")
+    explicit_disabled = compiler_module.NPUOptions(
+        arch="Ascend910B1", program_mapping_rule_mask=0)
+    enabled = compiler_module.NPUOptions(
+        arch="Ascend910B1",
+        program_mapping_rule_mask=512,
+        program_grid_specialization=_program_grid_specialization(),
+    )
+
+    for options in (legacy, explicit_disabled):
+        assert "program_mapping_rule_mask" not in options.__dict__
+        assert "program_grid_specialization" not in options.__dict__
+    assert legacy.hash() == explicit_disabled.hash()
+    assert enabled.__dict__["program_mapping_rule_mask"] == 512
+    assert enabled.__dict__["program_grid_specialization"] == _program_grid_specialization()
+    assert enabled.hash() != legacy.hash()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"program_mapping_rule_mask": 1},
+        {"program_grid_specialization": _program_grid_specialization()},
+        {
+            "program_mapping_rule_mask": 512,
+            "program_grid_specialization": _program_grid_specialization(rule_mask=1024),
+        },
+    ],
+)
+def test_npu_options_reject_inconsistent_program_grid_specialization(
+    compiler_module, kwargs,
+):
+    with pytest.raises(ValueError, match="program-grid|program_grid|program_mapping"):
+        compiler_module.NPUOptions(arch="Ascend910B1", **kwargs)
+
+
+def test_backend_prepares_reproducible_grid_before_cache_and_rejects_stale_input(
+    compiler_module,
+):
+    backend = compiler_module.AscendBackend(SimpleNamespace(backend="npu", arch="Ascend910B1"))
+    calls = []
+
+    def stable_grid(bound):
+        calls.append(bound["extent"])
+        return (bound["extent"], 16)
+
+    prepared = backend.prepare_program_grid_specialization(
+        stable_grid, {"extent": 65}, {"program_mapping_rule_mask": 512})
+    assert prepared == (
+        (65, 16, 1),
+        {"program_grid_specialization": _program_grid_specialization(grid=(65, 16, 1))},
+    )
+    assert calls == [65, 65]
+
+    unstable = iter(((8, 1), (9, 1)))
+    with pytest.raises(RuntimeError, match="not reproducible"):
+        backend.prepare_program_grid_specialization(
+            lambda _bound: next(unstable), {}, {"program_mapping_rule_mask": 512})
+    with pytest.raises(RuntimeError, match="JIT resolves"):
+        backend.prepare_program_grid_specialization(
+            (8, 1), {}, {
+                "program_mapping_rule_mask": 512,
+                "program_grid_specialization": _program_grid_specialization(grid=(8, 1, 1)),
+            })
+
+
+def test_compiler_injects_and_exports_grid_specialization_without_attr_leak(
+    compiler_module, monkeypatch,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={})
+    metadata = {}
+    option = SimpleNamespace(
+        program_mapping_rule_mask=512,
+        program_grid_specialization=_program_grid_specialization(),
+    )
+
+    compiler_module._inject_program_grid_specialization(module, metadata, option)
+    assert module.attrs == {"hacc.grid_specialization": _program_grid_specialization()}
+    assert metadata["program_grid_specialization"] == _program_grid_specialization()
+    assert metadata["program_grid_specialization_cache_key"] == (
+        '{"grid":[8,65,1],"rule_mask":512,"version":1}'
+    )
+
+    compiler_module._export_program_grid_metadata(module, metadata)
+    assert module.attrs == {}
+    assert metadata["program_grid_specialization"] == _program_grid_specialization()
+    assert metadata["program_grid_specialization_cache_key"] == (
+        '{"grid":[8,65,1],"rule_mask":512,"version":1}'
+    )
+
+
+def test_aot_program_mapping_without_fixed_grid_stays_attr_free(
+    compiler_module, monkeypatch,
+):
+    _install_program_grid_attr_shim(monkeypatch, compiler_module)
+    module = SimpleNamespace(attrs={})
+    metadata = {}
+    option = SimpleNamespace(program_mapping_rule_mask=512, program_grid_specialization=None)
+
+    assert compiler_module._inject_program_grid_specialization(module, metadata, option) is None
+    assert module.attrs == {}
+    assert metadata == {}

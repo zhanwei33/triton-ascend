@@ -38,6 +38,7 @@ class AliasAnalysis;
 class ControlFlowGraph;
 class DataFlowGraph;
 class EntryArgPointerAliasAnalysis;
+class ProgramAxisDependenceAnalysis;
 
 enum class AnalysisRequirement : uint8_t {
   None = 0,
@@ -49,6 +50,7 @@ enum class AnalysisRequirement : uint8_t {
   DataFlowGraph = DataFlow,
   MemorySSA = 1u << 3,
   EntryArgPointerAlias = 1u << 4,
+  ProgramAxisDependence = 1u << 5,
 };
 
 constexpr AnalysisRequirement operator|(AnalysisRequirement lhs,
@@ -117,21 +119,29 @@ public:
     return *dataFlowGraph;
   }
 
+  ProgramAxisDependenceAnalysis &getProgramAxisDependenceAnalysis() {
+    assert(programAxisDependenceAnalysis &&
+           "call ensure() before accessing program-axis dependence analysis");
+    return *programAxisDependenceAnalysis;
+  }
+
 private:
   LogicalResult ensureControlFlowGraph();
   LogicalResult ensureAliasAnalysis();
   LogicalResult ensureEntryArgPointerAliasAnalysis();
   LogicalResult ensureDataFlowGraph();
+  LogicalResult ensureProgramAxisDependenceAnalysis();
 
   triton::FuncOp function;
   unsigned epoch = 0;
 
-  // Declaration order makes normal destruction mirror invalidate(): DFG,
-  // then entry-argument pointer aliases, AliasAnalysis, then CFG.
+  // Declaration order makes normal destruction mirror invalidate(): program
+  // axis dependence, DFG, entry-argument pointer aliases, AliasAnalysis, CFG.
   std::unique_ptr<ControlFlowGraph> controlFlowGraph;
   std::unique_ptr<AliasAnalysis> aliasAnalysis;
   std::unique_ptr<EntryArgPointerAliasAnalysis> entryArgPointerAliasAnalysis;
   std::unique_ptr<DataFlowGraph> dataFlowGraph;
+  std::unique_ptr<ProgramAxisDependenceAnalysis> programAxisDependenceAnalysis;
 };
 
 } // namespace cfg
