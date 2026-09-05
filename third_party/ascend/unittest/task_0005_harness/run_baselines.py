@@ -449,7 +449,15 @@ def _parse_duration(value: str) -> float:
 def _target_samples(
     profiler_root: Path, kernel_name: str
 ) -> list[tuple[Path, int, float]]:
-    patterns = ("kernel_details_*.csv", "op_summary_*.csv")
+    # CANN may export either timestamped CSVs or the canonical names
+    # ``kernel_details.csv`` / ``op_summary.csv``.  Both are explicit schema
+    # matches; no selection is made based on newest-file timestamps.
+    patterns = (
+        "kernel_details_*.csv",
+        "kernel_details.csv",
+        "op_summary_*.csv",
+        "op_summary.csv",
+    )
     candidates = sorted(
         {path for pattern in patterns for path in profiler_root.rglob(pattern)}
     )

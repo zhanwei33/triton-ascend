@@ -155,7 +155,7 @@ def test_reference_logits_has_group_major_shape():
 def test_profiler_parser_requires_an_exact_target_name(tmp_path):
     profiler = tmp_path / "profile"
     profiler.mkdir()
-    path = profiler / "op_summary_fixture.csv"
+    path = profiler / "op_summary.csv"
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=("Op Name", "Task Duration(us)"))
         writer.writeheader()
