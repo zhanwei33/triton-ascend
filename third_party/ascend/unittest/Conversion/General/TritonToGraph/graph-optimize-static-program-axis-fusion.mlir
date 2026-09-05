@@ -11,7 +11,8 @@
 // FULL-LABEL: tt.func public @spaf_g4(
 // FULL-NOT: tt.get_program_id z
 // FULL: tt.load {{.*}} : tensor<16x16x!tt.ptr<bf16>>
-// FULL: scf.for {{.*}} to {{.*}} step {{.*}} : i32 {
+// FULL: scf.for %[[FULL_GROUP:.*]] = {{.*}} to {{.*}} step {{.*}} : i32 {
+// FULL: arith.muli %[[FULL_GROUP]], %span : i32
 // FULL: tt.load {{.*}} : tensor<16x16x!tt.ptr<bf16>>
 // FULL: tt.dot {{.*}} -> tensor<16x16xf32>
 // FULL: tt.store {{.*}} : tensor<16x16x!tt.ptr<f32>>
@@ -19,9 +20,11 @@
 // PARTIAL-LABEL: module attributes
 // PARTIAL: hacc.program_grid_transforms = {{.*}}axis = 2 : i32{{.*}}factor = 2 : i64{{.*}}
 // PARTIAL-LABEL: tt.func public @spaf_g4(
-// PARTIAL: tt.get_program_id z
-// PARTIAL: arith.muli {{.*}}, {{.*}} : i32
-// PARTIAL: scf.for {{.*}} to {{.*}} step {{.*}} : i32 {
+// PARTIAL: %[[PARTIAL_PID:.*]] = tt.get_program_id z
+// PARTIAL: %[[PARTIAL_BASE:.*]] = arith.muli %[[PARTIAL_PID]], {{.*}} : i32
+// PARTIAL: scf.for %[[PARTIAL_IV:.*]] = {{.*}} to {{.*}} step {{.*}} : i32 {
+// PARTIAL: %[[PARTIAL_GROUP:.*]] = arith.addi %[[PARTIAL_BASE]], %[[PARTIAL_IV]] : i32
+// PARTIAL: arith.muli %[[PARTIAL_GROUP]], %span : i32
 
 // LOW: resource-cost candidate=static-program-axis-fusion.f2 accepted=false reason=insufficient_parallelism
 // LOW: resource-cost candidate=static-program-axis-fusion.f4 accepted=false reason=insufficient_parallelism

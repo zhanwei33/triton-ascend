@@ -621,10 +621,14 @@ LogicalResult materializeStaticFusion(triton::FuncOp function,
   if (!body || !body->mightHaveTerminator())
     return failure();
   rewriter.setInsertionPointToStart(body);
-  Value fusedGroup = zero;
+  // In both full and partial fusion the induction variable identifies the
+  // logical group handled by this loop iteration.  Full fusion starts at
+  // group zero, while partial fusion adds the physical-program base.  Do not
+  // substitute the zero lower bound for full fusion: that would replay group
+  // zero for every iteration and leave the remaining group-major rows stale.
+  Value fusedGroup = loop.getInductionVar();
   if (factor != structure.groups)
-    fusedGroup = rewriter.create<arith::AddIOp>(loc, groupBase,
-                                                 loop.getInductionVar());
+    fusedGroup = rewriter.create<arith::AddIOp>(loc, groupBase, fusedGroup);
 
   for (Operation *operation : suffix)
     operation->moveBefore(body->getTerminator());
