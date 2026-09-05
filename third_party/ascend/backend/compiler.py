@@ -94,7 +94,14 @@ def _get_then_remove_rc(mod, attr_name: str) -> int:
 
     if get_int_attr is None:
         return -1
-    attr_value = get_int_attr(mod, attr_name)
+    # Keep metadata-only legacy callers usable when this Python module is
+    # imported next to an installed C++ extension: their stand-in is not an
+    # OpState, so pybind rightfully rejects it.  A real compiler module still
+    # always takes the binding path below.
+    try:
+        attr_value = get_int_attr(mod, attr_name)
+    except TypeError:
+        return -1
 
     if remove_attr:
         remove_attr(mod, attr_name)
@@ -119,7 +126,19 @@ def _get_then_remove_program_grid_transforms(mod):
             raise RuntimeError(
                 "hacc.program_grid_transforms requires the matching Ascend C++ binding")
         return None
-    raw = get_transforms(mod)
+    # The production pipeline always passes an MLIR OpState.  Some legacy
+    # metadata-only callers, however, use a lightweight module stand-in that
+    # deliberately has no C++ OpState binding.  Preserve that old no-attr
+    # behavior while remaining fail-closed if the stand-in advertises the new
+    # contract (which must be parsed by the C++ validator).
+    try:
+        raw = get_transforms(mod)
+    except TypeError:
+        if PROGRAM_GRID_TRANSFORMS_ATTR in str(mod):
+            raise RuntimeError(
+                "hacc.program_grid_transforms requires an MLIR module accepted by "
+                "the Ascend C++ binding")
+        return None
     if raw is not None and remove_attr:
         remove_attr(mod, PROGRAM_GRID_TRANSFORMS_ATTR)
     return raw

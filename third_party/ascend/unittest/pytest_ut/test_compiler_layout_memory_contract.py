@@ -349,7 +349,7 @@ def _run_ttir_to_npubin(
             "row_coalescing_applied": row_coalescing_applied,
         }
 
-    def export_coalesce_metadata(_mod, _metadata, *, require_row_contract=False):
+    def export_program_grid_metadata(_mod, _metadata, *, require_row_contract=False):
         events.append(f"export:{require_row_contract}")
 
     def run_bisheng(command, **_kwargs):
@@ -364,7 +364,7 @@ def _run_ttir_to_npubin(
         SimpleNamespace(pass_manager=lambda _context: (events.append("pass_manager") or pass_manager)),
     )
     monkeypatch.setattr(compiler, "_parse_ttir_metadata", parse_ttir_metadata)
-    monkeypatch.setattr(compiler, "_export_coalesce_metadata", export_coalesce_metadata)
+    monkeypatch.setattr(compiler, "_export_program_grid_metadata", export_program_grid_metadata)
     monkeypatch.setattr(
         compiler,
         "get_common_bishengir_compile_options",
