@@ -163,6 +163,7 @@ def launch_merge_split(
     case: MergeCase,
     *,
     graph_optimize: bool,
+    program_mapping_rule_mask: int = 0,
 ) -> LaunchResult:
     module = load_fixture("merge_split")
     partial_out = inputs["partial_out"]
@@ -191,7 +192,10 @@ def launch_merge_split(
         head_dim=case.head_dim,
         BLOCK_S=triton.next_power_of_2(case.num_splits),
         BLOCK_D=triton.next_power_of_2(case.head_dim),
-        **_compile_kwargs(graph_optimize),
+        **_compile_kwargs(
+            graph_optimize,
+            program_mapping_rule_mask=program_mapping_rule_mask,
+        ),
     )
     return LaunchResult(
         outputs=(out, lse),
