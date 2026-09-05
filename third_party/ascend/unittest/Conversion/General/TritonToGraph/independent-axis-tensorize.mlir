@@ -11,8 +11,9 @@
 // CHECK: persistent_coverage = false
 // CHECK-LABEL: tt.func @_merge_split_states_kernel
 // CHECK: arith.cmpi slt
-// CHECK: tensor<2x{{(2|4|8)}}x4xf32>
-// CHECK: "tt.reduce"({{.*}}) <{axis = 0 : i32}>
+// CHECK: tt.load {{.*}} : tensor<2x{{(2|4|8)}}x4x!tt.ptr<f32>>
+// CHECK: tt.reduce
+// CHECK-SAME: axis = 0 : i32
 // CHECK: tensor<{{(2|4|8)}}x4xf32>
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
   tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
@@ -48,7 +49,8 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i
 // CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
 // CHECK: arith.cmpi slt
 // CHECK: tensor<{{(2|4|8)}}x4xf32>
-// CHECK: "tt.reduce"({{.*}}) <{axis = 1 : i32}>
+// CHECK: tt.reduce
+// CHECK-SAME: axis = 1 : i32
 // CHECK: tensor<{{(2|4|8)}}xf32>
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
   tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
@@ -84,7 +86,8 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 16 : i
 // CHECK-LABEL: module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 1 : i64
 // CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
 // CHECK: tt.get_program_id y
-// CHECK: "tt.reduce"({{.*}}) <{axis = 0 : i32}>
+// CHECK: tt.reduce
+// CHECK-SAME: axis = 0 : i32
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
   tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c4 = arith.constant 4 : i32
