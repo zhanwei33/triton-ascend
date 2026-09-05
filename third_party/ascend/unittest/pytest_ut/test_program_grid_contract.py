@@ -59,6 +59,29 @@ def test_single_transform_uses_ceil_div_and_retains_original_tail_extent(
     assert covered == list(range(logical_extent))
 
 
+@pytest.mark.parametrize(
+    ("logical_extent", "expected_programs"),
+    [(1, 1), (7, 1), (8, 1), (9, 2), (64, 8), (65, 9)],
+)
+def test_iat_factor_eight_covers_boundary_head_extents_once(
+    program_grid, logical_extent, expected_programs,
+):
+    """Exercise H=1/F-1/F/F+1/64/65 for the IAT tail-mask ABI."""
+    factor = 8
+    contract = _contract(_transform(0, 1, factor, logical_extent))
+    assert program_grid.apply_program_grid_transforms(
+        (3, logical_extent, 1), contract,
+    ) == (3, expected_programs, 1)
+
+    covered = [
+        program * factor + lane
+        for program in range(expected_programs)
+        for lane in range(factor)
+        if program * factor + lane < logical_extent
+    ]
+    assert covered == list(range(logical_extent))
+
+
 def test_composable_transforms_support_same_and_different_axes(program_grid):
     same_axis = _contract(
         _transform(0, 0, 2, 65),

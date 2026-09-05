@@ -10,10 +10,10 @@
 // CHECK: logical_extent = 65 : i64
 // CHECK: persistent_coverage = false
 // CHECK-LABEL: tt.func @_merge_split_states_kernel
+// CHECK: arith.cmpi slt
 // CHECK: tensor<2x{{(2|4|8)}}x4xf32>
 // CHECK: "tt.reduce"({{.*}}) <{axis = 0 : i32}>
 // CHECK: tensor<{{(2|4|8)}}x4xf32>
-// CHECK: arith.cmpi slt
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
   tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c4 = arith.constant 4 : i32
@@ -46,10 +46,10 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i
 // CHECK: hacc.independent_axis_tensorize
 // CHECK: logical_extent = 16 : i64
 // CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK: arith.cmpi slt
 // CHECK: tensor<{{(2|4|8)}}x4xf32>
 // CHECK: "tt.reduce"({{.*}}) <{axis = 1 : i32}>
 // CHECK: tensor<{{(2|4|8)}}xf32>
-// CHECK: arith.cmpi slt
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
   tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c4 = arith.constant 4 : i32
