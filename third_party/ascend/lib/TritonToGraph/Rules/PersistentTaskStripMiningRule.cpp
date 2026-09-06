@@ -64,8 +64,8 @@ constexpr llvm::StringLiteral kPersistentTaskStripMiningMarkerAttr =
 // Keep the Phase A/B factors and extend the same production candidate set.
 // There is deliberately no environment-variable force path: every value is
 // materialized, resource-checked, and ranked by the ordinary planner.
-constexpr std::array<unsigned, 7> kBlockTCandidates = {2, 4, 8, 16,
-                                                        32, 64, 128};
+constexpr std::array<unsigned, 7> kBlockTCandidates = {2,  4,  8,  16,
+                                                       32, 64, 128};
 
 struct PTSMCandidate {
   triton::FuncOp function;
@@ -78,8 +78,9 @@ struct PTSMCandidate {
   CandidateEvaluation evaluation;
 };
 
-LogicalResult materializePersistentTaskStripMining(triton::FuncOp function,
-                                                    const PTSMCandidate &candidate);
+LogicalResult
+materializePersistentTaskStripMining(triton::FuncOp function,
+                                     const PTSMCandidate &candidate);
 LogicalResult runProgramMappingCandidateCleanup(ModuleOp module);
 std::optional<LiveByteEstimate>
 estimateFinalPersistentPeak(triton::FuncOp function,
@@ -232,12 +233,13 @@ getComposableLaunchContract(ModuleOp module) {
   return *parsed;
 }
 
-CandidateCost buildResourceCandidate(const PTSMCandidate &candidate,
-                                     const ProgramAxisDependence &dependence,
-                                     const LiveByteEstimate &baselineLiveBytes,
-                                     const LiveByteEstimate *finalLiveBytes,
-                                     const ProgramMappingLaunchProjection &before,
-                                     const ProgramMappingLaunchProjection &after) {
+CandidateCost
+buildResourceCandidate(const PTSMCandidate &candidate,
+                       const ProgramAxisDependence &dependence,
+                       const LiveByteEstimate &baselineLiveBytes,
+                       const LiveByteEstimate *finalLiveBytes,
+                       const ProgramMappingLaunchProjection &before,
+                       const ProgramMappingLaunchProjection &after) {
   CandidateCost cost;
   cost.plan.tensorizeFactor = 1;
   cost.plan.blockT = candidate.blockT;
@@ -272,8 +274,7 @@ CandidateCost buildResourceCandidate(const PTSMCandidate &candidate,
             ? baselineLiveBytes.reason
             : (finalLiveBytes ? finalLiveBytes->reason
                               : ResourceCostRejectReason::UnknownResource);
-    cost.hasDynamicShape =
-        reason == ResourceCostRejectReason::DynamicShape;
+    cost.hasDynamicShape = reason == ResourceCostRejectReason::DynamicShape;
     cost.hasUnknownResource = !cost.hasDynamicShape;
     return cost;
   }
@@ -349,8 +350,7 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
                                     resources);
     if (!afterProjection || afterProjection->logicalGrid[kTokenAxis] == 0)
       continue;
-    const uint64_t logicalTiles =
-        afterProjection->logicalGrid[kTokenAxis];
+    const uint64_t logicalTiles = afterProjection->logicalGrid[kTokenAxis];
 
     PTSMCandidate prototype;
     prototype.function = function;
@@ -421,14 +421,15 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
 // standalone plan wraps it in its own clone; the joint IAT/PTSM planner wraps
 // both rewrites in one outer clone, so a failure cannot publish an IAT-only
 // launch contract.
-LogicalResult applyPersistentCandidateToSandbox(ModuleOp module,
-                                                triton::FuncOp function,
-                                                const PTSMCandidate &candidate) {
+LogicalResult
+applyPersistentCandidateToSandbox(ModuleOp module, triton::FuncOp function,
+                                  const PTSMCandidate &candidate) {
   if (!module || module->hasAttr(kPersistentTaskStripMiningMarkerAttr))
     return failure();
   std::optional<ProgramGridTransformContract> existing =
       getComposableLaunchContract(module);
-  if (!existing || existing->transforms.size() != candidate.existingTransformCount)
+  if (!existing ||
+      existing->transforms.size() != candidate.existingTransformCount)
     return failure();
   if (failed(materializePersistentTaskStripMining(function, candidate)))
     return failure();
@@ -939,7 +940,8 @@ estimateFinalPersistentPeak(triton::FuncOp function,
       failed(runProgramMappingCandidateCleanup(sandbox)) ||
       failed(mlir::verify(sandbox.getOperation())))
     return std::nullopt;
-  LiveByteEstimate estimate = estimatePeakLiveBytes(clonedFunction.getOperation());
+  LiveByteEstimate estimate =
+      estimatePeakLiveBytes(clonedFunction.getOperation());
   return estimate.known ? std::optional<LiveByteEstimate>(std::move(estimate))
                         : std::nullopt;
 }
@@ -991,9 +993,8 @@ public:
     sandbox.getBody()->push_back(candidate.function->clone());
     auto clonedFunction =
         dyn_cast<triton::FuncOp>(&sandbox.getBody()->front());
-    if (!clonedFunction ||
-        failed(applyPersistentCandidateToSandbox(sandbox, clonedFunction,
-                                                 candidate)))
+    if (!clonedFunction || failed(applyPersistentCandidateToSandbox(
+                               sandbox, clonedFunction, candidate)))
       return failure();
 
     candidate.function->getRegion(0).takeBody(clonedFunction->getRegion(0));

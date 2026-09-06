@@ -78,10 +78,10 @@ struct ProgramMappingLaunchProjection {
 // Mirrors the generated launcher order: ceil-div transforms first, then the
 // one proven persistent cap; otherwise legacy auto-map caps only a launch
 // without any transform contract. Invalid or unprovable inputs fail closed.
-std::optional<ProgramMappingLaunchProjection> projectProgramMappingLaunch(
-    const ProgramGridSpecialization &specialization,
-    llvm::ArrayRef<ProgramGridTransform> transforms,
-    const ResourceSnapshot &resources);
+std::optional<ProgramMappingLaunchProjection>
+projectProgramMappingLaunch(const ProgramGridSpecialization &specialization,
+                            llvm::ArrayRef<ProgramGridTransform> transforms,
+                            const ResourceSnapshot &resources);
 
 // Parse and validate the version-1 contract.  It is intentionally fail-closed:
 // unknown keys, versions, transform kinds, dynamic/missing logical extents,

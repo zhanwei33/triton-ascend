@@ -54,8 +54,7 @@ std::optional<uint64_t> ceilDiv(uint64_t numerator, uint64_t denominator) {
   return numerator / denominator + (numerator % denominator != 0);
 }
 
-std::optional<uint64_t>
-getGridProduct(const std::array<uint64_t, 3> &grid) {
+std::optional<uint64_t> getGridProduct(const std::array<uint64_t, 3> &grid) {
   uint64_t product = 1;
   for (uint64_t extent : grid)
     if (extent == 0 || !checkedMul(product, extent, product))
@@ -234,9 +233,8 @@ mlir::triton::cfg::projectProgramMappingLaunch(
     // This is the legacy driver path: blockNum is capped after forming the
     // full grid product, without changing the logical grid itself.
     projection.legacyAutoMap = true;
-    projection.physicalPrograms =
-        std::min<uint64_t>(projection.logicalPrograms,
-                           resources.deviceCoreCount);
+    projection.physicalPrograms = std::min<uint64_t>(projection.logicalPrograms,
+                                                     resources.deviceCoreCount);
   } else if (persistentAxis) {
     uint64_t otherAxes = 1;
     for (unsigned axis = 0; axis < projection.physicalGrid.size(); ++axis) {
@@ -250,8 +248,8 @@ mlir::triton::cfg::projectProgramMappingLaunch(
     if (otherAxes <= resources.deviceCoreCount) {
       const uint64_t axisCap = std::max<uint64_t>(
           1, static_cast<uint64_t>(resources.deviceCoreCount) / otherAxes);
-      projection.physicalGrid[*persistentAxis] = std::min(
-          projection.physicalGrid[*persistentAxis], axisCap);
+      projection.physicalGrid[*persistentAxis] =
+          std::min(projection.physicalGrid[*persistentAxis], axisCap);
     }
     std::optional<uint64_t> physicalPrograms =
         getGridProduct(projection.physicalGrid);
@@ -265,8 +263,8 @@ mlir::triton::cfg::projectProgramMappingLaunch(
     projection.physicalPrograms = projection.logicalPrograms;
   }
 
-  std::optional<uint64_t> waves = ceilDiv(projection.logicalPrograms,
-                                          projection.physicalPrograms);
+  std::optional<uint64_t> waves =
+      ceilDiv(projection.logicalPrograms, projection.physicalPrograms);
   if (!waves || *waves == 0)
     return std::nullopt;
   projection.physicalWaves = *waves;

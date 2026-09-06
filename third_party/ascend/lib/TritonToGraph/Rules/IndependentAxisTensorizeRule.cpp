@@ -302,11 +302,12 @@ bool hasDisjointWriteReadRoots(
   return true;
 }
 
-CandidateCost buildResourceCandidate(const IATCandidate &candidate,
-                                     const ProgramAxisDependence &dependence,
-                                     const LiveByteEstimate &liveBytes,
-                                     const ProgramMappingLaunchProjection &before,
-                                     const ProgramMappingLaunchProjection &after) {
+CandidateCost
+buildResourceCandidate(const IATCandidate &candidate,
+                       const ProgramAxisDependence &dependence,
+                       const LiveByteEstimate &liveBytes,
+                       const ProgramMappingLaunchProjection &before,
+                       const ProgramMappingLaunchProjection &after) {
   CandidateCost cost;
   cost.plan.tensorizeFactor = candidate.factor;
   cost.plan.blockT = 1;
@@ -353,10 +354,9 @@ CandidateCost buildResourceCandidate(const IATCandidate &candidate,
   return cost;
 }
 
-std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
-                                             bool emitRejectRemark,
-                                             std::optional<unsigned> requestedFactor =
-                                                 std::nullopt) {
+std::optional<IATCandidate>
+analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
+                 std::optional<unsigned> requestedFactor = std::nullopt) {
   triton::FuncOp function = context.getFunction();
   ModuleOp module = function->getParentOfType<ModuleOp>();
   if (!module || hasConflictingLaunchContract(module) ||
@@ -415,11 +415,11 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
       *form == TensorizeForm::MergeSplit
           ? llvm::ArrayRef<unsigned>(kMergeTensorizeFactors.data(),
                                      kMergeTensorizeFactors.size())
-          : isPTSMRuleEnabled(*specialization)
-                ? llvm::ArrayRef<unsigned>(kNormTensorizeFactors.data(),
-                                           kNormTensorizeFactors.size())
-                : llvm::ArrayRef<unsigned>(kMergeTensorizeFactors.data(),
-                                           kMergeTensorizeFactors.size());
+      : isPTSMRuleEnabled(*specialization)
+          ? llvm::ArrayRef<unsigned>(kNormTensorizeFactors.data(),
+                                     kNormTensorizeFactors.size())
+          : llvm::ArrayRef<unsigned>(kMergeTensorizeFactors.data(),
+                                     kMergeTensorizeFactors.size());
   SmallVector<CandidateEvaluation, 4> evaluations;
   for (unsigned factor : factors) {
     if (requestedFactor && factor != *requestedFactor)
@@ -427,10 +427,12 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
     std::array<int64_t, 3> transformedGrid = specialization->grid;
     transformedGrid[kTargetAxis] =
         logicalExtent / factor + (logicalExtent % factor != 0);
-    ProgramGridTransform transform{
-        0, kTargetAxis, static_cast<int64_t>(factor), logicalExtent,
-        /*persistentCoverage=*/false,
-        /*gridStrideAbiVerified=*/false};
+    ProgramGridTransform transform{0,
+                                   kTargetAxis,
+                                   static_cast<int64_t>(factor),
+                                   logicalExtent,
+                                   /*persistentCoverage=*/false,
+                                   /*gridStrideAbiVerified=*/false};
     std::optional<ProgramMappingLaunchProjection> afterProjection =
         projectProgramMappingLaunch(*specialization, {transform}, resources);
     if (!afterProjection)
@@ -457,10 +459,9 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
     prototype.factor = factor;
     prototype.requiresPersistentChaining = requiresPersistentChaining;
     prototype.resources = resources;
-    evaluations.push_back(
-        context.getResourceCostAnalysis().evaluate(buildResourceCandidate(
-            prototype, dependence, liveBytes, *beforeProjection,
-            *afterProjection)));
+    evaluations.push_back(context.getResourceCostAnalysis().evaluate(
+        buildResourceCandidate(prototype, dependence, liveBytes,
+                               *beforeProjection, *afterProjection)));
   }
   if (evaluations.empty())
     return std::nullopt;
@@ -1236,8 +1237,7 @@ LogicalResult materializeIATCandidateToSandbox(ModuleOp module,
   return mlir::verify(module.getOperation());
 }
 
-ModuleOp createProgramMappingSandbox(ModuleOp module,
-                                     triton::FuncOp function) {
+ModuleOp createProgramMappingSandbox(ModuleOp module, triton::FuncOp function) {
   ModuleOp sandbox = ModuleOp::create(function.getLoc());
   if (Attribute specialization =
           module->getAttr(kProgramGridSpecializationAttr))
@@ -1257,8 +1257,8 @@ bool calculateTokenOnlyRepeatedBytes(uint64_t headGroups, uint64_t tokens,
   // final IR ownership model prevents broadcasts/views from adding extra UB
   // allocations; the repeated-work term records only cross-head-group replay.
   uint64_t perTokenBytes = 0;
-  if (!multiplyNoOverflow(static_cast<uint64_t>(dimExtent),
-                          sizeof(float), perTokenBytes))
+  if (!multiplyNoOverflow(static_cast<uint64_t>(dimExtent), sizeof(float),
+                          perTokenBytes))
     return false;
   uint64_t repeatedGroups = headGroups - 1;
   uint64_t repeatedTokens = 0;
@@ -1276,10 +1276,9 @@ CandidateCost buildJointResourceCandidate(
   cost.plan.tensorizeFactor = iat.factor;
   cost.plan.blockT = blockT;
   cost.plan.staticAxisFusionFactor = 1;
-  cost.plan.stableId =
-      (llvm::Twine("program-mapping.iat") + llvm::Twine(iat.factor) +
-       ".ptsm" + llvm::Twine(blockT))
-          .str();
+  cost.plan.stableId = (llvm::Twine("program-mapping.iat") +
+                        llvm::Twine(iat.factor) + ".ptsm" + llvm::Twine(blockT))
+                           .str();
   cost.logicalTasksBefore = before.logicalPrograms;
   cost.logicalTasksAfter = after.logicalPrograms;
   cost.actualProgramsBefore = before.physicalPrograms;
@@ -1301,9 +1300,9 @@ CandidateCost buildJointResourceCandidate(
   cost.persistent = true;
 
   if (!baselineLiveBytes.known || !finalLiveBytes.known) {
-    const ResourceCostRejectReason reason =
-        !baselineLiveBytes.known ? baselineLiveBytes.reason
-                                 : finalLiveBytes.reason;
+    const ResourceCostRejectReason reason = !baselineLiveBytes.known
+                                                ? baselineLiveBytes.reason
+                                                : finalLiveBytes.reason;
     cost.hasDynamicShape = reason == ResourceCostRejectReason::DynamicShape;
     cost.hasUnknownResource = !cost.hasDynamicShape;
     return cost;
@@ -1315,8 +1314,8 @@ CandidateCost buildJointResourceCandidate(
                                        before.logicalGrid[0], iat.dimExtent,
                                        repeatedBefore) ||
       !calculateTokenOnlyRepeatedBytes(after.logicalGrid[1],
-                                       before.logicalGrid[0],
-                                       iat.dimExtent, repeatedAfter)) {
+                                       before.logicalGrid[0], iat.dimExtent,
+                                       repeatedAfter)) {
     cost.hasUnknownResource = true;
     return cost;
   }
@@ -1428,8 +1427,7 @@ bool isBetterJointCandidate(const JointProgramMappingCandidate &lhs,
     return left.tokenOnlyRepeatedBytesAfter < right.tokenOnlyRepeatedBytesAfter;
   if (left.persistentLoopTripsAfter != right.persistentLoopTripsAfter)
     return left.persistentLoopTripsAfter < right.persistentLoopTripsAfter;
-  if (left.candidate.actualProgramsAfter !=
-      right.candidate.actualProgramsAfter)
+  if (left.candidate.actualProgramsAfter != right.candidate.actualProgramsAfter)
     return left.candidate.actualProgramsAfter >
            right.candidate.actualProgramsAfter;
   if (left.candidate.estimatedPeakLiveBytes !=
@@ -1506,7 +1504,8 @@ public:
         hasConflictingLaunchContract(module))
       return failure();
 
-    ModuleOp sandbox = createProgramMappingSandbox(module, candidate.iat.function);
+    ModuleOp sandbox =
+        createProgramMappingSandbox(module, candidate.iat.function);
     auto clonedFunction = dyn_cast<triton::FuncOp>(&sandbox.getBody()->front());
     if (!clonedFunction ||
         failed(materializeIATCandidateToSandbox(sandbox, clonedFunction,
@@ -1638,14 +1637,15 @@ public:
         return success();
       LLVM_DEBUG(llvm::dbgs()
                  << "[" DEBUG_TYPE "] selected joint program mapping in @"
-                 << candidate->iat.function.getName() << ": iat_factor="
-                 << candidate->iat.factor << " block_t=" << candidate->blockT
-                 << " logical="
+                 << candidate->iat.function.getName()
+                 << ": iat_factor=" << candidate->iat.factor
+                 << " block_t=" << candidate->blockT << " logical="
                  << candidate->evaluation.candidate.logicalTasksBefore << "->"
                  << candidate->evaluation.candidate.logicalTasksAfter
                  << " physical="
                  << candidate->evaluation.candidate.actualProgramsBefore << "->"
-                 << candidate->evaluation.candidate.actualProgramsAfter << "\n");
+                 << candidate->evaluation.candidate.actualProgramsAfter
+                 << "\n");
       plans.push_back(std::make_unique<JointProgramMappingPlan>(
           std::move(*candidate), context.getEpoch()));
       return success();

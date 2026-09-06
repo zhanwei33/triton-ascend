@@ -166,8 +166,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
         if (mappingUBCapacityBytes > std::numeric_limits<unsigned>::max())
           throw py::value_error(
               "mapping_ub_capacity_bytes must fit in unsigned");
-        if (storeCoalescingUBBudgetBytes >
-            std::numeric_limits<unsigned>::max())
+        if (storeCoalescingUBBudgetBytes > std::numeric_limits<unsigned>::max())
           throw py::value_error(
               "store_coalescing_ub_budget_bytes must fit in unsigned");
         if (deviceCoreCount > std::numeric_limits<unsigned>::max())
@@ -184,8 +183,8 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
             mappingUBCapacityBytes ? mappingUBCapacityBytes : ubCapacityBytes;
         if (reservedUBBytes > std::numeric_limits<unsigned>::max() ||
             reservedUBBytes > effectiveMappingUBCapacity)
-          throw py::value_error(
-              "reserved_ub_bytes must fit in unsigned and not exceed mapping UB");
+          throw py::value_error("reserved_ub_bytes must fit in unsigned and "
+                                "not exceed mapping UB");
 
         mlir::triton::cfg::GraphOptimizationOptions options;
         options.enabledRuleMask = graphRuleMask;

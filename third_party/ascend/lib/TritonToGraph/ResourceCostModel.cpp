@@ -748,8 +748,7 @@ std::string cfg::formatCandidateRemark(const CandidateEvaluation &evaluation) {
          << " physical_blocks=" << candidate.actualProgramsBefore << "->"
          << candidate.actualProgramsAfter
          << " physical_waves=" << evaluation.physicalWavesBefore << "->"
-         << evaluation.physicalWavesAfter
-         << " legacy_auto_map="
+         << evaluation.physicalWavesAfter << " legacy_auto_map="
          << (candidate.legacyAutoMapBefore ? "true" : "false") << "->"
          << (candidate.legacyAutoMapAfter ? "true" : "false")
          << " required_programs=" << evaluation.requiredParallelPrograms
@@ -765,9 +764,8 @@ std::string cfg::formatCandidateRemark(const CandidateEvaluation &evaluation) {
          << candidate.estimatedPeakLiveBytes
          << " ub_budget_bytes=" << evaluation.safeUBBudgetBytes
          << " work_per_program=" << evaluation.effectiveWorkPerProgram
-         << " persistent_loop_trips="
-         << evaluation.persistentLoopTripsBefore << "->"
-         << evaluation.persistentLoopTripsAfter
+         << " persistent_loop_trips=" << evaluation.persistentLoopTripsBefore
+         << "->" << evaluation.persistentLoopTripsAfter
          << " token_only_repeated_bytes="
          << evaluation.tokenOnlyRepeatedBytesBefore << "->"
          << evaluation.tokenOnlyRepeatedBytesAfter

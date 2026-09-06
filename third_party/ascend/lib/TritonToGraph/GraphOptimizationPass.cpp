@@ -139,8 +139,7 @@ public:
     this->maxRewritesPerFunction = options.maxRewritesPerFunction;
     this->ubCapacityBytes = options.ubCapacityBytes;
     this->mappingUBCapacityBytes = options.mappingUBCapacityBytes;
-    this->storeCoalescingUBBudgetBytes =
-        options.storeCoalescingUBBudgetBytes;
+    this->storeCoalescingUBBudgetBytes = options.storeCoalescingUBBudgetBytes;
     this->deviceCoreCount = options.deviceCoreCount;
     this->minProgramsPerCore = options.minProgramsPerCore;
     this->ubSafetyPercent = options.ubSafetyPercent;
@@ -210,8 +209,7 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
   }
 
   if (cliMappingUBCapacityBytes > std::numeric_limits<unsigned>::max() ||
-      cliStoreCoalescingUBBudgetBytes >
-          std::numeric_limits<unsigned>::max()) {
+      cliStoreCoalescingUBBudgetBytes > std::numeric_limits<unsigned>::max()) {
     getOperation().emitError()
         << "graph-optimize explicit UB budget is out of range: mapping="
         << cliMappingUBCapacityBytes
@@ -219,13 +217,12 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
     return failure();
   }
 
-  const uint64_t effectiveMappingUBCapacity =
-      cliMappingUBCapacityBytes != 0 ? cliMappingUBCapacityBytes
-                                      : cliUBCapacityBytes;
+  const uint64_t effectiveMappingUBCapacity = cliMappingUBCapacityBytes != 0
+                                                  ? cliMappingUBCapacityBytes
+                                                  : cliUBCapacityBytes;
   const uint64_t effectiveStoreCoalescingUBBudget =
-      cliStoreCoalescingUBBudgetBytes != 0
-          ? cliStoreCoalescingUBBudgetBytes
-          : cliUBCapacityBytes;
+      cliStoreCoalescingUBBudgetBytes != 0 ? cliStoreCoalescingUBBudgetBytes
+                                           : cliUBCapacityBytes;
 
   if (cliDeviceCoreCount > std::numeric_limits<unsigned>::max() ||
       cliMinProgramsPerCore == 0 ||
@@ -561,8 +558,8 @@ void populateBuiltinGraphOptimizationRules(
   }
   if (isRuleEnabled(options.enabledRuleMask,
                     GraphOptimizationRuleId::StoreCoalescing)) {
-    rules.push_back(createStoreCoalescingRule(
-        options.storeCoalescingUBBudgetBytes));
+    rules.push_back(
+        createStoreCoalescingRule(options.storeCoalescingUBBudgetBytes));
   }
   if (isRuleEnabled(options.enabledRuleMask,
                     GraphOptimizationRuleId::ResidentLoadForwarding)) {
