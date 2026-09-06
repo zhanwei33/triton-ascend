@@ -269,12 +269,15 @@ StoreAddressIndependence classifyStoreAddress(triton::StoreOp store,
       offset.laneMax < offset.laneMin)
     return StoreAddressIndependence::Unknown;
 
-  // A symbolic coefficient is admitted only from `pid * runtime_stride`.
-  // The original launch ABI requires distinct logical tensor elements for
-  // independent programs; if that invariant is violated the baseline itself
-  // races. All other dynamic forms remain rejected above.
+  // A `pid * runtime_stride` term is affine, but the runtime value cannot
+  // prove that adjacent program lanes are separated by more than their static
+  // lane interval.  The original launch may happen not to overlap for a
+  // particular call, but program mapping changes one physical program into
+  // several logical lanes; accepting an unbounded stride would make that
+  // rewrite depend on an unrecorded ABI precondition.  Keep the transform
+  // fail-closed until a future contract carries a checked lower bound.
   if (offset.symbolicStride)
-    return StoreAddressIndependence::ProvenDisjoint;
+    return StoreAddressIndependence::Unknown;
 
   // Distinct program ids are one coefficient apart.  A static per-program
   // lane interval that is narrower than that coefficient cannot overlap.
