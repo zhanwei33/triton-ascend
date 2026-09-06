@@ -7,14 +7,14 @@
 // CHECK: hacc.independent_axis_tensorize
 // CHECK: hacc.persistent_task_strip_mining
 // CHECK: hacc.program_grid_transforms = {{.*}}axis = 1 : i32{{.*}}persistent_coverage = false{{.*}}axis = 0 : i32{{.*}}persistent_coverage = true{{.*}}
-// CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK-LABEL: tt.func @structural_joint_mapping_entry
 // CHECK: tt.get_program_id x
 // CHECK: tt.get_program_id y
 // CHECK: tt.get_num_programs x
 // CHECK: scf.for
 // CHECK: tt.store
 module attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 2560 : i64, version = 1 : i64}} {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 2560 : i64, version = 1 : i64}} {
+  tt.func @structural_joint_mapping_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 2560 : i64, version = 1 : i64}} {
     %c4 = arith.constant 4 : i32
     %c64 = arith.constant 64 : i32
     %token = tt.get_program_id x : i32

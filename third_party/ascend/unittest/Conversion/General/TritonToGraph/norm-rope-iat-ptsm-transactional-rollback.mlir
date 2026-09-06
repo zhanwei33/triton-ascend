@@ -17,7 +17,7 @@
 // ROLLBACK-NOT: hacc.independent_axis_tensorize
 // ROLLBACK-NOT: hacc.persistent_task_strip_mining
 // ROLLBACK-NOT: hacc.program_grid_transforms
-// ROLLBACK: tt.func @_indexer_norm_rope_kernel
+// ROLLBACK: tt.func @structural_rollback_joint_entry
 // ROLLBACK: tt.get_program_id x
 // ROLLBACK: tt.get_program_id y
 // ROLLBACK-NOT: tt.get_num_programs
@@ -28,7 +28,7 @@
 module attributes {
   hacc.grid_specialization = {grid_0 = 4096 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}
 } {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) attributes {
+  tt.func @structural_rollback_iat_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) attributes {
     hacc.grid_specialization = {grid_0 = 4096 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}
   } {
     %token = tt.get_program_id x : i32
@@ -62,7 +62,7 @@ module attributes {
 module attributes {
   hacc.grid_specialization = {grid_0 = 4096 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 2560 : i64, version = 1 : i64}
 } {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) attributes {
+  tt.func @structural_rollback_joint_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) attributes {
     hacc.grid_specialization = {grid_0 = 4096 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 2560 : i64, version = 1 : i64}
   } {
     %token = tt.get_program_id x : i32

@@ -7,7 +7,7 @@
 // CHECK: hacc.persistent_task_strip_mining
 // CHECK: hacc.program_grid_transforms = {{.*}}axis = 0 : i32{{.*}}persistent_coverage = true
 // CHECK-NOT: hacc.program_mapping_scalar_specialization
-// CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK-LABEL: tt.func @structural_persistent_stride_entry
 // CHECK: arith.constant dense<4>
 // CHECK-NOT: %arg2
 // CHECK: tt.get_num_programs x
@@ -17,7 +17,7 @@ module attributes {
   hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 2048 : i64, version = 1 : i64},
   hacc.program_mapping_scalar_specialization = {arguments = [{index = 2 : i64, value = 4 : i64}], version = 1 : i64}
 } {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>, %stride: i32) attributes {
+  tt.func @structural_persistent_stride_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>, %stride: i32) attributes {
     hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 2048 : i64, version = 1 : i64},
     hacc.program_mapping_scalar_specialization = {arguments = [{index = 2 : i64, value = 4 : i64}], version = 1 : i64}
   } {

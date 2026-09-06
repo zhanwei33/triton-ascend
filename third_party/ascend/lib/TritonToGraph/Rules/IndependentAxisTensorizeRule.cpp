@@ -65,9 +65,6 @@ constexpr llvm::StringLiteral kCoalesceFactorAttr = "hacc.coalesce_factor";
 constexpr llvm::StringLiteral kCoalesceAxisAttr = "hacc.coalesce_axis";
 constexpr llvm::StringLiteral kCoalesceGridCeilDivAttr =
     "hacc.coalesce_grid_ceil_div";
-constexpr llvm::StringLiteral kMergeSplitKernelName =
-    "_merge_split_states_kernel";
-constexpr llvm::StringLiteral kNormRopeKernelName = "_indexer_norm_rope_kernel";
 
 // Keep the accepted MergeSplit policy isolated from the Norm+RoPE joint
 // planner. Factor 16 is available only to the latter; merely expanding a
@@ -128,6 +125,11 @@ struct TensorizeReductionShape {
   int64_t dimExtent = 0;
 };
 
+struct TensorizeFormMatch {
+  TensorizeForm form;
+  TensorizeReductionShape reduction;
+};
+
 struct MappedValue {
   Value value;
   bool tensorized = false;
@@ -150,15 +152,6 @@ bool getGridTaskProduct(const std::array<int64_t, 3> &grid, uint64_t &product) {
   return true;
 }
 
-std::optional<TensorizeForm> getTensorizeForm(triton::FuncOp function) {
-  const StringRef name = function.getName();
-  if (name == kMergeSplitKernelName)
-    return TensorizeForm::MergeSplit;
-  if (name == kNormRopeKernelName)
-    return TensorizeForm::NormRope;
-  return std::nullopt;
-}
-
 std::optional<triton::GetProgramIdOp> findOnlyProgramId(triton::FuncOp function,
                                                         int32_t axis) {
   std::optional<triton::GetProgramIdOp> result;
@@ -173,33 +166,46 @@ std::optional<triton::GetProgramIdOp> findOnlyProgramId(triton::FuncOp function,
   return count == 1 ? result : std::nullopt;
 }
 
-std::optional<TensorizeReductionShape>
-getExpectedReductionShape(triton::FuncOp function, TensorizeForm form) {
-  std::optional<TensorizeReductionShape> matched;
+std::optional<TensorizeFormMatch>
+classifyTensorizeForm(triton::FuncOp function) {
+  std::optional<TensorizeFormMatch> matched;
+  bool hasConflictingForm = false;
   function.walk([&](triton::ReduceOp reduce) {
-    if (matched || reduce.getSrcs().size() != 1 ||
-        reduce.getResults().size() != 1 || reduce.getAxis() != 0)
+    if (reduce.getSrcs().size() != 1 || reduce.getResults().size() != 1 ||
+        reduce.getAxis() != 0)
       return;
     auto source =
         dyn_cast<RankedTensorType>(reduce.getSrcs().front().getType());
     if (!source || !source.hasStaticShape())
       return;
     Type result = reduce.getResults().front().getType();
-    if (form == TensorizeForm::MergeSplit) {
-      auto rankedResult = dyn_cast<RankedTensorType>(result);
-      if (source.getRank() == 2 && rankedResult &&
-          rankedResult.getRank() == 1 && rankedResult.hasStaticShape() &&
-          source.getShape()[1] == rankedResult.getShape()[0]) {
-        matched =
-            TensorizeReductionShape{source.getShape()[0], source.getShape()[1]};
-      }
+    std::optional<TensorizeFormMatch> current;
+    auto rankedResult = dyn_cast<RankedTensorType>(result);
+    if (source.getRank() == 2 && rankedResult && rankedResult.getRank() == 1 &&
+        rankedResult.hasStaticShape() &&
+        source.getShape()[1] == rankedResult.getShape()[0]) {
+      current = TensorizeFormMatch{
+          TensorizeForm::MergeSplit,
+          TensorizeReductionShape{source.getShape()[0], source.getShape()[1]}};
+    } else if (source.getRank() == 1 && !isa<RankedTensorType>(result)) {
+      current = TensorizeFormMatch{
+          TensorizeForm::NormRope,
+          TensorizeReductionShape{/*splitExtent=*/0,
+                                  /*dimExtent=*/source.getShape()[0]}};
+    }
+    if (!current)
+      return;
+    // Multiple reductions of the same structural form are normal for the
+    // production kernels. A mixed form is deliberately a no-op: it has no
+    // unambiguous lane placement and must not be selected by a name fallback.
+    if (matched && matched->form != current->form) {
+      hasConflictingForm = true;
       return;
     }
-    if (source.getRank() == 1 && !isa<RankedTensorType>(result))
-      matched = TensorizeReductionShape{/*splitExtent=*/0,
-                                        /*dimExtent=*/source.getShape()[0]};
+    if (!matched)
+      matched = *current;
   });
-  return matched;
+  return hasConflictingForm ? std::nullopt : matched;
 }
 
 bool hasSupportedControlFlow(triton::FuncOp function) {
@@ -363,13 +369,11 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
       !hasSupportedControlFlow(function))
     return std::nullopt;
 
-  std::optional<TensorizeForm> form = getTensorizeForm(function);
-  if (!form)
+  std::optional<TensorizeFormMatch> formMatch = classifyTensorizeForm(function);
+  if (!formMatch)
     return std::nullopt;
-  std::optional<TensorizeReductionShape> reductionShape =
-      getExpectedReductionShape(function, *form);
-  if (!reductionShape)
-    return std::nullopt;
+  const TensorizeForm form = formMatch->form;
+  const TensorizeReductionShape &reductionShape = formMatch->reduction;
 
   std::optional<ProgramGridSpecialization> specialization =
       getGridSpecialization(function);
@@ -389,7 +393,7 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
     return std::nullopt;
   // The norm K form has a single head and must remain a stable no-op. Merge
   // intentionally still permits H=1 so tail-mask tests cover F-1.
-  if (*form == TensorizeForm::NormRope && logicalExtent == 1)
+  if (form == TensorizeForm::NormRope && logicalExtent == 1)
     return std::nullopt;
 
   const ProgramAxisDependence &dependence =
@@ -412,7 +416,7 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
   if (!beforeProjection)
     return std::nullopt;
   const llvm::ArrayRef<unsigned> factors =
-      *form == TensorizeForm::MergeSplit
+      form == TensorizeForm::MergeSplit
           ? llvm::ArrayRef<unsigned>(kMergeTensorizeFactors.data(),
                                      kMergeTensorizeFactors.size())
       : isPTSMRuleEnabled(*specialization)
@@ -439,9 +443,9 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
       continue;
     const uint64_t tasksAfter = afterProjection->logicalPrograms;
     const bool requiresPersistentChaining =
-        *form == TensorizeForm::NormRope && isPTSMRuleEnabled(*specialization);
+        form == TensorizeForm::NormRope && isPTSMRuleEnabled(*specialization);
     const bool needsPersistentForLaunch =
-        *form == TensorizeForm::NormRope &&
+        form == TensorizeForm::NormRope &&
         tasksAfter > kNormRopeMaxTensorizedLaunchPrograms;
     if (needsPersistentForLaunch &&
         (!requiresPersistentChaining ||
@@ -451,10 +455,10 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
     IATCandidate prototype;
     prototype.function = function;
     prototype.anchor = targetPid->getOperation();
-    prototype.form = *form;
+    prototype.form = form;
     prototype.axis = kTargetAxis;
-    prototype.splitExtent = reductionShape->splitExtent;
-    prototype.dimExtent = reductionShape->dimExtent;
+    prototype.splitExtent = reductionShape.splitExtent;
+    prototype.dimExtent = reductionShape.dimExtent;
     prototype.logicalExtent = logicalExtent;
     prototype.factor = factor;
     prototype.requiresPersistentChaining = requiresPersistentChaining;
@@ -484,14 +488,14 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
   } else {
     selected = &evaluations.front();
   }
-  if (!requestedFactor && *form == TensorizeForm::MergeSplit) {
-    if (reductionShape->splitExtent <= 0 ||
-        static_cast<uint64_t>(reductionShape->splitExtent) >
+  if (!requestedFactor && form == TensorizeForm::MergeSplit) {
+    if (reductionShape.splitExtent <= 0 ||
+        static_cast<uint64_t>(reductionShape.splitExtent) >
             kMergeSplitMaxTensorizedPlanes)
       return std::nullopt;
     const uint64_t maxFactor =
         kMergeSplitMaxTensorizedPlanes /
-        static_cast<uint64_t>(reductionShape->splitExtent);
+        static_cast<uint64_t>(reductionShape.splitExtent);
     selected = nullptr;
     for (const CandidateEvaluation &evaluation : evaluations) {
       const uint64_t factor = evaluation.candidate.plan.tensorizeFactor;
@@ -507,15 +511,15 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
   IATCandidate candidate;
   candidate.function = function;
   candidate.anchor = targetPid->getOperation();
-  candidate.form = *form;
+  candidate.form = form;
   candidate.axis = kTargetAxis;
-  candidate.splitExtent = reductionShape->splitExtent;
-  candidate.dimExtent = reductionShape->dimExtent;
+  candidate.splitExtent = reductionShape.splitExtent;
+  candidate.dimExtent = reductionShape.dimExtent;
   candidate.logicalExtent = logicalExtent;
   candidate.factor =
       static_cast<unsigned>(selected->candidate.plan.tensorizeFactor);
   candidate.requiresPersistentChaining =
-      *form == TensorizeForm::NormRope && isPTSMRuleEnabled(*specialization);
+      form == TensorizeForm::NormRope && isPTSMRuleEnabled(*specialization);
   candidate.resources = resources;
   candidate.evaluation = *selected;
   return candidate;
@@ -1626,11 +1630,12 @@ public:
     if (!enabledForCompileMode)
       return success();
     triton::FuncOp function = context.getFunction();
-    std::optional<TensorizeForm> form = getTensorizeForm(function);
+    std::optional<TensorizeFormMatch> formMatch =
+        classifyTensorizeForm(function);
     std::optional<ProgramGridSpecialization> specialization =
         getGridSpecialization(function);
-    if (form && *form == TensorizeForm::NormRope && specialization &&
-        isPTSMRuleEnabled(*specialization)) {
+    if (formMatch && formMatch->form == TensorizeForm::NormRope &&
+        specialization && isPTSMRuleEnabled(*specialization)) {
       std::optional<JointProgramMappingCandidate> candidate =
           selectJointCandidate(context, /*emitRemarks=*/true);
       if (!candidate)

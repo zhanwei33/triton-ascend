@@ -168,10 +168,32 @@ bool hasVoidReturn(triton::FuncOp function) {
   return result && result.getNumOperands() == 0;
 }
 
-bool isNormRopeEntry(triton::FuncOp function) {
-  // PTSM is intentionally narrow. Merge and logits must never gain the
-  // persistent launcher-cap privilege just because they also have token PIDs.
-  return function.getName().contains("indexer_norm_rope_kernel");
+bool hasPersistentNormReductionForm(triton::FuncOp function) {
+  bool matched = false;
+  function.walk([&](triton::ReduceOp reduce) {
+    if (reduce.getSrcs().size() != 1 || reduce.getResults().size() != 1)
+      return;
+    auto source =
+        dyn_cast<RankedTensorType>(reduce.getSrcs().front().getType());
+    if (!source || !source.hasStaticShape())
+      return;
+    Type result = reduce.getResults().front().getType();
+    // Before IAT, norm reductions are rank-1 to scalar along their only
+    // dimension. After IAT, the added lane is retained and the same semantic
+    // reduction is rank-2 to rank-1 along dimension one. Both forms are
+    // structural contracts; no entry-function spelling participates here.
+    if (source.getRank() == 1 && reduce.getAxis() == 0 &&
+        !isa<RankedTensorType>(result)) {
+      matched = true;
+      return;
+    }
+    auto rankedResult = dyn_cast<RankedTensorType>(result);
+    if (source.getRank() == 2 && reduce.getAxis() == 1 && rankedResult &&
+        rankedResult.hasStaticShape() && rankedResult.getRank() == 1 &&
+        source.getShape()[0] == rankedResult.getShape()[0])
+      matched = true;
+  });
+  return matched;
 }
 
 std::optional<ProgramGridSpecialization>
@@ -294,7 +316,7 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
   ModuleOp module = function->getParentOfType<ModuleOp>();
   if (!module || module->hasAttr(kPersistentTaskStripMiningMarkerAttr) ||
       !isPublicEntry(function) || !isOnlyPublicEntry(module, function) ||
-      !isNormRopeEntry(function) || !hasVoidReturn(function) ||
+      !hasPersistentNormReductionForm(function) || !hasVoidReturn(function) ||
       hasDirectCall(function) || hasDisallowedEffectOrControlFlow(function))
     return std::nullopt;
 
@@ -575,7 +597,7 @@ Value alignTensor(IRRewriter &rewriter, Location loc, Value source,
 
 LogicalResult materializePersistentTaskStripMining(triton::FuncOp function,
                                                     const PTSMCandidate &candidate) {
-  if (!hasVoidReturn(function) || !isNormRopeEntry(function) ||
+  if (!hasVoidReturn(function) || !hasPersistentNormReductionForm(function) ||
       hasDisallowedEffectOrControlFlow(function))
     return failure();
   std::optional<triton::GetProgramIdOp> tokenPid =

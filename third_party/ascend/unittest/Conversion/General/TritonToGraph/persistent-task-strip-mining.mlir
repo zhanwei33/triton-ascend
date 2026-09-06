@@ -11,7 +11,7 @@
 // CHECK: grid_stride_abi_verified = true
 // CHECK: logical_extent = 19 : i64
 // CHECK: persistent_coverage = true
-// CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK-LABEL: tt.func @structural_persistent_entry
 // CHECK: tt.get_program_id x
 // CHECK: tt.get_num_programs x
 // CHECK: scf.for
@@ -20,10 +20,10 @@
 // CHECK: tt.store
 // SIMT-NOT: hacc.persistent_task_strip_mining
 // SIMT-NOT: hacc.program_grid_transforms
-// SIMT-LABEL: tt.func @_indexer_norm_rope_kernel
+// SIMT-LABEL: tt.func @structural_persistent_entry
 // SIMT: tt.get_program_id x
 module attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 2048 : i64, version = 1 : i64}} {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>, %weight: !tt.ptr<f32>) attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 2048 : i64, version = 1 : i64}} {
+  tt.func @structural_persistent_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>, %weight: !tt.ptr<f32>) attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 2048 : i64, version = 1 : i64}} {
     %c4 = arith.constant 4 : i32
     %token = tt.get_program_id x : i32
     %dims = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
@@ -58,10 +58,10 @@ module attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i
 // publish a launcher cap.
 // CHECK-NOT: hacc.persistent_task_strip_mining
 // CHECK-NOT: hacc.program_grid_transforms
-// CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK-LABEL: tt.func @structural_missing_token_entry
 // CHECK: tt.get_program_id y
 module attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 2048 : i64, version = 1 : i64}} {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 2048 : i64, version = 1 : i64}} {
+  tt.func @structural_missing_token_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) attributes {hacc.grid_specialization = {grid_0 = 19 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 2048 : i64, version = 1 : i64}} {
     %c4 = arith.constant 4 : i32
     %head = tt.get_program_id y : i32
     %dims = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>

@@ -10,14 +10,14 @@
 // CHECK: factor = 8 : i64
 // CHECK: logical_extent = 65 : i64
 // CHECK: persistent_coverage = false
-// CHECK-LABEL: tt.func @_merge_split_states_kernel
+// CHECK-LABEL: tt.func @structural_merge_split_entry
 // CHECK: arith.cmpi slt
 // CHECK: tt.load {{.*}} : tensor<2x8x4x!tt.ptr<f32>>
 // CHECK: tt.reduce
 // CHECK-SAME: axis = 0 : i32
 // CHECK: tensor<8x4xf32>
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
-  tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
+  tt.func @structural_merge_split_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c4 = arith.constant 4 : i32
     %head = tt.get_program_id y : i32
     %splits = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32>
@@ -51,13 +51,13 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i
 // CHECK: hacc.independent_axis_tensorize
 // CHECK: factor = 4 : i64
 // CHECK: logical_extent = 64 : i64
-// CHECK-LABEL: tt.func @_merge_split_states_kernel
+// CHECK-LABEL: tt.func @structural_merge_split_entry
 // CHECK: tt.load {{.*}} : tensor<4x4x5x!tt.ptr<f32>>
 // CHECK: tt.reduce
 // CHECK-SAME: axis = 0 : i32
 // CHECK: tensor<4x5xf32>
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 64 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
-  tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
+  tt.func @structural_merge_split_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c5 = arith.constant 5 : i32
     %head = tt.get_program_id y : i32
     %splits = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
@@ -87,14 +87,14 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 64 : i
 
 // CHECK: hacc.independent_axis_tensorize
 // CHECK: logical_extent = 16 : i64
-// CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK-LABEL: tt.func @structural_norm_iat_entry
 // CHECK: arith.cmpi slt
 // CHECK: tensor<{{(2|4|8)}}x4xf32>
 // CHECK: tt.reduce
 // CHECK-SAME: axis = 1 : i32
 // CHECK: tensor<{{(2|4|8)}}xf32>
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
+  tt.func @structural_norm_iat_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c4 = arith.constant 4 : i32
     %head = tt.get_program_id y : i32
     %dims = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
@@ -125,12 +125,12 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 16 : i
 // conditions match the Q form.
 // CHECK-NOT: hacc.independent_axis_tensorize
 // CHECK-LABEL: module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 1 : i64
-// CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK-LABEL: tt.func @structural_norm_head_one_entry
 // CHECK: tt.get_program_id y
 // CHECK: tt.reduce
 // CHECK-SAME: axis = 0 : i32
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 1 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
+  tt.func @structural_norm_head_one_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c4 = arith.constant 4 : i32
     %head = tt.get_program_id y : i32
     %dims = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
@@ -163,11 +163,11 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 1 : i6
 // CHECK-NOT: hacc.independent_axis_tensorize
 // CHECK-NOT: hacc.program_grid_transforms
 // CHECK-LABEL: module attributes {hacc.grid_specialization = {grid_0 = 32768 : i64, grid_1 = 16 : i64
-// CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK-LABEL: tt.func @structural_norm_launch_limit_entry
 // CHECK: tt.get_program_id y
 // CHECK: tt.store
 module attributes {hacc.grid_specialization = {grid_0 = 32768 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
-  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
+  tt.func @structural_norm_launch_limit_entry(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c4 = arith.constant 4 : i32
     %head = tt.get_program_id y : i32
     %dims = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
