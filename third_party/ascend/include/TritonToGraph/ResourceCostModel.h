@@ -118,15 +118,19 @@ struct CandidatePlan {
   uint64_t sourceOrdinal = 0;
 };
 
-// Counters are before -> after.  Persistent mappings must report both logical
-// task count and actual launched programs; the model intentionally prices the
-// latter for parallelism while preserving the former for work accounting.
+// Counters are before -> after.  ``logicalTasks`` is the exact logical grid
+// product. ``actualPrograms`` is the launcher-visible physical Block Num,
+// after legacy auto-map/persistent capping has been applied.  Keep them
+// separate: a nonpersistent IAT transform may reduce logical work while
+// increasing Block Num because it is no longer eligible for legacy auto-map.
 struct CandidateCost {
   CandidatePlan plan;
   uint64_t logicalTasksBefore = 0;
   uint64_t logicalTasksAfter = 0;
   uint64_t actualProgramsBefore = 0;
   uint64_t actualProgramsAfter = 0;
+  uint64_t physicalWavesBefore = 0;
+  uint64_t physicalWavesAfter = 0;
   uint64_t launchesBefore = 0;
   uint64_t launchesAfter = 0;
   uint64_t gmReadBytesBefore = 0;
@@ -139,22 +143,41 @@ struct CandidateCost {
   uint64_t addressCalculationsAfter = 0;
   uint64_t baselinePeakLiveBytes = 0;
   uint64_t estimatedPeakLiveBytes = 0;
+  // Persistent plans carry their final grid-stride work distribution
+  // explicitly.  These values are derived from logical tasks and physical
+  // programs when callers leave them zero, but recording them makes the
+  // selected plan auditable in cache/candidate manifests.
+  uint64_t persistentLoopTripsBefore = 0;
+  uint64_t persistentLoopTripsAfter = 0;
+  // Bytes of token-only values that must be redundantly processed by separate
+  // head groups.  A fully packed head tile therefore has a smaller "after"
+  // value even when its row count matches a partially packed alternative.
+  uint64_t tokenOnlyRepeatedBytesBefore = 0;
+  uint64_t tokenOnlyRepeatedBytesAfter = 0;
   uint64_t workPerProgramBefore = 0;
   uint64_t workPerProgramAfter = 0;
   bool hasPeakLiveBytes = false;
   bool hasDynamicShape = false;
   bool hasUnknownResource = false;
+  bool legacyAutoMapBefore = false;
+  bool legacyAutoMapAfter = false;
   bool persistent = false;
 };
 
 struct CostModelWeights {
+  uint64_t logicalProgramReduction = 64;
+  // Kept under its established spelling for source compatibility. It now
+  // prices launcher-visible physical Block Num, never a logical grid count.
   uint64_t programReduction = 64;
   uint64_t launchReduction = 256;
   uint64_t gmByte = 1;
   uint64_t store = 16;
   uint64_t addressCalculation = 1;
   uint64_t liveByte = 1;
-  uint64_t workItem = 1;
+  // Increasing a persistent tile does not create more total work; price the
+  // resulting loop trips instead of a linear block_t/work-item penalty.
+  uint64_t persistentLoopTrip = 512;
+  uint64_t tokenOnlyRepeatedByte = 1;
 };
 
 struct CandidateEvaluation {
@@ -165,6 +188,12 @@ struct CandidateEvaluation {
   uint64_t safeUBBudgetBytes = 0;
   uint64_t requiredParallelPrograms = 0;
   uint64_t effectiveWorkPerProgram = 0;
+  uint64_t physicalWavesBefore = 0;
+  uint64_t physicalWavesAfter = 0;
+  uint64_t persistentLoopTripsBefore = 0;
+  uint64_t persistentLoopTripsAfter = 0;
+  uint64_t tokenOnlyRepeatedBytesBefore = 0;
+  uint64_t tokenOnlyRepeatedBytesAfter = 0;
   std::string remark;
 };
 

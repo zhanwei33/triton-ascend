@@ -54,6 +54,17 @@ def _stub_graph_ub_budget_bytes_for_arch(arch):
     return 0
 
 
+def _stub_ub_size_in_kbytes_for_arch(arch):
+    """Mirror the raw mapping-UB table used by the source compiler.
+
+    StoreCoalescing retains the conservative half-UB budget above, whereas
+    program mapping must receive the physical UB capacity.  Keeping both in
+    this import shim makes the source-level call contract executable without
+    importing whichever Ascend wheel happens to be installed.
+    """
+    return _stub_graph_ub_budget_bytes_for_arch(arch) * 2 // 1024
+
+
 class _FakeModule:
 
     def __init__(self, events):
@@ -135,6 +146,7 @@ def compiler_module():
     utils_stub.downgrade_llir = lambda llir: llir
     utils_stub.get_cann_version_file_hash = lambda: ""
     utils_stub.graph_ub_budget_bytes_for_arch = _stub_graph_ub_budget_bytes_for_arch
+    utils_stub.ub_size_in_kbytes_for_arch = _stub_ub_size_in_kbytes_for_arch
 
     class UnusedNPUUtils:
         pass
@@ -605,6 +617,8 @@ def test_make_ttir_forwards_iat_rule_and_explicit_resource_snapshot(
         "min_programs_per_core": 1,
         "ub_safety_percent": 80,
         "reserved_ub_bytes": 0,
+        "mapping_ub_capacity_bytes": 192 * 1024,
+        "store_coalescing_ub_budget_bytes": 96 * 1024,
     }]
     assert events[-1] == "run_row"
 
@@ -640,6 +654,8 @@ def test_make_ttir_forwards_static_axis_fusion_rule_and_resource_snapshot(
         "min_programs_per_core": 1,
         "ub_safety_percent": 80,
         "reserved_ub_bytes": 0,
+        "mapping_ub_capacity_bytes": 192 * 1024,
+        "store_coalescing_ub_budget_bytes": 96 * 1024,
     }]
     assert events[-1] == "run_row"
 
@@ -1016,6 +1032,7 @@ def test_program_grid_specialization_options_preserve_legacy_state_when_disabled
         assert "program_mapping_scalar_specialization" not in options.__dict__
     assert legacy.hash() == explicit_disabled.hash()
     assert enabled.__dict__["program_mapping_rule_mask"] == 512
+    assert enabled.__dict__["program_mapping_resource_model_schema_version"] == 2
     assert enabled.__dict__["program_grid_specialization"] == _program_grid_specialization()
     assert enabled.__dict__["program_mapping_scalar_specialization"] == (
         _program_mapping_scalar_specialization())

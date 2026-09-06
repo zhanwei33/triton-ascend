@@ -66,6 +66,7 @@ from triton.backends.ascend.utils import (
     downgrade_llir,
     force_disable_ffts,
     graph_ub_budget_bytes_for_arch,
+    ub_size_in_kbytes_for_arch,
     get_cann_version_file_hash,
 )
 from triton.backends.ascend.driver import (NPUUtils)
@@ -500,6 +501,15 @@ def _graph_optimize_kwargs(opt):
         kwargs["min_programs_per_core"] = 1
         kwargs["ub_safety_percent"] = 80
         kwargs["reserved_ub_bytes"] = 0
+        # Program mapping prices the actual target UB.  StoreCoalescing keeps
+        # the legacy half-UB admission budget passed through ub_capacity_bytes
+        # above.  Supplying both explicit fields only on the mapping path keeps
+        # all-disabled compilations and their cache identity byte-for-byte
+        # compatible with the historical call contract.
+        kwargs["mapping_ub_capacity_bytes"] = (
+            ub_size_in_kbytes_for_arch(opt.target_arch) * 1024)
+        kwargs["store_coalescing_ub_budget_bytes"] = (
+            graph_ub_budget_bytes_for_arch(opt.target_arch))
     return kwargs
 
 
@@ -1521,6 +1531,12 @@ class NPUOptions:
         if normalized_mapping_rule_mask:
             object.__setattr__(self, "program_mapping_rule_mask",
                                normalized_mapping_rule_mask)
+            # The physical-UB mapping model is an implementation/cache schema,
+            # not a public knob.  Materialize it only for enabled mapping so
+            # legacy no-bit option dictionaries and hashes remain unchanged.
+            object.__setattr__(self,
+                               "program_mapping_resource_model_schema_version",
+                               2)
         if normalized_specialization is not None:
             object.__setattr__(self, "program_grid_specialization",
                                normalized_specialization)

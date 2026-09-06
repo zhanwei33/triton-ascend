@@ -145,6 +145,8 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
       "add_graph_optimize",
       [](mlir::PassManager &pm, std::uint64_t ruleMask,
          std::uint64_t maxRewritesPerFunction, std::uint64_t ubCapacityBytes,
+         std::uint64_t mappingUBCapacityBytes,
+         std::uint64_t storeCoalescingUBBudgetBytes,
          const std::string &compileMode, std::uint64_t deviceCoreCount,
          std::uint64_t minProgramsPerCore, std::uint64_t ubSafetyPercent,
          std::uint64_t reservedUBBytes) {
@@ -161,6 +163,13 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
               "max_rewrites_per_function must fit in unsigned");
         if (ubCapacityBytes > std::numeric_limits<unsigned>::max())
           throw py::value_error("ub_capacity_bytes must fit in unsigned");
+        if (mappingUBCapacityBytes > std::numeric_limits<unsigned>::max())
+          throw py::value_error(
+              "mapping_ub_capacity_bytes must fit in unsigned");
+        if (storeCoalescingUBBudgetBytes >
+            std::numeric_limits<unsigned>::max())
+          throw py::value_error(
+              "store_coalescing_ub_budget_bytes must fit in unsigned");
         if (deviceCoreCount > std::numeric_limits<unsigned>::max())
           throw py::value_error("device_core_count must fit in unsigned");
         if (minProgramsPerCore == 0 ||
@@ -171,16 +180,22 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
             ubSafetyPercent > std::numeric_limits<unsigned>::max())
           throw py::value_error(
               "ub_safety_percent must be an unsigned value in [1, 100]");
+        const std::uint64_t effectiveMappingUBCapacity =
+            mappingUBCapacityBytes ? mappingUBCapacityBytes : ubCapacityBytes;
         if (reservedUBBytes > std::numeric_limits<unsigned>::max() ||
-            reservedUBBytes > ubCapacityBytes)
+            reservedUBBytes > effectiveMappingUBCapacity)
           throw py::value_error(
-              "reserved_ub_bytes must fit in unsigned and not exceed UB");
+              "reserved_ub_bytes must fit in unsigned and not exceed mapping UB");
 
         mlir::triton::cfg::GraphOptimizationOptions options;
         options.enabledRuleMask = graphRuleMask;
         options.maxRewritesPerFunction =
             static_cast<unsigned>(maxRewritesPerFunction);
         options.ubCapacityBytes = static_cast<unsigned>(ubCapacityBytes);
+        options.mappingUBCapacityBytes =
+            static_cast<unsigned>(mappingUBCapacityBytes);
+        options.storeCoalescingUBBudgetBytes =
+            static_cast<unsigned>(storeCoalescingUBBudgetBytes);
         options.deviceCoreCount = static_cast<unsigned>(deviceCoreCount);
         options.minProgramsPerCore = static_cast<unsigned>(minProgramsPerCore);
         options.ubSafetyPercent = static_cast<unsigned>(ubSafetyPercent);
@@ -194,6 +209,8 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
           mlir::triton::cfg::kDefaultGraphOptimizationRuleMask),
       py::arg("max_rewrites_per_function") = 64,
       py::arg("ub_capacity_bytes") = 0,
+      py::arg("mapping_ub_capacity_bytes") = 0,
+      py::arg("store_coalescing_ub_budget_bytes") = 0,
       py::arg("compile_mode") = "simd_simt_template",
       py::arg("device_core_count") = 0, py::arg("min_programs_per_core") = 1,
       py::arg("ub_safety_percent") = 80, py::arg("reserved_ub_bytes") = 0);

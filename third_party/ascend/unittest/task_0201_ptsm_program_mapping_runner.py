@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from triton.backends.ascend.driver import NPUUtils
+from triton.backends.ascend.program_grid import apply_program_grid_transforms
 
 UNITTEST_ROOT = Path(__file__).resolve().parent
 if str(UNITTEST_ROOT) not in sys.path:
@@ -47,6 +49,14 @@ PTSM_RULE_MASK = 2048
 Q_RULE_MASK = IAT_RULE_MASK | PTSM_RULE_MASK
 K_RULE_MASK = PTSM_RULE_MASK
 _KERNEL = "_indexer_norm_rope_kernel"
+
+
+def _expected_physical_npu() -> str:
+    """Use task_0201's card 0 by default, while permitting an explicit handoff."""
+    expected = os.environ.get("TASK_0201_EXPECTED_PHYSICAL_NPU", "0")
+    if not expected:
+        raise RuntimeError("TASK_0201_EXPECTED_PHYSICAL_NPU must not be empty")
+    return expected
 
 
 def _require_dedicated_cache() -> Path:
@@ -90,6 +100,72 @@ def _transforms(data: dict[str, Any]) -> list[dict[str, Any]]:
     return [value for value in values if isinstance(value, dict)] if isinstance(values, list) else []
 
 
+def _transform_matches(
+    transform: dict[str, Any],
+    *,
+    axis: int,
+    factor: int,
+    persistent: bool,
+    grid_stride_abi_verified: bool,
+) -> bool:
+    return (
+        transform.get("axis") == axis
+        and transform.get("factor") == factor
+        and transform.get("persistent_coverage") is persistent
+        and transform.get("grid_stride_abi_verified") is grid_stride_abi_verified
+    )
+
+
+def _exact_transform_sequence(
+    record: dict[str, Any],
+    expected: tuple[tuple[int, int, bool, bool], ...],
+) -> bool:
+    transforms = record.get("program_grid_transforms")
+    if not isinstance(transforms, list) or len(transforms) != len(expected):
+        return False
+    return all(
+        _transform_matches(
+            transform,
+            axis=axis,
+            factor=factor,
+            persistent=persistent,
+            grid_stride_abi_verified=grid_stride_abi_verified,
+        )
+        for transform, (axis, factor, persistent, grid_stride_abi_verified)
+        in zip(transforms, expected)
+    )
+
+
+def _launch_projection(data: dict[str, Any]) -> dict[str, Any]:
+    """Apply the same ordered transform/cap arithmetic as the generated driver."""
+    specialization = data.get("program_grid_specialization")
+    contract = data.get("program_grid_transforms")
+    if not isinstance(specialization, dict) or not isinstance(contract, dict):
+        return {}
+    original_grid = specialization.get("grid")
+    if not isinstance(original_grid, list) or len(original_grid) != 3:
+        return {}
+    try:
+        # A practically unbounded core count yields the transformed logical
+        # launch; the real vector-core count yields the generated driver's
+        # persistent physical cap.
+        logical_grid = apply_program_grid_transforms(
+            original_grid, contract, physical_core_count=1 << 60
+        )
+        vector_cores = int(NPUUtils().get_aivector_core_num())
+        physical_grid = apply_program_grid_transforms(
+            original_grid, contract, physical_core_count=vector_cores
+        )
+    except Exception as error:  # pragma: no cover - diagnostic boundary
+        return {"error": f"{type(error).__name__}: {error}"}
+    return {
+        "original_grid": list(original_grid),
+        "logical_grid": list(logical_grid),
+        "physical_grid": list(physical_grid),
+        "vector_core_count": vector_cores,
+    }
+
+
 def _cache_evidence(cache: Path) -> list[dict[str, Any]]:
     records = collect_cache_records(cache, (_KERNEL,))
     for record in records:
@@ -97,6 +173,17 @@ def _cache_evidence(cache: Path) -> list[dict[str, Any]]:
         transforms = _transforms(data)
         record["program_mapping_rule_mask"] = _rule_mask(data)
         record["program_grid_transforms"] = transforms
+        record["launch_projection"] = _launch_projection(data)
+        record["debug"] = data.get("debug") is True
+        ttir_path = Path(record["manifest"]).with_suffix(".ttir")
+        try:
+            ttir = ttir_path.read_text(errors="replace")
+        except OSError:
+            ttir = ""
+        record["ttir_assert_count"] = ttir.count("tt.assert")
+        record["ttir_auto_overflow_assert_count"] = ttir.count(
+            "tt.auto_overflow_assert"
+        )
         record["iat_axis_one_seen"] = any(
             transform.get("axis") == 1
             and transform.get("persistent_coverage") is False
@@ -111,8 +198,81 @@ def _cache_evidence(cache: Path) -> list[dict[str, Any]]:
     return records
 
 
-def _path_evidence(records: list[dict[str, Any]]) -> dict[str, bool]:
-    return {
+def _debug_assertion_contract(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Verify the deliberate debug-mode fail-closed boundary.
+
+    A debug compile retains device assertions in the dependence closure.  The
+    mapping rules must therefore leave this norm+RoPE specialization intact
+    instead of dropping or bypassing assertions merely to obtain IAT/PTSM.
+    The frozen before DSL has automatic overflow assertions, so their TTIR
+    marker is a direct, cache-local witness of that behavior.
+    """
+    debug_enabled = os.environ.get("TRITON_DEBUG", "").lower() not in {
+        "", "0", "false", "off", "no"
+    }
+    contract: dict[str, Any] = {
+        "debug_enabled": debug_enabled,
+        "mapping_records": [],
+        "passed": None,
+    }
+    if not debug_enabled:
+        return contract
+
+    mapping_records = [
+        record
+        for record in records
+        if record.get("program_mapping_rule_mask") in (Q_RULE_MASK, K_RULE_MASK)
+    ]
+    contract["mapping_records"] = [
+        {
+            "rule_mask": record.get("program_mapping_rule_mask"),
+            "debug": record.get("debug"),
+            "transforms": record.get("program_grid_transforms"),
+            "ttir_assert_count": record.get("ttir_assert_count"),
+            "ttir_auto_overflow_assert_count": record.get(
+                "ttir_auto_overflow_assert_count"
+            ),
+        }
+        for record in mapping_records
+    ]
+    contract["passed"] = bool(
+        len(mapping_records) == 2
+        and all(
+            record.get("debug")
+            and not record.get("program_grid_transforms")
+            and record.get("ttir_assert_count", 0) > 0
+            and record.get("ttir_auto_overflow_assert_count", 0)
+            == record.get("ttir_assert_count", 0)
+            for record in mapping_records
+        )
+    )
+    return contract
+
+
+def _record_matches_primary_contract(
+    record: dict[str, Any],
+    *,
+    rule_mask: int,
+    transforms: tuple[tuple[int, int, bool, bool], ...],
+    original_grid: list[int],
+    logical_grid: list[int],
+    physical_grid: list[int],
+) -> bool:
+    projection = record.get("launch_projection")
+    return bool(
+        record.get("program_mapping_rule_mask") == rule_mask
+        and _exact_transform_sequence(record, transforms)
+        and isinstance(projection, dict)
+        and projection.get("original_grid") == original_grid
+        and projection.get("logical_grid") == logical_grid
+        and projection.get("physical_grid") == physical_grid
+    )
+
+
+def _path_evidence(
+    records: list[dict[str, Any]], *, primary_tokens: bool
+) -> dict[str, bool]:
+    evidence = {
         "q_iat_then_ptsm": any(
             record.get("program_mapping_rule_mask") == Q_RULE_MASK
             and record.get("iat_axis_one_seen")
@@ -126,6 +286,32 @@ def _path_evidence(records: list[dict[str, Any]]) -> dict[str, bool]:
             for record in records
         ),
     }
+    if primary_tokens:
+        evidence.update({
+            "q_iat16_ptsm4_launcher_projection": any(
+                _record_matches_primary_contract(
+                    record,
+                    rule_mask=Q_RULE_MASK,
+                    transforms=((1, 16, False, False), (0, 4, True, True)),
+                    original_grid=[4096, 16, 1],
+                    logical_grid=[1024, 1, 1],
+                    physical_grid=[56, 1, 1],
+                )
+                for record in records
+            ),
+            "k_ptsm64_launcher_projection": any(
+                _record_matches_primary_contract(
+                    record,
+                    rule_mask=K_RULE_MASK,
+                    transforms=((0, 64, True, True),),
+                    original_grid=[4096, 1, 1],
+                    logical_grid=[64, 1, 1],
+                    physical_grid=[56, 1, 1],
+                )
+                for record in records
+            ),
+        })
+    return evidence
 
 
 def run(case: NormRopeCase, *, output: Path, require_transform: bool) -> int:
@@ -133,9 +319,10 @@ def run(case: NormRopeCase, *, output: Path, require_transform: bool) -> int:
     if not npu_available():
         raise RuntimeError("NPU runtime is unavailable")
     npu = npu_identity()
-    if npu.get("physical_npu_env") != "1":
+    expected_npu = _expected_physical_npu()
+    if npu.get("physical_npu_env") != expected_npu:
         raise RuntimeError(
-            "ASCEND_RT_VISIBLE_DEVICES must be 1 for task_0201, got "
+            f"ASCEND_RT_VISIBLE_DEVICES must be {expected_npu} for task_0201, got "
             f"{npu.get('physical_npu_env')!r}")
 
     assert_fixture_integrity()
@@ -179,11 +366,16 @@ def run(case: NormRopeCase, *, output: Path, require_transform: bool) -> int:
         and correctness["z_bitwise_passthrough"]
     )
     records = _cache_evidence(cache)
-    paths = _path_evidence(records)
-    evidence_ok = all(paths.values()) if require_transform else True
+    paths = _path_evidence(records, primary_tokens=case.tokens == 4096)
+    debug_assertions = _debug_assertion_contract(records)
+    evidence_ok = (
+        bool(debug_assertions["passed"])
+        if debug_assertions["debug_enabled"]
+        else (all(paths.values()) if require_transform else True)
+    )
     compiler = compiler_identity()
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "rule": "PersistentTaskStripMiningRule",
         "rule_masks": {"q": Q_RULE_MASK, "k": K_RULE_MASK},
         "fixture": "example2_indexer_norm_rope_before.py",
@@ -193,12 +385,33 @@ def run(case: NormRopeCase, *, output: Path, require_transform: bool) -> int:
             "q": list(expected_grid("norm_rope", case, specialization="q")),
             "k": list(expected_grid("norm_rope", case, specialization="k")),
         },
+        "primary_contract": (
+            {
+                "q": {
+                    "transforms": [
+                        {"axis": 1, "factor": 16, "persistent": False},
+                        {"axis": 0, "factor": 4, "persistent": True},
+                    ],
+                    "logical_grid": [1024, 1, 1],
+                    "physical_grid": [56, 1, 1],
+                },
+                "k": {
+                    "transforms": [
+                        {"axis": 0, "factor": 64, "persistent": True},
+                    ],
+                    "logical_grid": [64, 1, 1],
+                    "physical_grid": [56, 1, 1],
+                },
+            }
+            if case.tokens == 4096 else None
+        ),
         "baseline_grid_arguments": {key: list(value) for key, value in baseline.grids.items()},
         "mapped_grid_arguments": {key: list(value) for key, value in mapped.grids.items()},
         "correct": correct,
         "correctness": correctness,
         "require_transform": require_transform,
         "path_evidence": paths,
+        "debug_assertion_contract": debug_assertions,
         "evidence_ok": evidence_ok,
         "npu": npu,
         "compiler": compiler,

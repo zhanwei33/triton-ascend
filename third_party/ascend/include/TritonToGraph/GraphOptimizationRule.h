@@ -100,6 +100,15 @@ createStaticProgramAxisFusionRule(
 std::unique_ptr<GraphOptimizationRule>
 createPersistentTaskStripMiningRule(
     const PersistentTaskStripMiningRuleOptions &options);
+
+// Internal scheduler entry point used by the IAT/PTSM joint transaction.  It
+// never registers a new rule or exposes a force environment variable: the
+// requested factor is still analyzed against the current sandbox and must
+// pass the ordinary legality/resource checks before IR and metadata are
+// materialized together.
+LogicalResult materializePersistentTaskStripMiningCandidate(
+    ModuleOp module, triton::FuncOp function, const ResourceSnapshot &resources,
+    unsigned requestedBlockT, CandidateEvaluation *evaluation = nullptr);
 std::unique_ptr<GraphOptimizationRule>
 createResidentLoadForwardingRule(
     const ResidentLoadForwardingRuleOptions &options);

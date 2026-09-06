@@ -138,6 +138,9 @@ public:
     this->ruleMask = options.enabledRuleMask;
     this->maxRewritesPerFunction = options.maxRewritesPerFunction;
     this->ubCapacityBytes = options.ubCapacityBytes;
+    this->mappingUBCapacityBytes = options.mappingUBCapacityBytes;
+    this->storeCoalescingUBBudgetBytes =
+        options.storeCoalescingUBBudgetBytes;
     this->deviceCoreCount = options.deviceCoreCount;
     this->minProgramsPerCore = options.minProgramsPerCore;
     this->ubSafetyPercent = options.ubSafetyPercent;
@@ -175,6 +178,9 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
   const uint64_t cliRuleMask = this->ruleMask;
   const uint64_t cliMaxRewrites = this->maxRewritesPerFunction;
   const uint64_t cliUBCapacityBytes = this->ubCapacityBytes;
+  const uint64_t cliMappingUBCapacityBytes = this->mappingUBCapacityBytes;
+  const uint64_t cliStoreCoalescingUBBudgetBytes =
+      this->storeCoalescingUBBudgetBytes;
   const uint64_t cliDeviceCoreCount = this->deviceCoreCount;
   const uint64_t cliMinProgramsPerCore = this->minProgramsPerCore;
   const uint64_t cliUBSafetyPercent = this->ubSafetyPercent;
@@ -203,12 +209,30 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
     return failure();
   }
 
+  if (cliMappingUBCapacityBytes > std::numeric_limits<unsigned>::max() ||
+      cliStoreCoalescingUBBudgetBytes >
+          std::numeric_limits<unsigned>::max()) {
+    getOperation().emitError()
+        << "graph-optimize explicit UB budget is out of range: mapping="
+        << cliMappingUBCapacityBytes
+        << " store-coalescing=" << cliStoreCoalescingUBBudgetBytes;
+    return failure();
+  }
+
+  const uint64_t effectiveMappingUBCapacity =
+      cliMappingUBCapacityBytes != 0 ? cliMappingUBCapacityBytes
+                                      : cliUBCapacityBytes;
+  const uint64_t effectiveStoreCoalescingUBBudget =
+      cliStoreCoalescingUBBudgetBytes != 0
+          ? cliStoreCoalescingUBBudgetBytes
+          : cliUBCapacityBytes;
+
   if (cliDeviceCoreCount > std::numeric_limits<unsigned>::max() ||
       cliMinProgramsPerCore == 0 ||
       cliMinProgramsPerCore > std::numeric_limits<unsigned>::max() ||
       cliUBSafetyPercent == 0 || cliUBSafetyPercent > 100 ||
       cliReservedUBBytes > std::numeric_limits<unsigned>::max() ||
-      cliReservedUBBytes > cliUBCapacityBytes) {
+      cliReservedUBBytes > effectiveMappingUBCapacity) {
     getOperation().emitError()
         << "graph-optimize resource options are invalid: cores="
         << cliDeviceCoreCount
@@ -227,7 +251,12 @@ GraphOptimizePass::getStableOptions(GraphOptimizationOptions &options) {
 
   options.enabledRuleMask = static_cast<GraphOptimizationRuleMask>(cliRuleMask);
   options.maxRewritesPerFunction = static_cast<unsigned>(cliMaxRewrites);
-  options.ubCapacityBytes = static_cast<unsigned>(cliUBCapacityBytes);
+  options.ubCapacityBytes =
+      static_cast<unsigned>(effectiveStoreCoalescingUBBudget);
+  options.mappingUBCapacityBytes =
+      static_cast<unsigned>(effectiveMappingUBCapacity);
+  options.storeCoalescingUBBudgetBytes =
+      static_cast<unsigned>(effectiveStoreCoalescingUBBudget);
   options.deviceCoreCount = static_cast<unsigned>(cliDeviceCoreCount);
   options.minProgramsPerCore = static_cast<unsigned>(cliMinProgramsPerCore);
   options.ubSafetyPercent = static_cast<unsigned>(cliUBSafetyPercent);
@@ -292,7 +321,7 @@ void GraphOptimizePass::runOnOperation() {
 
   for (triton::FuncOp function : module.getOps<triton::FuncOp>()) {
     const ResourceSnapshot resources = ResourceSnapshot::fromExplicit(
-        options.ubCapacityBytes, options.deviceCoreCount,
+        options.mappingUBCapacityBytes, options.deviceCoreCount,
         options.minProgramsPerCore, options.ubSafetyPercent,
         options.reservedUBBytes);
     GraphOptimizationContext context(function, resources);
@@ -532,7 +561,8 @@ void populateBuiltinGraphOptimizationRules(
   }
   if (isRuleEnabled(options.enabledRuleMask,
                     GraphOptimizationRuleId::StoreCoalescing)) {
-    rules.push_back(createStoreCoalescingRule(options.ubCapacityBytes));
+    rules.push_back(createStoreCoalescingRule(
+        options.storeCoalescingUBBudgetBytes));
   }
   if (isRuleEnabled(options.enabledRuleMask,
                     GraphOptimizationRuleId::ResidentLoadForwarding)) {

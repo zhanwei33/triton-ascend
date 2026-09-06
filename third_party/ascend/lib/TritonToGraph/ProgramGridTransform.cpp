@@ -13,12 +13,15 @@
  */
 
 #include "TritonToGraph/ProgramGridTransform.h"
+#include "TritonToGraph/ResourceCostModel.h"
 
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <array>
+#include <limits>
 #include <optional>
 
 using namespace mlir;
@@ -37,6 +40,28 @@ constexpr llvm::StringLiteral kPersistentCoverage = "persistent_coverage";
 constexpr llvm::StringLiteral kGridStrideAbiVerified =
     "grid_stride_abi_verified";
 constexpr llvm::StringLiteral kCeilDiv = "ceil_div";
+
+bool checkedMul(uint64_t lhs, uint64_t rhs, uint64_t &result) {
+  if (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs)
+    return false;
+  result = lhs * rhs;
+  return true;
+}
+
+std::optional<uint64_t> ceilDiv(uint64_t numerator, uint64_t denominator) {
+  if (denominator == 0)
+    return std::nullopt;
+  return numerator / denominator + (numerator % denominator != 0);
+}
+
+std::optional<uint64_t>
+getGridProduct(const std::array<uint64_t, 3> &grid) {
+  uint64_t product = 1;
+  for (uint64_t extent : grid)
+    if (extent == 0 || !checkedMul(product, extent, product))
+      return std::nullopt;
+  return product;
+}
 
 bool hasExactKeys(DictionaryAttr dictionary, ArrayRef<llvm::StringRef> keys) {
   if (dictionary.size() != keys.size())
@@ -157,4 +182,93 @@ LogicalResult mlir::triton::cfg::setProgramGridTransformContract(
     return failure();
   module->setAttr(kProgramGridTransformsAttr, serialized);
   return success();
+}
+
+std::optional<ProgramMappingLaunchProjection>
+mlir::triton::cfg::projectProgramMappingLaunch(
+    const ProgramGridSpecialization &specialization,
+    llvm::ArrayRef<ProgramGridTransform> transforms,
+    const ResourceSnapshot &resources) {
+  if (resources.deviceCoreCount == 0)
+    return std::nullopt;
+
+  ProgramMappingLaunchProjection projection;
+  for (unsigned axis = 0; axis < projection.logicalGrid.size(); ++axis) {
+    if (specialization.grid[axis] < 1)
+      return std::nullopt;
+    projection.logicalGrid[axis] =
+        static_cast<uint64_t>(specialization.grid[axis]);
+  }
+
+  std::optional<unsigned> persistentAxis;
+  for (auto [expectedOrder, transform] : llvm::enumerate(transforms)) {
+    if (transform.order != static_cast<int32_t>(expectedOrder) ||
+        transform.axis < 0 ||
+        transform.axis >= static_cast<int32_t>(projection.logicalGrid.size()) ||
+        transform.factor < 2 || transform.logicalExtent < 1 ||
+        transform.logicalExtent != specialization.grid[transform.axis] ||
+        transform.gridStrideAbiVerified != transform.persistentCoverage)
+      return std::nullopt;
+    const unsigned axis = static_cast<unsigned>(transform.axis);
+    std::optional<uint64_t> divided = ceilDiv(
+        projection.logicalGrid[axis], static_cast<uint64_t>(transform.factor));
+    if (!divided || *divided == 0)
+      return std::nullopt;
+    projection.logicalGrid[axis] = *divided;
+    if (transform.persistentCoverage) {
+      if (persistentAxis)
+        return std::nullopt;
+      persistentAxis = axis;
+      projection.persistentCoverage = true;
+    }
+  }
+
+  std::optional<uint64_t> logicalPrograms =
+      getGridProduct(projection.logicalGrid);
+  if (!logicalPrograms)
+    return std::nullopt;
+  projection.logicalPrograms = *logicalPrograms;
+  projection.physicalGrid = projection.logicalGrid;
+
+  if (transforms.empty()) {
+    // This is the legacy driver path: blockNum is capped after forming the
+    // full grid product, without changing the logical grid itself.
+    projection.legacyAutoMap = true;
+    projection.physicalPrograms =
+        std::min<uint64_t>(projection.logicalPrograms,
+                           resources.deviceCoreCount);
+  } else if (persistentAxis) {
+    uint64_t otherAxes = 1;
+    for (unsigned axis = 0; axis < projection.physicalGrid.size(); ++axis) {
+      if (axis == *persistentAxis)
+        continue;
+      if (!checkedMul(otherAxes, projection.physicalGrid[axis], otherAxes))
+        return std::nullopt;
+    }
+    if (otherAxes == 0)
+      return std::nullopt;
+    if (otherAxes <= resources.deviceCoreCount) {
+      const uint64_t axisCap = std::max<uint64_t>(
+          1, static_cast<uint64_t>(resources.deviceCoreCount) / otherAxes);
+      projection.physicalGrid[*persistentAxis] = std::min(
+          projection.physicalGrid[*persistentAxis], axisCap);
+    }
+    std::optional<uint64_t> physicalPrograms =
+        getGridProduct(projection.physicalGrid);
+    if (!physicalPrograms)
+      return std::nullopt;
+    projection.physicalPrograms = *physicalPrograms;
+  } else {
+    // A nonpersistent transform has no proven grid-stride replay.  It must
+    // launch every transformed program instead of silently inheriting legacy
+    // auto-map's cap.
+    projection.physicalPrograms = projection.logicalPrograms;
+  }
+
+  std::optional<uint64_t> waves = ceilDiv(projection.logicalPrograms,
+                                          projection.physicalPrograms);
+  if (!waves || *waves == 0)
+    return std::nullopt;
+  projection.physicalWaves = *waves;
+  return projection;
 }

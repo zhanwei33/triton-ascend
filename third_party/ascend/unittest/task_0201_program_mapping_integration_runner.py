@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from triton.backends.ascend.program_grid import apply_program_grid_transforms
 
 UNITTEST_ROOT = Path(__file__).resolve().parent
 if str(UNITTEST_ROOT) not in sys.path:
@@ -57,6 +58,14 @@ K_RULE_MASK = PTSM_RULE_MASK
 _MERGE_KERNEL = "_merge_split_states_kernel"
 _NORM_KERNEL = "_indexer_norm_rope_kernel"
 _LOGITS_KERNEL = "_indexer_logits_kernel"
+
+
+def _expected_physical_npu() -> str:
+    """Use task_0201's card 0 by default, while permitting an explicit handoff."""
+    expected = os.environ.get("TASK_0201_EXPECTED_PHYSICAL_NPU", "0")
+    if not expected:
+        raise RuntimeError("TASK_0201_EXPECTED_PHYSICAL_NPU must not be empty")
+    return expected
 
 
 def _require_dedicated_cache() -> Path:
@@ -100,6 +109,37 @@ def _transforms(data: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in transforms if isinstance(item, dict)] if isinstance(transforms, list) else []
 
 
+def _transform_matches(
+    transform: dict[str, Any], *, axis: int, factor: int, persistent: bool
+) -> bool:
+    return (
+        transform.get("axis") == axis
+        and transform.get("factor") == factor
+        and transform.get("persistent_coverage") is persistent
+    )
+
+
+def _merge_projection(data: dict[str, Any]) -> dict[str, Any]:
+    """Record the nonpersistent launch shape consumed by the shared driver."""
+    specialization = data.get("program_grid_specialization")
+    contract = data.get("program_grid_transforms")
+    if not isinstance(specialization, dict) or not isinstance(contract, dict):
+        return {}
+    original_grid = specialization.get("grid")
+    if not isinstance(original_grid, list) or len(original_grid) != 3:
+        return {}
+    try:
+        final_grid = apply_program_grid_transforms(original_grid, contract)
+    except Exception as error:  # pragma: no cover - diagnostic boundary
+        return {"error": f"{type(error).__name__}: {error}"}
+    return {
+        "original_grid": list(original_grid),
+        "final_grid": list(final_grid),
+        # No persistent marker means the driver must not cap this IAT grid.
+        "physical_block_num": int(final_grid[0] * final_grid[1] * final_grid[2]),
+    }
+
+
 def _cache_evidence(cache: Path) -> list[dict[str, Any]]:
     records = collect_cache_records(
         cache, (_MERGE_KERNEL, _NORM_KERNEL, _LOGITS_KERNEL)
@@ -109,6 +149,17 @@ def _cache_evidence(cache: Path) -> list[dict[str, Any]]:
         transforms = _transforms(data)
         record["program_mapping_rule_mask"] = _rule_mask(data)
         record["program_grid_transforms"] = transforms
+        record["merge_projection"] = _merge_projection(data)
+        record["debug"] = data.get("debug") is True
+        ttir_path = Path(record["manifest"]).with_suffix(".ttir")
+        try:
+            ttir = ttir_path.read_text(errors="replace")
+        except OSError:
+            ttir = ""
+        record["ttir_assert_count"] = ttir.count("tt.assert")
+        record["ttir_auto_overflow_assert_count"] = ttir.count(
+            "tt.auto_overflow_assert"
+        )
         record["has_persistent_coverage"] = any(
             transform.get("persistent_coverage") is True for transform in transforms
         )
@@ -124,6 +175,52 @@ def _cache_evidence(cache: Path) -> list[dict[str, Any]]:
             for transform in transforms
         )
     return records
+
+
+def _debug_assertion_contract(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Assert that debug-mode program mapping fails closed without losing IR asserts."""
+    debug_enabled = os.environ.get("TRITON_DEBUG", "").lower() not in {
+        "", "0", "false", "off", "no"
+    }
+    contract: dict[str, Any] = {
+        "debug_enabled": debug_enabled,
+        "mapping_records": [],
+        "passed": None,
+    }
+    if not debug_enabled:
+        return contract
+
+    mapping_masks = {IAT_RULE_MASK, SPAF_RULE_MASK, Q_RULE_MASK, K_RULE_MASK}
+    mapping_records = [
+        record for record in records
+        if record.get("program_mapping_rule_mask") in mapping_masks
+    ]
+    contract["mapping_records"] = [
+        {
+            "kernel_name": record.get("kernel_name"),
+            "rule_mask": record.get("program_mapping_rule_mask"),
+            "debug": record.get("debug"),
+            "transforms": record.get("program_grid_transforms"),
+            "ttir_assert_count": record.get("ttir_assert_count"),
+            "ttir_auto_overflow_assert_count": record.get(
+                "ttir_auto_overflow_assert_count"
+            ),
+        }
+        for record in mapping_records
+    ]
+    # Two merge specializations plus norm Q/K and logits must all be observed.
+    contract["passed"] = bool(
+        len(mapping_records) >= 5
+        and all(
+            record.get("debug")
+            and not record.get("program_grid_transforms")
+            and record.get("ttir_assert_count", 0) > 0
+            and record.get("ttir_auto_overflow_assert_count", 0)
+            == record.get("ttir_assert_count", 0)
+            for record in mapping_records
+        )
+    )
+    return contract
 
 
 def _has_record(
@@ -145,31 +242,58 @@ def _has_record(
     )
 
 
+def _has_exact_merge_contract(
+    records: list[dict[str, Any]], *, factor: int, final_grid: list[int]
+) -> bool:
+    return any(
+        record.get("kernel_name") == _MERGE_KERNEL
+        and record.get("program_mapping_rule_mask") == IAT_RULE_MASK
+        and len(record.get("program_grid_transforms", [])) == 1
+        and _transform_matches(
+            record["program_grid_transforms"][0], axis=1, factor=factor,
+            persistent=False,
+        )
+        and isinstance(record.get("merge_projection"), dict)
+        and record["merge_projection"].get("original_grid") == [8, 64, 1]
+        and record["merge_projection"].get("final_grid") == final_grid
+        and record["merge_projection"].get("physical_block_num")
+        == final_grid[0] * final_grid[1] * final_grid[2]
+        for record in records
+    )
+
+
 def run(*, tokens: int, output: Path, require_ptsm: bool) -> int:
     cache = _require_dedicated_cache()
     if not npu_available():
         raise RuntimeError("NPU runtime is unavailable")
     npu = npu_identity()
-    if npu.get("physical_npu_env") != "1":
+    expected_npu = _expected_physical_npu()
+    if npu.get("physical_npu_env") != expected_npu:
         raise RuntimeError(
-            "ASCEND_RT_VISIBLE_DEVICES must be 1 for task_0201, got "
+            f"ASCEND_RT_VISIBLE_DEVICES must be {expected_npu} for task_0201, got "
             f"{npu.get('physical_npu_env')!r}"
         )
 
     assert_fixture_integrity()
     device = torch.device("npu")
 
-    merge_case = MERGE_PRIMARY_CASES[0]
-    merge_inputs = make_merge_inputs(merge_case, device=device)
-    merge_expected = ref_merge_split_states(
-        merge_inputs["partial_out"], merge_inputs["partial_lse"]
-    )
-    merge = launch_merge_split(
-        merge_inputs,
-        merge_case,
-        graph_optimize=True,
-        program_mapping_rule_mask=IAT_RULE_MASK,
-    )
+    merge_runs: dict[int, dict[str, Any]] = {}
+    for merge_case in MERGE_PRIMARY_CASES:
+        merge_inputs = make_merge_inputs(merge_case, device=device)
+        merge_expected = ref_merge_split_states(
+            merge_inputs["partial_out"], merge_inputs["partial_lse"]
+        )
+        merge = launch_merge_split(
+            merge_inputs,
+            merge_case,
+            graph_optimize=True,
+            program_mapping_rule_mask=IAT_RULE_MASK,
+        )
+        merge_runs[merge_case.num_splits] = {
+            "case": merge_case,
+            "expected": merge_expected,
+            "result": merge,
+        }
 
     norm_case = NormRopeCase(tokens=tokens)
     norm_inputs = make_norm_rope_inputs(norm_case, device=device)
@@ -206,10 +330,14 @@ def run(*, tokens: int, output: Path, require_ptsm: bool) -> int:
     )
     torch.npu.synchronize()
 
-    merge_correct = bool(
-        torch.allclose(merge.outputs[0], merge_expected[0], rtol=1.0e-2, atol=4.0e-3)
-        and torch.allclose(merge.outputs[1], merge_expected[1], rtol=1.0e-2, atol=4.0e-3)
-    )
+    merge_correctness = {
+        f"split_{splits}": bool(
+            torch.allclose(run["result"].outputs[0], run["expected"][0], rtol=1.0e-2, atol=4.0e-3)
+            and torch.allclose(run["result"].outputs[1], run["expected"][1], rtol=1.0e-2, atol=4.0e-3)
+        )
+        for splits, run in merge_runs.items()
+    }
+    merge_correct = all(merge_correctness.values())
     q_error = max_abs_error(norm.outputs[0], norm_expected[0])
     k_error = max_abs_error(norm.outputs[1], norm_expected[1])
     norm_correct = bool(
@@ -227,6 +355,21 @@ def run(*, tokens: int, output: Path, require_ptsm: bool) -> int:
         "merge_iat_nonpersistent": _has_record(
             records, kernel=_MERGE_KERNEL, rule_mask=IAT_RULE_MASK,
             persistent=False, iat=True,
+        ),
+        "merge_split2_iat8_grid_8x8_blocknum64": _has_exact_merge_contract(
+            records, factor=8, final_grid=[8, 8, 1]
+        ),
+        "merge_split4_iat4_grid_8x16_blocknum128": _has_exact_merge_contract(
+            records, factor=4, final_grid=[8, 16, 1]
+        ),
+        "merge_factor2_not_selected": not any(
+            record.get("kernel_name") == _MERGE_KERNEL
+            and record.get("program_mapping_rule_mask") == IAT_RULE_MASK
+            and any(
+                _transform_matches(transform, axis=1, factor=2, persistent=False)
+                for transform in record.get("program_grid_transforms", [])
+            )
+            for record in records
         ),
         "norm_q_iat_then_ptsm": _has_record(
             records, kernel=_NORM_KERNEL, rule_mask=Q_RULE_MASK,
@@ -250,9 +393,15 @@ def run(*, tokens: int, output: Path, require_ptsm: bool) -> int:
         path_evidence["norm_q_iat_then_ptsm"] = True
         path_evidence["norm_k_ptsm_only"] = True
 
+    debug_assertions = _debug_assertion_contract(records)
+    evidence_ok = (
+        bool(debug_assertions["passed"])
+        if debug_assertions["debug_enabled"]
+        else all(path_evidence.values())
+    )
     compiler = compiler_identity()
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "rule_masks": {
             "iat": IAT_RULE_MASK,
             "spaf": SPAF_RULE_MASK,
@@ -263,18 +412,25 @@ def run(*, tokens: int, output: Path, require_ptsm: bool) -> int:
         "fixture_variants": "all unchanged before DSL fixtures",
         "compile_mode": COMPILE_MODE,
         "cases": {
-            "merge": asdict(merge_case),
+            "merge": {
+                f"split_{splits}": asdict(run["case"])
+                for splits, run in merge_runs.items()
+            },
             "norm": asdict(norm_case),
             "logits": asdict(logits_case),
         },
         "original_grids": {
-            "merge": list(expected_grid("merge_split", merge_case)),
+            "merge": {
+                f"split_{splits}": list(expected_grid("merge_split", run["case"]))
+                for splits, run in merge_runs.items()
+            },
             "norm_q": list(expected_grid("norm_rope", norm_case, specialization="q")),
             "norm_k": list(expected_grid("norm_rope", norm_case, specialization="k")),
             "logits": list(expected_grid("indexer_logits", logits_case)),
         },
         "correctness": {
             "merge": merge_correct,
+            "merge_by_split": merge_correctness,
             "norm": norm_correct,
             "norm_q_max_abs_error": q_error,
             "norm_k_max_abs_error": k_error,
@@ -285,6 +441,8 @@ def run(*, tokens: int, output: Path, require_ptsm: bool) -> int:
         },
         "require_ptsm": require_ptsm,
         "path_evidence": path_evidence,
+        "debug_assertion_contract": debug_assertions,
+        "evidence_ok": evidence_ok,
         "npu": npu,
         "compiler": compiler,
         "cache_dir": str(cache),
@@ -296,7 +454,7 @@ def run(*, tokens: int, output: Path, require_ptsm: bool) -> int:
         merge_correct
         and norm_correct
         and logits_correct
-        and all(path_evidence.values())
+        and evidence_ok
         and compiler.get("matches_expected")
     )
     return 0 if accepted else 1

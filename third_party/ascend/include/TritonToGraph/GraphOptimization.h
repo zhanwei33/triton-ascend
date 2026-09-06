@@ -343,7 +343,17 @@ struct GraphOptimizationOptions {
   // and do not use this option as a new opt-out.
   GraphOptimizationRuleMask enabledRuleMask = kDefaultGraphOptimizationRuleMask;
   unsigned maxRewritesPerFunction = 64;
+  // Kept as the command-line/cache compatibility spelling.  New callers must
+  // provide the two explicit budgets below; a zero explicit budget falls back
+  // to this value so old IR tests and out-of-tree pass users retain their
+  // previous behavior.
   unsigned ubCapacityBytes = 0;
+  // Program-mapping rules model the physical UB capacity, not the legacy
+  // half-UB StoreCoalescing admission limit.
+  unsigned mappingUBCapacityBytes = 0;
+  // StoreCoalescing retains its historical conservative budget independently
+  // of mapping legality.
+  unsigned storeCoalescingUBBudgetBytes = 0;
   // Resource/cost rules must receive target facts explicitly.  Zero UB/core
   // values mean unknown and make such candidates fail closed.
   unsigned deviceCoreCount = 0;

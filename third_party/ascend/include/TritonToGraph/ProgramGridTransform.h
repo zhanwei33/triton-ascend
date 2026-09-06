@@ -15,17 +15,24 @@
 #ifndef TRITON_TO_GRAPH_PROGRAM_GRID_TRANSFORM_H
 #define TRITON_TO_GRAPH_PROGRAM_GRID_TRANSFORM_H
 
+#include "TritonToGraph/ProgramGridSpecialization.h"
+
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <array>
 #include <cstdint>
+#include <optional>
 
 namespace mlir {
 namespace triton {
 namespace cfg {
+
+struct ResourceSnapshot;
 
 // This is an MLIR module attribute rather than a dialect attribute so it can
 // be consumed by the Python compiler boundary and removed before a downstream
@@ -53,6 +60,28 @@ struct ProgramGridTransformContract {
   int64_t version = kProgramGridTransformsVersion;
   SmallVector<ProgramGridTransform> transforms;
 };
+
+// The exact launcher projection shared by program-mapping rules. ``logical``
+// is the transformed grid before a persistent cap; ``physical`` is the actual
+// Block Num emitted by the launcher. A nonpersistent transform intentionally
+// disables legacy auto-map because it has no grid-stride coverage proof.
+struct ProgramMappingLaunchProjection {
+  std::array<uint64_t, 3> logicalGrid = {1, 1, 1};
+  std::array<uint64_t, 3> physicalGrid = {1, 1, 1};
+  uint64_t logicalPrograms = 0;
+  uint64_t physicalPrograms = 0;
+  uint64_t physicalWaves = 0;
+  bool legacyAutoMap = false;
+  bool persistentCoverage = false;
+};
+
+// Mirrors the generated launcher order: ceil-div transforms first, then the
+// one proven persistent cap; otherwise legacy auto-map caps only a launch
+// without any transform contract. Invalid or unprovable inputs fail closed.
+std::optional<ProgramMappingLaunchProjection> projectProgramMappingLaunch(
+    const ProgramGridSpecialization &specialization,
+    llvm::ArrayRef<ProgramGridTransform> transforms,
+    const ResourceSnapshot &resources);
 
 // Parse and validate the version-1 contract.  It is intentionally fail-closed:
 // unknown keys, versions, transform kinds, dynamic/missing logical extents,

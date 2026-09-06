@@ -71,8 +71,44 @@ bool checkedAccumulate(uint64_t value, uint64_t &total) {
   return true;
 }
 
+std::optional<uint64_t> ceilDiv(uint64_t numerator, uint64_t denominator) {
+  if (denominator == 0)
+    return std::nullopt;
+  return numerator / denominator + (numerator % denominator != 0);
+}
+
 bool isTensorValue(Value value) {
   return value && isa<RankedTensorType, UnrankedTensorType>(value.getType());
+}
+
+// ResourceCostModel estimates resident UB storage, not every SSA/register
+// value. Pointer/index/mask vectors are intentionally excluded from this
+// byte model; their register pressure is handled by the lowering backend.
+bool isUBResidentTensor(Value value) {
+  if (!value)
+    return false;
+  auto tensor = dyn_cast<RankedTensorType>(value.getType());
+  return tensor && tensor.hasStaticShape() &&
+         isa<FloatType>(tensor.getElementType());
+}
+
+bool isStorageViewOperation(Operation *operation) {
+  if (!operation)
+    return false;
+  const StringRef name = operation->getName().getStringRef();
+  return name == "tt.expand_dims" || name == "tt.broadcast" ||
+         name == "tt.reshape" || name == "tensor.cast" ||
+         name == "tensor.collapse_shape" || name == "tensor.expand_shape";
+}
+
+bool isVirtualTensorOperation(Operation *operation) {
+  if (!operation)
+    return false;
+  const StringRef name = operation->getName().getStringRef();
+  // Ranges and scalar splats are vector/register construction, not a new UB
+  // allocation. Their floating consumers still receive their own intervals.
+  return name == "tt.make_range" || name == "tt.splat" ||
+         name == "arith.constant";
 }
 
 std::optional<unsigned> getElementBitWidth(Type elementType) {
@@ -128,6 +164,45 @@ bool isDefinedInside(Value value, Operation *containingOp) {
 bool isForLikeLoop(Operation *operation) {
   return operation && operation->getName().getStringRef() == "scf.for" &&
          operation->getNumRegions() == 1 && !operation->getRegion(0).empty();
+}
+
+Operation *getValueDefiningOperation(Value value) {
+  if (auto result = dyn_cast<OpResult>(value))
+    return result.getOwner();
+  if (auto argument = dyn_cast<BlockArgument>(value))
+    return argument.getOwner()->getParentOp();
+  return nullptr;
+}
+
+struct ConditionalRegion {
+  Operation *conditional = nullptr;
+  unsigned region = 0;
+};
+
+std::optional<ConditionalRegion> getConditionalRegion(Value value) {
+  Operation *operation = getValueDefiningOperation(value);
+  while (operation) {
+    Region *region = operation->getParentRegion();
+    if (!region)
+      return std::nullopt;
+    Operation *parent = region->getParentOp();
+    if (!parent)
+      return std::nullopt;
+    if (parent->getName().getStringRef() == "scf.if") {
+      for (unsigned index = 0; index < parent->getNumRegions(); ++index)
+        if (&parent->getRegion(index) == region)
+          return ConditionalRegion{parent, index};
+    }
+    operation = parent;
+  }
+  return std::nullopt;
+}
+
+bool areMutuallyExclusive(Value lhs, Value rhs) {
+  std::optional<ConditionalRegion> left = getConditionalRegion(lhs);
+  std::optional<ConditionalRegion> right = getConditionalRegion(rhs);
+  return left && right && left->conditional == right->conditional &&
+         left->region != right->region;
 }
 
 void addCanonicalFactors(llvm::ArrayRef<unsigned> input,
@@ -312,6 +387,22 @@ LiveByteEstimate cfg::estimatePeakLiveBytes(Operation *root) {
           findCanonicalValue(terminator->getOperand(index), canonicalValues);
   }
 
+  // Tensor reshapes and broadcasts are views of the same resident storage.
+  // Canonicalizing them before interval construction prevents a single
+  // materialized tile (notably token-only cos/sin broadcast over heads) from
+  // being charged once per SSA view.
+  for (Operation *operation : operations) {
+    if (!isStorageViewOperation(operation) || operation->getNumOperands() != 1)
+      continue;
+    Value source = operation->getOperand(0);
+    if (!isTensorValue(source))
+      continue;
+    Value owner = findCanonicalValue(source, canonicalValues);
+    for (Value result : operation->getResults())
+      if (isTensorValue(result))
+        canonicalValues[result] = owner;
+  }
+
   struct IntervalState {
     Value value;
     uint64_t begin = 0;
@@ -321,10 +412,14 @@ LiveByteEstimate cfg::estimatePeakLiveBytes(Operation *root) {
   llvm::DenseMap<Value, IntervalState> intervals;
 
   auto addValue = [&](Value value) {
-    if (!isTensorValue(value))
+    if (!isTensorValue(value) || !isUBResidentTensor(value))
       return;
     Value canonical = findCanonicalValue(value, canonicalValues);
     if (intervals.count(canonical))
+      return;
+
+    if (Operation *owner = getValueDefiningOperation(canonical);
+        isVirtualTensorOperation(owner))
       return;
 
     std::optional<uint64_t> bytes = getStaticTensorBytes(canonical.getType());
@@ -387,49 +482,59 @@ LiveByteEstimate cfg::estimatePeakLiveBytes(Operation *root) {
     });
   }
 
-  struct Event {
-    uint64_t position;
-    uint64_t bytes;
-    bool starts;
-  };
-  llvm::SmallVector<Event, 32> events;
-  events.reserve(intervals.size() * 2);
+  llvm::SmallVector<uint64_t, 32> positions;
+  positions.reserve(intervals.size() * 2);
   for (const auto &entry : intervals) {
     const IntervalState &state = entry.second;
     estimate.intervals.push_back(
         LiveTensorInterval{state.value, state.begin, state.end, state.bytes});
-    events.push_back(Event{state.begin, state.bytes, true});
+    positions.push_back(state.begin);
     if (state.end == std::numeric_limits<uint64_t>::max()) {
       estimate.overflow = true;
       estimate.reason = ResourceCostRejectReason::Overflow;
       return estimate;
     }
-    events.push_back(Event{state.end + 1, state.bytes, false});
+    positions.push_back(state.end + 1);
   }
 
-  llvm::sort(events, [](const Event &lhs, const Event &rhs) {
-    if (lhs.position != rhs.position)
-      return lhs.position < rhs.position;
-    return !lhs.starts && rhs.starts;
-  });
-
-  uint64_t liveBytes = 0;
-  for (const Event &event : events) {
-    if (event.starts) {
-      if (!checkedAdd(liveBytes, event.bytes, liveBytes)) {
+  llvm::sort(positions);
+  positions.erase(std::unique(positions.begin(), positions.end()),
+                  positions.end());
+  for (uint64_t position : positions) {
+    llvm::SmallVector<const IntervalState *, 16> live;
+    for (const auto &entry : intervals) {
+      const IntervalState &state = entry.second;
+      if (state.begin <= position && position <= state.end)
+        live.push_back(&state);
+    }
+    // If two values are produced in opposite branches of the same scf.if,
+    // retain the larger allocation at the point rather than charging both.
+    // Sorting by bytes first keeps the result conservative and deterministic.
+    llvm::sort(live, [](const IntervalState *lhs, const IntervalState *rhs) {
+      if (lhs->bytes != rhs->bytes)
+        return lhs->bytes > rhs->bytes;
+      return lhs->begin < rhs->begin;
+    });
+    uint64_t liveBytes = 0;
+    llvm::SmallVector<const IntervalState *, 16> selected;
+    for (const IntervalState *state : live) {
+      bool exclusive = false;
+      for (const IntervalState *other : selected) {
+        if (areMutuallyExclusive(state->value, other->value)) {
+          exclusive = true;
+          break;
+        }
+      }
+      if (exclusive)
+        continue;
+      if (!checkedAdd(liveBytes, state->bytes, liveBytes)) {
         estimate.overflow = true;
         estimate.reason = ResourceCostRejectReason::Overflow;
         return estimate;
       }
-      estimate.peakLiveBytes = std::max(estimate.peakLiveBytes, liveBytes);
-      continue;
+      selected.push_back(state);
     }
-    if (event.bytes > liveBytes) {
-      estimate.overflow = true;
-      estimate.reason = ResourceCostRejectReason::Overflow;
-      return estimate;
-    }
-    liveBytes -= event.bytes;
+    estimate.peakLiveBytes = std::max(estimate.peakLiveBytes, liveBytes);
   }
 
   estimate.known = true;
@@ -490,9 +595,40 @@ cfg::evaluateCandidateCost(const ResourceSnapshot &resources,
     return reject(candidate, ResourceCostRejectReason::InvalidCandidate,
                   *safeBudget, requiredParallelPrograms);
 
+  const std::optional<uint64_t> derivedWavesBefore =
+      ceilDiv(candidate.logicalTasksBefore, candidate.actualProgramsBefore);
+  const std::optional<uint64_t> derivedWavesAfter =
+      ceilDiv(candidate.logicalTasksAfter, candidate.actualProgramsAfter);
+  const uint64_t physicalWavesBefore = candidate.physicalWavesBefore != 0
+                                           ? candidate.physicalWavesBefore
+                                           : derivedWavesBefore.value_or(0);
+  const uint64_t physicalWavesAfter = candidate.physicalWavesAfter != 0
+                                          ? candidate.physicalWavesAfter
+                                          : derivedWavesAfter.value_or(0);
+  if (physicalWavesBefore == 0 || physicalWavesAfter == 0)
+    return reject(candidate, ResourceCostRejectReason::InvalidCandidate,
+                  *safeBudget, requiredParallelPrograms);
+
+  uint64_t persistentLoopTripsBefore = candidate.persistentLoopTripsBefore;
+  if (persistentLoopTripsBefore == 0)
+    persistentLoopTripsBefore =
+        candidate.logicalTasksBefore / candidate.actualProgramsBefore +
+        (candidate.logicalTasksBefore % candidate.actualProgramsBefore != 0);
+  uint64_t persistentLoopTripsAfter = candidate.persistentLoopTripsAfter;
+  if (persistentLoopTripsAfter == 0)
+    persistentLoopTripsAfter =
+        candidate.logicalTasksAfter / candidate.actualProgramsAfter +
+        (candidate.logicalTasksAfter % candidate.actualProgramsAfter != 0);
+  if (persistentLoopTripsBefore == 0 || persistentLoopTripsAfter == 0)
+    return reject(candidate, ResourceCostRejectReason::InvalidCandidate,
+                  *safeBudget, requiredParallelPrograms);
+
   uint64_t gains = 0;
   uint64_t penalties = 0;
-  if (!addWeightedChange(candidate.actualProgramsBefore,
+  if (!addWeightedChange(candidate.logicalTasksBefore,
+                         candidate.logicalTasksAfter,
+                         weights.logicalProgramReduction, gains, penalties) ||
+      !addWeightedChange(candidate.actualProgramsBefore,
                          candidate.actualProgramsAfter,
                          weights.programReduction, gains, penalties) ||
       !addWeightedChange(candidate.launchesBefore, candidate.launchesAfter,
@@ -511,8 +647,11 @@ cfg::evaluateCandidateCost(const ResourceSnapshot &resources,
       !addWeightedChange(candidate.baselinePeakLiveBytes,
                          candidate.estimatedPeakLiveBytes, weights.liveByte,
                          gains, penalties) ||
-      !addWeightedChange(workBefore, workAfter, weights.workItem, gains,
-                         penalties) ||
+      !addWeightedChange(persistentLoopTripsBefore, persistentLoopTripsAfter,
+                         weights.persistentLoopTrip, gains, penalties) ||
+      !addWeightedChange(candidate.tokenOnlyRepeatedBytesBefore,
+                         candidate.tokenOnlyRepeatedBytesAfter,
+                         weights.tokenOnlyRepeatedByte, gains, penalties) ||
       gains > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
       penalties > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
     return reject(candidate, ResourceCostRejectReason::Overflow, *safeBudget,
@@ -527,6 +666,14 @@ cfg::evaluateCandidateCost(const ResourceSnapshot &resources,
   evaluation.safeUBBudgetBytes = *safeBudget;
   evaluation.requiredParallelPrograms = requiredParallelPrograms;
   evaluation.effectiveWorkPerProgram = workAfter;
+  evaluation.physicalWavesBefore = physicalWavesBefore;
+  evaluation.physicalWavesAfter = physicalWavesAfter;
+  evaluation.persistentLoopTripsBefore = persistentLoopTripsBefore;
+  evaluation.persistentLoopTripsAfter = persistentLoopTripsAfter;
+  evaluation.tokenOnlyRepeatedBytesBefore =
+      candidate.tokenOnlyRepeatedBytesBefore;
+  evaluation.tokenOnlyRepeatedBytesAfter =
+      candidate.tokenOnlyRepeatedBytesAfter;
   evaluation.remark = formatCandidateRemark(evaluation);
   return evaluation;
 }
@@ -596,10 +743,15 @@ std::string cfg::formatCandidateRemark(const CandidateEvaluation &evaluation) {
          << " block_t=" << candidate.plan.blockT
          << " static_axis_fusion_factor="
          << candidate.plan.staticAxisFusionFactor
-         << " logical_tasks=" << candidate.logicalTasksBefore << "->"
+         << " logical_programs=" << candidate.logicalTasksBefore << "->"
          << candidate.logicalTasksAfter
-         << " actual_programs=" << candidate.actualProgramsBefore << "->"
+         << " physical_blocks=" << candidate.actualProgramsBefore << "->"
          << candidate.actualProgramsAfter
+         << " physical_waves=" << evaluation.physicalWavesBefore << "->"
+         << evaluation.physicalWavesAfter
+         << " legacy_auto_map="
+         << (candidate.legacyAutoMapBefore ? "true" : "false") << "->"
+         << (candidate.legacyAutoMapAfter ? "true" : "false")
          << " required_programs=" << evaluation.requiredParallelPrograms
          << " gm_read_bytes=" << candidate.gmReadBytesBefore << "->"
          << candidate.gmReadBytesAfter
@@ -613,6 +765,12 @@ std::string cfg::formatCandidateRemark(const CandidateEvaluation &evaluation) {
          << candidate.estimatedPeakLiveBytes
          << " ub_budget_bytes=" << evaluation.safeUBBudgetBytes
          << " work_per_program=" << evaluation.effectiveWorkPerProgram
+         << " persistent_loop_trips="
+         << evaluation.persistentLoopTripsBefore << "->"
+         << evaluation.persistentLoopTripsAfter
+         << " token_only_repeated_bytes="
+         << evaluation.tokenOnlyRepeatedBytesBefore << "->"
+         << evaluation.tokenOnlyRepeatedBytesAfter
          << " persistent=" << (candidate.persistent ? "true" : "false");
   return std::move(stream.str());
 }
