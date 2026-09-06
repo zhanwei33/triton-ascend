@@ -31,6 +31,7 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i
       %value = arith.addf %lhs, %rhs : f32
       tt.reduce.return %value : f32
     }) : (tensor<2xf32>) -> f32
+    %aux_total_splat = tt.splat %aux_total : f32 -> tensor<4xf32>
     %input_base = tt.addptr %input, %head_offset : !tt.ptr<f32>, i32
     %input_splat = tt.splat %input_base : !tt.ptr<f32> -> tensor<2x1x!tt.ptr<f32>>
     %input_broadcast = tt.broadcast %input_splat : tensor<2x1x!tt.ptr<f32>> -> tensor<2x4x!tt.ptr<f32>>
@@ -38,11 +39,12 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i
     %dims_broadcast = tt.broadcast %dims_expand : tensor<1x4xi32> -> tensor<2x4xi32>
     %input_ptrs = tt.addptr %input_broadcast, %dims_broadcast : tensor<2x4x!tt.ptr<f32>>, tensor<2x4xi32>
     %states = tt.load %input_ptrs : tensor<2x4x!tt.ptr<f32>>
-    %sum = "tt.reduce"(%states) <{axis = 0 : i32}> ({
+    %main_sum = "tt.reduce"(%states) <{axis = 0 : i32}> ({
     ^bb0(%lhs: f32, %rhs: f32):
       %value = arith.addf %lhs, %rhs : f32
       tt.reduce.return %value : f32
     }) : (tensor<2x4xf32>) -> tensor<4xf32>
+    %sum = arith.addf %main_sum, %aux_total_splat : tensor<4xf32>
     %output_base = tt.addptr %output, %head_offset : !tt.ptr<f32>, i32
     %output_splat = tt.splat %output_base : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
     %output_ptrs = tt.addptr %output_splat, %dims : tensor<4x!tt.ptr<f32>>, tensor<4xi32>

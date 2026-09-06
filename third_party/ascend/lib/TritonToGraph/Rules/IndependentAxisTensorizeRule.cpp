@@ -29,6 +29,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Pass/PassManager.h"
@@ -752,17 +753,21 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
   };
 
   auto createUnchanged = [&](Operation *operation) -> bool {
-    SmallVector<Value> operands;
-    operands.reserve(operation->getNumOperands());
+    // `tt.reduce` and `tt.scan` carry a combiner region.  Rebuilding a
+    // non-tensorized operation through the generic OperationState overload
+    // loses that region, which leaves malformed IR when a MergeSplit kernel
+    // has an auxiliary scalar reduction next to the tensorized state
+    // reduction.  Clone with an operand mapping instead so unchanged
+    // operations retain every nested region while still consuming the
+    // rewritten operands that dominate this insertion point.
+    IRMapping mapping;
     for (Value operand : operation->getOperands()) {
       Value mapped = lookup(operand).value;
       if (!mapped)
         return false;
-      operands.push_back(mapped);
+      mapping.map(operand, mapped);
     }
-    Operation *replacement = rewriter.create(
-        operation->getLoc(), operation->getName().getIdentifier(), operands,
-        operation->getResultTypes(), operation->getAttrs());
+    Operation *replacement = rewriter.clone(*operation, mapping);
     if (replacement->getNumResults() != operation->getNumResults())
       return false;
     for (auto [oldResult, newResult] :
