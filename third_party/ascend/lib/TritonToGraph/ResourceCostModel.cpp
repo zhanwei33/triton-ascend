@@ -574,12 +574,17 @@ cfg::evaluateCandidateCost(const ResourceSnapshot &resources,
       candidate.actualProgramsAfter > candidate.logicalTasksAfter)
     return reject(candidate, ResourceCostRejectReason::InvalidCandidate,
                   *safeBudget, requiredParallelPrograms);
-  if (candidate.estimatedPeakLiveBytes > *safeBudget)
-    return reject(candidate, ResourceCostRejectReason::UBOverflow, *safeBudget,
-                  requiredParallelPrograms);
+  // A plan that cannot occupy the required number of vector cores is
+  // unconditionally unprofitable.  Diagnose that primary launch-contract
+  // failure before UB so a K=128 candidate that is both oversized and only
+  // exposes 32 tiles is recorded as insufficient parallelism, rather than
+  // obscuring the actionable 32 < 56 rejection behind its secondary UB cost.
   if (candidate.actualProgramsAfter < requiredParallelPrograms)
     return reject(candidate, ResourceCostRejectReason::InsufficientParallelism,
                   *safeBudget, requiredParallelPrograms);
+  if (candidate.estimatedPeakLiveBytes > *safeBudget)
+    return reject(candidate, ResourceCostRejectReason::UBOverflow, *safeBudget,
+                  requiredParallelPrograms);
 
   uint64_t workBefore = candidate.workPerProgramBefore;
   if (workBefore == 0)

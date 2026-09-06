@@ -153,6 +153,11 @@ TEST(GraphOptimizationResourceCostModelTest,
   EXPECT_EQ(evaluateCandidateCost(knownResources(), parallel).reason,
             ResourceCostRejectReason::InsufficientParallelism);
 
+  CandidateCost parallelAndOverflow = overflow;
+  parallelAndOverflow.actualProgramsAfter = 15;
+  EXPECT_EQ(evaluateCandidateCost(knownResources(), parallelAndOverflow).reason,
+            ResourceCostRejectReason::InsufficientParallelism);
+
   CandidateCost arithmeticOverflow = candidate;
   arithmeticOverflow.gmReadBytesBefore = std::numeric_limits<uint64_t>::max();
   arithmeticOverflow.gmReadBytesAfter = 0;
