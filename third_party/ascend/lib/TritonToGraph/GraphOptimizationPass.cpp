@@ -102,6 +102,12 @@ bool isRuleEnabled(GraphOptimizationRuleMask ruleMask,
   return (ruleMask & getGraphOptimizationRuleMask(ruleId)) != 0;
 }
 
+constexpr bool requiresProgramMappingCleanup(GraphOptimizationRuleId ruleId) {
+  return ruleId == GraphOptimizationRuleId::IndependentAxisTensorize ||
+         ruleId == GraphOptimizationRuleId::StaticProgramAxisFusion ||
+         ruleId == GraphOptimizationRuleId::PersistentTaskStripMining;
+}
+
 constexpr bool isPlanHigherPriority(unsigned lhsBenefit, unsigned lhsOrder,
                                     GraphOptimizationRuleId lhsRuleId,
                                     unsigned rhsBenefit, unsigned rhsOrder,
@@ -353,7 +359,12 @@ void GraphOptimizePass::runOnOperation() {
           signalPassFailure();
           return;
         }
-        if (failed(runStructuralCleanup())) {
+        // Preserve the legacy rule and RowCoalescing IR contracts exactly.
+        // The cleanup is required only between the new program-mapping
+        // rewrites, where it establishes the next analysis epoch after the
+        // rule has introduced loops or pointer/broadcast structure.
+        if (requiresProgramMappingCleanup(appliedRuleId) &&
+            failed(runStructuralCleanup())) {
           selectedPlan.reset();
           plans.clear();
           function.emitError()
@@ -454,14 +465,6 @@ void GraphOptimizePass::runOnOperation() {
       signalPassFailure();
       return;
     }
-    if (failed(runStructuralCleanup())) {
-      selectedRowPlan.reset();
-      rowPlans.clear();
-      function.emitError() << "graph-optimize failed Row rewrite cleanup";
-      signalPassFailure();
-      return;
-    }
-
     LLVM_DEBUG(llvm::dbgs()
                << "[" DEBUG_TYPE "] applied graph optimization rule "
                << getGraphOptimizationRuleMask(
