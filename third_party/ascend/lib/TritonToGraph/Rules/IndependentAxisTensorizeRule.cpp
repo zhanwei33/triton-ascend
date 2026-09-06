@@ -168,8 +168,8 @@ std::optional<triton::GetProgramIdOp> findOnlyProgramId(triton::FuncOp function,
 
 std::optional<TensorizeFormMatch>
 classifyTensorizeForm(triton::FuncOp function) {
-  std::optional<TensorizeFormMatch> matched;
-  bool hasConflictingForm = false;
+  std::optional<TensorizeReductionShape> mergeReduction;
+  std::optional<TensorizeReductionShape> normReduction;
   function.walk([&](triton::ReduceOp reduce) {
     if (reduce.getSrcs().size() != 1 || reduce.getResults().size() != 1 ||
         reduce.getAxis() != 0)
@@ -179,33 +179,30 @@ classifyTensorizeForm(triton::FuncOp function) {
     if (!source || !source.hasStaticShape())
       return;
     Type result = reduce.getResults().front().getType();
-    std::optional<TensorizeFormMatch> current;
     auto rankedResult = dyn_cast<RankedTensorType>(result);
     if (source.getRank() == 2 && rankedResult && rankedResult.getRank() == 1 &&
         rankedResult.hasStaticShape() &&
         source.getShape()[1] == rankedResult.getShape()[0]) {
-      current = TensorizeFormMatch{
-          TensorizeForm::MergeSplit,
-          TensorizeReductionShape{source.getShape()[0], source.getShape()[1]}};
+      if (!mergeReduction)
+        mergeReduction =
+            TensorizeReductionShape{source.getShape()[0], source.getShape()[1]};
     } else if (source.getRank() == 1 && !isa<RankedTensorType>(result)) {
-      current = TensorizeFormMatch{
-          TensorizeForm::NormRope,
-          TensorizeReductionShape{/*splitExtent=*/0,
-                                  /*dimExtent=*/source.getShape()[0]}};
+      if (!normReduction)
+        normReduction =
+            TensorizeReductionShape{/*splitExtent=*/0,
+                                    /*dimExtent=*/source.getShape()[0]};
     }
-    if (!current)
-      return;
-    // Multiple reductions of the same structural form are normal for the
-    // production kernels. A mixed form is deliberately a no-op: it has no
-    // unambiguous lane placement and must not be selected by a name fallback.
-    if (matched && matched->form != current->form) {
-      hasConflictingForm = true;
-      return;
-    }
-    if (!matched)
-      matched = *current;
   });
-  return hasConflictingForm ? std::nullopt : matched;
+  // MergeSplit has auxiliary rank-1 scalar reductions for peak and total
+  // before its rank-2 state reduction. The latter carries the actual split
+  // and data dimensions and is therefore the more specific structural form.
+  // Only fall back to the rank-1 scalar form when that merge signature is
+  // absent; a function name never resolves this choice.
+  if (mergeReduction)
+    return TensorizeFormMatch{TensorizeForm::MergeSplit, *mergeReduction};
+  if (normReduction)
+    return TensorizeFormMatch{TensorizeForm::NormRope, *normReduction};
+  return std::nullopt;
 }
 
 bool hasSupportedControlFlow(triton::FuncOp function) {

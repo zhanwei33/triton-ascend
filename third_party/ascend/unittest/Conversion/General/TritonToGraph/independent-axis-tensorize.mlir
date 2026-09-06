@@ -23,6 +23,14 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i
     %splits = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32>
     %dims = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
     %head_offset = arith.muli %head, %c4 : i32
+    // MergeSplit also has scalar peak/total reductions. They must not make
+    // the later [split, dim] reduction look like the Norm structural form.
+    %aux = arith.constant dense<1.000000e+00> : tensor<2xf32>
+    %aux_total = "tt.reduce"(%aux) <{axis = 0 : i32}> ({
+    ^bb0(%lhs: f32, %rhs: f32):
+      %value = arith.addf %lhs, %rhs : f32
+      tt.reduce.return %value : f32
+    }) : (tensor<2xf32>) -> f32
     %input_base = tt.addptr %input, %head_offset : !tt.ptr<f32>, i32
     %input_splat = tt.splat %input_base : !tt.ptr<f32> -> tensor<2x1x!tt.ptr<f32>>
     %input_broadcast = tt.broadcast %input_splat : tensor<2x1x!tt.ptr<f32>> -> tensor<2x4x!tt.ptr<f32>>

@@ -170,6 +170,7 @@ bool hasVoidReturn(triton::FuncOp function) {
 
 bool hasPersistentNormReductionForm(triton::FuncOp function) {
   bool matched = false;
+  bool hasMergeReduction = false;
   function.walk([&](triton::ReduceOp reduce) {
     if (reduce.getSrcs().size() != 1 || reduce.getResults().size() != 1)
       return;
@@ -188,12 +189,21 @@ bool hasPersistentNormReductionForm(triton::FuncOp function) {
       return;
     }
     auto rankedResult = dyn_cast<RankedTensorType>(result);
+    if (source.getRank() == 2 && reduce.getAxis() == 0 && rankedResult &&
+        rankedResult.hasStaticShape() && rankedResult.getRank() == 1 &&
+        source.getShape()[1] == rankedResult.getShape()[0]) {
+      // MergeSplit's scalar peak/total reductions are auxiliary. Its rank-2
+      // state reduction is a stronger structural exclusion than those scalar
+      // reductions are an inclusion for PTSM.
+      hasMergeReduction = true;
+      return;
+    }
     if (source.getRank() == 2 && reduce.getAxis() == 1 && rankedResult &&
         rankedResult.hasStaticShape() && rankedResult.getRank() == 1 &&
         source.getShape()[0] == rankedResult.getShape()[0])
       matched = true;
   });
-  return matched;
+  return matched && !hasMergeReduction;
 }
 
 std::optional<ProgramGridSpecialization>
