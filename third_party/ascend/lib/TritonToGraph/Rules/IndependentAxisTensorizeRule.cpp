@@ -73,6 +73,16 @@ constexpr llvm::StringLiteral kNormRopeKernelName = "_indexer_norm_rope_kernel";
 // from a target name or a post-transform grid extent.
 constexpr std::array<unsigned, 3> kTensorizeFactors = {2, 4, 8};
 
+// MergeSplit keeps the split-reduction dimension and the newly tensorized head
+// dimension live in the same state tile.  On Ascend950PR, a 2x head fusion at
+// the primary shapes left too many small physical programs, while the resource
+// model still selected it because it priced only the extra live bytes.  Bound
+// the product of those two live dimensions and, within the existing UB and
+// parallelism gates, prefer the largest legal factor.  This gives 2x8 lanes
+// for BLOCK_S=2 and 4x4 lanes for BLOCK_S=4, but falls back to 2x for
+// BLOCK_S=8 and rejects larger unvalidated planes instead of over-tiling.
+constexpr uint64_t kMergeSplitMaxTensorizedPlanes = 16;
+
 enum class TensorizeForm : uint8_t {
   MergeSplit,
   NormRope,
@@ -423,6 +433,27 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
     return std::nullopt;
   }
 
+  const CandidateEvaluation *selected = &evaluations.front();
+  if (*form == TensorizeForm::MergeSplit) {
+    if (reductionShape->splitExtent <= 0 ||
+        static_cast<uint64_t>(reductionShape->splitExtent) >
+            kMergeSplitMaxTensorizedPlanes)
+      return std::nullopt;
+    const uint64_t maxFactor =
+        kMergeSplitMaxTensorizedPlanes /
+        static_cast<uint64_t>(reductionShape->splitExtent);
+    selected = nullptr;
+    for (const CandidateEvaluation &evaluation : evaluations) {
+      const uint64_t factor = evaluation.candidate.plan.tensorizeFactor;
+      if (!evaluation.accepted || factor == 0 || factor > maxFactor)
+        continue;
+      if (!selected || factor > selected->candidate.plan.tensorizeFactor)
+        selected = &evaluation;
+    }
+    if (!selected)
+      return std::nullopt;
+  }
+
   IATCandidate candidate;
   candidate.function = function;
   candidate.anchor = targetPid->getOperation();
@@ -431,8 +462,7 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
   candidate.splitExtent = reductionShape->splitExtent;
   candidate.dimExtent = reductionShape->dimExtent;
   candidate.logicalExtent = logicalExtent;
-  candidate.factor =
-      static_cast<unsigned>(evaluations.front().candidate.plan.tensorizeFactor);
+  candidate.factor = static_cast<unsigned>(selected->candidate.plan.tensorizeFactor);
   std::array<int64_t, 3> selectedGrid = specialization->grid;
   selectedGrid[kTargetAxis] =
       logicalExtent / candidate.factor +
@@ -444,7 +474,7 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
       *form == TensorizeForm::NormRope &&
       selectedTasksAfter > kNormRopeMaxTensorizedLaunchPrograms;
   candidate.resources = resources;
-  candidate.evaluation = std::move(evaluations.front());
+  candidate.evaluation = *selected;
   return candidate;
 }
 

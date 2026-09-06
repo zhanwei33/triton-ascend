@@ -8,13 +8,14 @@
 // CHECK: hacc.independent_axis_tensorize
 // CHECK: hacc.program_grid_transforms
 // CHECK: logical_extent = 65 : i64
+// CHECK: factor = 8 : i64
 // CHECK: persistent_coverage = false
 // CHECK-LABEL: tt.func @_merge_split_states_kernel
 // CHECK: arith.cmpi slt
-// CHECK: tt.load {{.*}} : tensor<2x{{(2|4|8)}}x4x!tt.ptr<f32>>
+// CHECK: tt.load {{.*}} : tensor<2x8x4x!tt.ptr<f32>>
 // CHECK: tt.reduce
 // CHECK-SAME: axis = 0 : i32
-// CHECK: tensor<{{(2|4|8)}}x4xf32>
+// CHECK: tensor<8x4xf32>
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
   tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
     %c4 = arith.constant 4 : i32
@@ -34,6 +35,46 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i
       %value = arith.addf %lhs, %rhs : f32
       tt.reduce.return %value : f32
     }) : (tensor<2x4xf32>) -> tensor<4xf32>
+    %output_base = tt.addptr %output, %head_offset : !tt.ptr<f32>, i32
+    %output_splat = tt.splat %output_base : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
+    %output_ptrs = tt.addptr %output_splat, %dims : tensor<4x!tt.ptr<f32>>, tensor<4xi32>
+    tt.store %output_ptrs, %sum : tensor<4x!tt.ptr<f32>>
+    tt.return
+  }
+}
+
+// -----
+
+// Merge split chooses four head lanes when BLOCK_S=4: the resulting 16
+// split-head planes match the resource-calibrated cap without relying on a
+// source-level head-block argument.
+// CHECK: hacc.independent_axis_tensorize
+// CHECK: logical_extent = 64 : i64
+// CHECK: factor = 4 : i64
+// CHECK-LABEL: tt.func @_merge_split_states_kernel
+// CHECK: tt.load {{.*}} : tensor<4x4x4x!tt.ptr<f32>>
+// CHECK: tt.reduce
+// CHECK-SAME: axis = 0 : i32
+// CHECK: tensor<4x4xf32>
+module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 64 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
+  tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
+    %c4 = arith.constant 4 : i32
+    %head = tt.get_program_id y : i32
+    %splits = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
+    %dims = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
+    %head_offset = arith.muli %head, %c4 : i32
+    %input_base = tt.addptr %input, %head_offset : !tt.ptr<f32>, i32
+    %input_splat = tt.splat %input_base : !tt.ptr<f32> -> tensor<4x1x!tt.ptr<f32>>
+    %input_broadcast = tt.broadcast %input_splat : tensor<4x1x!tt.ptr<f32>> -> tensor<4x4x!tt.ptr<f32>>
+    %dims_expand = tt.expand_dims %dims {axis = 0 : i32} : tensor<4xi32> -> tensor<1x4xi32>
+    %dims_broadcast = tt.broadcast %dims_expand : tensor<1x4xi32> -> tensor<4x4xi32>
+    %input_ptrs = tt.addptr %input_broadcast, %dims_broadcast : tensor<4x4x!tt.ptr<f32>>, tensor<4x4xi32>
+    %states = tt.load %input_ptrs : tensor<4x4x!tt.ptr<f32>>
+    %sum = "tt.reduce"(%states) <{axis = 0 : i32}> ({
+    ^bb0(%lhs: f32, %rhs: f32):
+      %value = arith.addf %lhs, %rhs : f32
+      tt.reduce.return %value : f32
+    }) : (tensor<4x4xf32>) -> tensor<4xf32>
     %output_base = tt.addptr %output, %head_offset : !tt.ptr<f32>, i32
     %output_splat = tt.splat %output_base : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
     %output_ptrs = tt.addptr %output_splat, %dims : tensor<4x!tt.ptr<f32>>, tensor<4xi32>
