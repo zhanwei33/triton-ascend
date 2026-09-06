@@ -1390,7 +1390,8 @@ evaluateJointCandidate(GraphOptimizationContext &context, unsigned iatFactor,
     return std::nullopt;
   CandidateEvaluation ptsmEvaluation;
   if (failed(materializePersistentTaskStripMiningCandidate(
-          sandbox, clonedFunction, resources, blockT, &ptsmEvaluation)) ||
+          sandbox, clonedFunction, resources, blockT, &ptsmEvaluation,
+          /*deferIntermediateResourceRejection=*/true)) ||
       failed(runProgramMappingStructuralCleanup(sandbox)) ||
       failed(mlir::verify(sandbox.getOperation())))
     return std::nullopt;
@@ -1518,7 +1519,7 @@ public:
                                                 candidate.iat)) ||
         failed(materializePersistentTaskStripMiningCandidate(
             sandbox, clonedFunction, candidate.iat.resources, candidate.blockT,
-            nullptr)) ||
+            nullptr, /*deferIntermediateResourceRejection=*/true)) ||
         failed(runProgramMappingStructuralCleanup(sandbox)) ||
         failed(mlir::verify(sandbox.getOperation())))
       return failure();

@@ -321,7 +321,8 @@ buildResourceCandidate(const PTSMCandidate &candidate,
 
 std::optional<PTSMCandidate>
 analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
-                 std::optional<unsigned> requestedBlockT = std::nullopt) {
+                 std::optional<unsigned> requestedBlockT = std::nullopt,
+                 bool deferIntermediateResourceRejection = false) {
   triton::FuncOp function = context.getFunction();
   ModuleOp module = function->getParentOfType<ModuleOp>();
   if (!module || module->hasAttr(kPersistentTaskStripMiningMarkerAttr) ||
@@ -408,7 +409,9 @@ analyzeCandidate(GraphOptimizationContext &context, bool emitRejectRemark,
   sortCandidateEvaluations(evaluations);
   const CandidateEvaluation *selected = nullptr;
   for (const CandidateEvaluation &evaluation : evaluations) {
-    if (!evaluation.accepted ||
+    const bool mayDeferResourceRejection =
+        requestedBlockT && deferIntermediateResourceRejection;
+    if ((!evaluation.accepted && !mayDeferResourceRejection) ||
         (!requestedBlockT && evaluation.benefitScore <= 0))
       continue;
     // Final legality comes first. Among legal plans the production order is
@@ -1085,7 +1088,8 @@ private:
 
 LogicalResult cfg::materializePersistentTaskStripMiningCandidate(
     ModuleOp module, triton::FuncOp function, const ResourceSnapshot &resources,
-    unsigned requestedBlockT, CandidateEvaluation *evaluation) {
+    unsigned requestedBlockT, CandidateEvaluation *evaluation,
+    bool deferIntermediateResourceRejection) {
   if (!module || !function || function->getParentOfType<ModuleOp>() != module ||
       requestedBlockT == 0)
     return failure();
@@ -1097,7 +1101,8 @@ LogicalResult cfg::materializePersistentTaskStripMiningCandidate(
   if (failed(context.ensure(requirements)))
     return failure();
   std::optional<PTSMCandidate> candidate =
-      analyzeCandidate(context, /*emitRejectRemark=*/false, requestedBlockT);
+      analyzeCandidate(context, /*emitRejectRemark=*/false, requestedBlockT,
+                       deferIntermediateResourceRejection);
   if (!candidate ||
       failed(applyPersistentCandidateToSandbox(module, function, *candidate)))
     return failure();

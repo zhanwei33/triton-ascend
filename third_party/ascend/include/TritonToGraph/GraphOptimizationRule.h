@@ -105,10 +105,14 @@ createPersistentTaskStripMiningRule(
 // never registers a new rule or exposes a force environment variable: the
 // requested factor is still analyzed against the current sandbox and must
 // pass the ordinary legality/resource checks before IR and metadata are
-// materialized together.
+// materialized together.  A joint IAT/PTSM plan may defer a rejected
+// *intermediate* PTSM resource estimate to its outer sandbox: the combined
+// cleanup then computes the authoritative final-plan legality before anything
+// is committed.  Standalone PTSM callers keep the ordinary resource gate.
 LogicalResult materializePersistentTaskStripMiningCandidate(
     ModuleOp module, triton::FuncOp function, const ResourceSnapshot &resources,
-    unsigned requestedBlockT, CandidateEvaluation *evaluation = nullptr);
+    unsigned requestedBlockT, CandidateEvaluation *evaluation = nullptr,
+    bool deferIntermediateResourceRejection = false);
 std::unique_ptr<GraphOptimizationRule>
 createResidentLoadForwardingRule(
     const ResidentLoadForwardingRuleOptions &options);
