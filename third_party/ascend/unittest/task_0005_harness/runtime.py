@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch_npu  # noqa: F401 -- register torch.npu before runtime probes.
 import triton
 
 from .contracts import (
