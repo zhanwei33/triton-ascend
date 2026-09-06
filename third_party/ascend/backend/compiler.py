@@ -291,14 +291,13 @@ def _export_program_grid_metadata(mod, metadata, *, require_row_contract=False):
 
     raw_transforms = _get_then_remove_program_grid_transforms(mod)
 
-    # Read/remove the legacy attrs even when the new contract is present so no
-    # unknown hacc.* launch metadata can reach BishengIR/HIVM.
-    factor = _get_then_remove_rc(mod, "hacc.coalesce_factor")
-    axis = _get_then_remove_rc(mod, "hacc.coalesce_axis")
-    ceil_div = _get_then_remove_rc(mod, "hacc.coalesce_grid_ceil_div")
-    has_legacy_attrs = any(value != -1 for value in (factor, axis, ceil_div))
-
     if raw_transforms is not None:
+        # Read/remove the legacy attrs whenever the new contract is present so
+        # no unknown hacc.* launch metadata can reach BishengIR/HIVM.
+        factor = _get_then_remove_rc(mod, "hacc.coalesce_factor")
+        axis = _get_then_remove_rc(mod, "hacc.coalesce_axis")
+        ceil_div = _get_then_remove_rc(mod, "hacc.coalesce_grid_ceil_div")
+        has_legacy_attrs = any(value != -1 for value in (factor, axis, ceil_div))
         if has_legacy_attrs:
             raise RuntimeError(
                 "hacc.program_grid_transforms conflicts with legacy hacc.coalesce_* metadata")
@@ -315,24 +314,17 @@ def _export_program_grid_metadata(mod, metadata, *, require_row_contract=False):
         metadata["row_coalescing_applied"] = False
         return
 
-    # Retain the exact legacy validation/defaults for modules that predate the
-    # new schema.  This preserves old metadata behavior when every new rule is
-    # disabled.
-    valid_factor = isinstance(factor, int) and factor > 1
-    valid_axis = isinstance(axis, int) and axis in (0, 1, 2)
-    valid_ceil_div = isinstance(ceil_div, int) and ceil_div > 0
-    if has_legacy_attrs and (not valid_factor or not valid_axis):
-        raise RuntimeError("invalid hacc.coalesce launch contract")
-    if require_row_contract and has_legacy_attrs and not valid_ceil_div:
-        raise RuntimeError("RowCoalescing requires hacc.coalesce_grid_ceil_div")
-
+    # Keep the no-transform path on the original exporter.  This preserves
+    # the legacy Row/Axis/Chunk metadata behavior and its observability seam;
+    # only versioned program-grid transforms need the new branch above.
     metadata["program_grid_transforms"] = None
     metadata["program_grid_transform_schema_version"] = 0
     metadata["program_grid_transforms_cache_key"] = "legacy"
-    metadata["coalesce_factor"] = factor if valid_factor else 1
-    metadata["coalesce_axis"] = axis if valid_axis else -1
-    metadata["coalesce_grid_ceil_div"] = valid_ceil_div
-    metadata["row_coalescing_applied"] = metadata["coalesce_factor"] > 1
+    _export_coalesce_metadata(
+        mod,
+        metadata,
+        require_row_contract=require_row_contract,
+    )
 
 
 def _adjust_metadata_by_module_result(mod, metadata, opt, **kwargs):
