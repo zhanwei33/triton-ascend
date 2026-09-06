@@ -28,6 +28,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
@@ -126,6 +127,17 @@ bool isScalarIntegerLike(Value value) {
   return integerType && integerType.getWidth() > 1;
 }
 
+// Row rewrites only accept the frontend's own overflow instrumentation.  A
+// user-authored tt.assert can have externally meaningful trap behavior, so it
+// must continue to make the candidate fail closed.
+bool isAutomaticOverflowAssert(triton::AssertOp assertOp) {
+  if (!assertOp || !assertOp->hasAttr("tt.auto_overflow_assert"))
+    return false;
+  auto message = dyn_cast<StringAttr>(assertOp.getMessageAttr());
+  return message &&
+         message.getValue().contains("overflow detected for operation");
+}
+
 bool isInWorkRegion(Operation *operation, Block *workBlock) {
   for (Operation *current = operation; current;
        current = current->getParentOp()) {
@@ -138,6 +150,8 @@ bool isInWorkRegion(Operation *operation, Block *workBlock) {
 bool isRowLiftable(Operation *operation) {
   if (isa<triton::ReturnOp, cf::BranchOp, cf::CondBranchOp>(operation))
     return false;
+  if (auto assertOp = dyn_cast<triton::AssertOp>(operation))
+    return isAutomaticOverflowAssert(assertOp);
   if (Dialect *dialect = operation->getDialect()) {
     StringRef dialectNamespace = dialect->getNamespace();
     if (dialectNamespace == arith::ArithDialect::getDialectNamespace() ||
