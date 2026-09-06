@@ -23,6 +23,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 
 namespace mlir {
 namespace triton {
@@ -42,7 +43,8 @@ inline constexpr int64_t kProgramGridSpecializationVersion = 1;
 // part of the launcher ABI.
 inline constexpr llvm::StringLiteral kProgramMappingScalarSpecializationAttr =
     "hacc.program_mapping_scalar_specialization";
-inline constexpr int64_t kProgramMappingScalarSpecializationVersion = 1;
+inline constexpr int64_t kProgramMappingScalarSpecializationLegacyVersion = 1;
+inline constexpr int64_t kProgramMappingScalarSpecializationVersion = 2;
 
 struct ProgramGridSpecialization {
   int64_t version = kProgramGridSpecializationVersion;
@@ -52,6 +54,9 @@ struct ProgramGridSpecialization {
 
 struct ProgramMappingScalarArgument {
   uint32_t index = 0;
+  // Empty for the positional v1 contract.  Version 2 names the original JIT
+  // parameter so a frontend-pruned TTIR signature cannot shift the target.
+  std::string name;
   int64_t value = 0;
 };
 
@@ -88,9 +93,11 @@ LogicalResult setProgramMappingScalarSpecialization(
 void clearProgramMappingScalarSpecialization(ModuleOp module);
 
 // Replace only compatible public-entry integer block arguments with exact
-// constants and then remove every copy of the transient contract.  Incompatible
-// argument indices/types are deliberately left dynamic; program mapping then
-// remains fail-closed through its ordinary dependence analysis.
+// constants and then remove every copy of the transient contract.  Legacy v1
+// uses an entry position; v2 uses the retained NameLoc and is safe if frontend
+// canonicalization has removed earlier arguments.  Incompatible or ambiguous
+// targets are deliberately left dynamic, so program mapping remains
+// fail-closed through its ordinary dependence analysis.
 LogicalResult applyProgramMappingScalarSpecialization(ModuleOp module);
 
 } // namespace cfg

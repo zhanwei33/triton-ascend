@@ -271,11 +271,16 @@ def _inject_program_grid_specialization(mod, metadata, opt):
                 "hacc.program_mapping_scalar_specialization requires the "
                 "matching Ascend C++ binding")
         try:
+            scalar_arguments = scalar_specialization["arguments"]
             set_scalar_specialization(
                 mod,
                 scalar_specialization["version"],
-                [(argument["index"], argument["value"])
-                 for argument in scalar_specialization["arguments"]],
+                [
+                    ((argument["index"], argument["name"], argument["value"])
+                     if "name" in argument else
+                     (argument["index"], argument["value"]))
+                    for argument in scalar_arguments
+                ],
             )
         except Exception as error:
             raise RuntimeError(
@@ -1823,7 +1828,12 @@ class AscendBackend(BaseBackend):
             # outside that range leaves it dynamic and therefore fail-closed
             # for dependence analysis instead of truncating it.
             if -(1 << 63) <= scalar <= (1 << 63) - 1:
-                runtime_arguments.append((runtime_arg_index, scalar))
+                # Retain the Python parameter name as well as its source
+                # ordinal.  Triton's frontend may drop an earlier
+                # known-contiguous argument before the TTIR entry exists; the
+                # C++ bridge then finds the surviving argument by NameLoc
+                # instead of accidentally substituting a later ABI value.
+                runtime_arguments.append((runtime_arg_index, param.name, scalar))
             runtime_arg_index += 1
 
         if runtime_arguments:

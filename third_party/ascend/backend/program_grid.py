@@ -47,7 +47,13 @@ PROGRAM_GRID_SPECIALIZATION_VERSION = 1
 PROGRAM_MAPPING_SCALAR_SPECIALIZATION_ATTR = (
     "hacc.program_mapping_scalar_specialization"
 )
-PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION = 1
+# Version 1 keyed a value by the TTIR entry argument position.  That position
+# is not stable when frontend canonicalization drops a known-contiguous
+# runtime parameter, so JIT-generated contracts use version 2: the original
+# JIT position stays in the cache key while the retained TTIR block argument
+# is selected by its preserved NameLoc spelling.
+PROGRAM_MAPPING_SCALAR_SPECIALIZATION_LEGACY_VERSION = 1
+PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION = 2
 
 # These values are owned by the append-only GraphOptimize registry (task_0001).
 # Keep the bridge's trigger set explicit: unrelated future rules must not make
@@ -78,7 +84,8 @@ _TRANSFORM_KEYS = frozenset((
 ))
 _SPECIALIZATION_KEYS = frozenset(("version", "grid", "rule_mask"))
 _SCALAR_SPECIALIZATION_KEYS = frozenset(("version", "arguments"))
-_SCALAR_ARGUMENT_KEYS = frozenset(("index", "value"))
+_SCALAR_ARGUMENT_V1_KEYS = frozenset(("index", "value"))
+_SCALAR_ARGUMENT_V2_KEYS = frozenset(("index", "name", "value"))
 _INT64_MIN = -(1 << 63)
 _INT64_MAX = (1 << 63) - 1
 _UINT32_MAX = (1 << 32) - 1
@@ -239,11 +246,13 @@ def canonical_program_grid_specialization_json(raw: Any) -> str:
 def normalize_program_mapping_scalar_specialization(raw: Any) -> dict[str, Any]:
     """Validate exact runtime integer arguments used by program mapping.
 
-    A value is keyed by its TTIR entry-function argument index, not by a
-    Python parameter name.  That makes the contract independent of frontend
-    spelling while retaining a stable compiler-cache representation.  Empty,
-    duplicate, unsorted, out-of-range, and bool values are rejected rather
-    than silently changing which argument is specialized.
+    Version 1 is the original positional format for already-published static
+    fixtures.  Version 2 carries both the original JIT parameter index and
+    its name: frontend canonicalization may remove an earlier argument before
+    GraphOptimize runs, so selecting a surviving TTIR argument by position can
+    silently rewrite a different ABI value.  The name is therefore part of
+    the cache-keyed contract and is matched against the retained argument's
+    NameLoc in C++.
     """
     if isinstance(raw, str):
         try:
@@ -271,10 +280,15 @@ def normalize_program_mapping_scalar_specialization(raw: Any) -> dict[str, Any]:
         "program_mapping_scalar_specialization.version",
         minimum=1,
     )
-    if version != PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION:
+    if version not in (
+        PROGRAM_MAPPING_SCALAR_SPECIALIZATION_LEGACY_VERSION,
+        PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION,
+    ):
         raise ProgramGridContractError(
             "unsupported program_mapping_scalar_specialization version "
-            f"{version}; expected {PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION}")
+            f"{version}; expected "
+            f"{PROGRAM_MAPPING_SCALAR_SPECIALIZATION_LEGACY_VERSION} or "
+            f"{PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION}")
 
     raw_arguments = contract["arguments"]
     if isinstance(raw_arguments, (str, bytes)) or not isinstance(raw_arguments, Sequence):
@@ -284,13 +298,19 @@ def normalize_program_mapping_scalar_specialization(raw: Any) -> dict[str, Any]:
         raise ProgramGridContractError(
             "program_mapping_scalar_specialization.arguments must not be empty")
 
-    arguments: list[dict[str, int]] = []
+    expected_argument_keys = (
+        _SCALAR_ARGUMENT_V1_KEYS
+        if version == PROGRAM_MAPPING_SCALAR_SPECIALIZATION_LEGACY_VERSION
+        else _SCALAR_ARGUMENT_V2_KEYS
+    )
+    arguments: list[dict[str, Any]] = []
     previous_index = -1
+    seen_names: set[str] = set()
     for position, raw_argument in enumerate(raw_arguments):
         argument = _mapping(raw_argument, f"arguments[{position}]")
-        if set(argument) != _SCALAR_ARGUMENT_KEYS:
-            missing = sorted(_SCALAR_ARGUMENT_KEYS - set(argument))
-            unknown = sorted(set(argument) - _SCALAR_ARGUMENT_KEYS)
+        if set(argument) != expected_argument_keys:
+            missing = sorted(expected_argument_keys - set(argument))
+            unknown = sorted(set(argument) - expected_argument_keys)
             detail = []
             if missing:
                 detail.append("missing " + ", ".join(missing))
@@ -311,25 +331,64 @@ def normalize_program_mapping_scalar_specialization(raw: Any) -> dict[str, Any]:
             raise ProgramGridContractError(
                 "program_mapping_scalar_specialization argument indices must be "
                 "strictly increasing")
-        arguments.append({"index": index, "value": value})
+        item: dict[str, Any] = {"index": index, "value": value}
+        if version == PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION:
+            name = argument["name"]
+            if not isinstance(name, str) or not name:
+                raise ProgramGridContractError(
+                    f"arguments[{position}].name must be a non-empty string")
+            if name in seen_names:
+                raise ProgramGridContractError(
+                    "program_mapping_scalar_specialization argument names must be "
+                    "unique")
+            item["name"] = name
+            seen_names.add(name)
+        arguments.append(item)
         previous_index = index
 
     return {
-        "version": PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION,
+        "version": version,
         "arguments": arguments,
     }
 
 
 def make_program_mapping_scalar_specialization(
-    arguments: Sequence[tuple[int, int]],
+    arguments: Sequence[tuple[int, int] | tuple[int, str, int]],
 ) -> dict[str, Any]:
     """Create canonical scalar-specialization metadata from exact JIT values."""
+    serialized_arguments: list[dict[str, Any]] = []
+    version: int | None = None
+    for position, argument in enumerate(arguments):
+        if isinstance(argument, (str, bytes)) or not isinstance(argument, Sequence):
+            raise ProgramGridContractError(
+                f"arguments[{position}] must be a two- or three-element sequence")
+        if len(argument) == 2:
+            if version is None:
+                version = PROGRAM_MAPPING_SCALAR_SPECIALIZATION_LEGACY_VERSION
+            elif version != PROGRAM_MAPPING_SCALAR_SPECIALIZATION_LEGACY_VERSION:
+                raise ProgramGridContractError(
+                    "program_mapping_scalar_specialization cannot mix positional "
+                    "and named arguments")
+            index, value = argument
+            serialized_arguments.append({"index": index, "value": value})
+        elif len(argument) == 3:
+            if version is None:
+                version = PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION
+            elif version != PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION:
+                raise ProgramGridContractError(
+                    "program_mapping_scalar_specialization cannot mix positional "
+                    "and named arguments")
+            index, name, value = argument
+            serialized_arguments.append({"index": index, "name": name, "value": value})
+        else:
+            raise ProgramGridContractError(
+                f"arguments[{position}] must contain index/value or index/name/value")
     return normalize_program_mapping_scalar_specialization({
-        "version": PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION,
-        "arguments": [
-            {"index": index, "value": value}
-            for index, value in arguments
-        ],
+        "version": (
+            PROGRAM_MAPPING_SCALAR_SPECIALIZATION_LEGACY_VERSION
+            if version is None else version
+        ),
+        "arguments": serialized_arguments,
     })
 
 

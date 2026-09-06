@@ -291,6 +291,33 @@ module {
     assert ascend_ir.get_program_mapping_scalar_specialization(function) is None
 
 
+def test_cxx_named_runtime_scalar_specialization_round_trips_parameter_names(tmp_path):
+    context = ir.context()
+    ir.load_dialects(context)
+    ascend_ir.load_dialects(context)
+    path = Path(tmp_path) / "named-runtime-scalar-specialization.mlir"
+    path.write_text("""
+module {
+  tt.func public @named_runtime_scalar_specialization_fixture(%stride: i32) {
+    tt.return
+  }
+}
+""")
+    module = ir.parse_mlir_module(str(path), context)
+    function = module.get_function("named_runtime_scalar_specialization_fixture")
+
+    ascend_ir.set_program_mapping_scalar_specialization(
+        module, 2, [(4, "stride", 64)])
+    expected = {
+        "version": 2,
+        "arguments": [
+            {"index": 4, "name": "stride", "value": 64},
+        ],
+    }
+    assert ascend_ir.get_program_mapping_scalar_specialization(module) == expected
+    assert ascend_ir.get_program_mapping_scalar_specialization(function) == expected
+
+
 @pytest.mark.parametrize(
     ("version", "grid0", "rule_mask"),
     [(2, 8, 512), (1, 0, 512), (1, 8, 1), (1, 8, 1 << 32)],

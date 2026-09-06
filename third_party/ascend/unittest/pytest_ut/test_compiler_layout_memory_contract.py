@@ -817,12 +817,17 @@ def _install_program_grid_attr_shim(monkeypatch, compiler_module):
         module.attrs.pop("hacc.grid_specialization", None)
 
     def set_program_mapping_scalar_specialization(module, version, arguments):
+        items = []
+        for argument in arguments:
+            if len(argument) == 2:
+                index, value = argument
+                items.append({"index": index, "value": value})
+            else:
+                index, name, value = argument
+                items.append({"index": index, "name": name, "value": value})
         module.attrs["hacc.program_mapping_scalar_specialization"] = {
             "version": version,
-            "arguments": [
-                {"index": index, "value": value}
-                for index, value in arguments
-            ],
+            "arguments": items,
         }
 
     def clear_program_mapping_scalar_specialization(module):
@@ -1093,7 +1098,13 @@ def test_backend_prepares_cache_keyed_runtime_scalar_specialization(
         {
             "program_grid_specialization": _program_grid_specialization(),
             "program_mapping_scalar_specialization": (
-                _program_mapping_scalar_specialization(arguments=((1, 64), (2, 4)))),
+                {
+                    "version": 2,
+                    "arguments": [
+                        {"index": 1, "name": "stride", "value": 64},
+                        {"index": 2, "name": "count", "value": 4},
+                    ],
+                }),
         },
     )
 

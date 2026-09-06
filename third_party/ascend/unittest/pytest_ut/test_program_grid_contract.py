@@ -155,10 +155,29 @@ def test_runtime_scalar_specialization_is_canonical_and_cache_serializable(progr
     )
 
 
+def test_named_runtime_scalar_specialization_survives_frontend_argument_pruning(program_grid):
+    specialization = program_grid.make_program_mapping_scalar_specialization(
+        [(4, "stride_out_token", 12288), (6, "num_splits", 2)],
+    )
+
+    assert specialization == {
+        "version": 2,
+        "arguments": [
+            {"index": 4, "name": "stride_out_token", "value": 12288},
+            {"index": 6, "name": "num_splits", "value": 2},
+        ],
+    }
+    assert program_grid.canonical_program_mapping_scalar_specialization_json(
+        specialization,
+    ) == (
+        '{"arguments":[{"index":4,"name":"stride_out_token","value":12288},'
+        '{"index":6,"name":"num_splits","value":2}],"version":2}'
+    )
+
 @pytest.mark.parametrize(
     "specialization",
     [
-        {"version": 2, "arguments": [{"index": 2, "value": 64}]},
+        {"version": 3, "arguments": [{"index": 2, "value": 64}]},
         {"version": 1, "arguments": []},
         {"version": 1, "arguments": [{"index": -1, "value": 64}]},
         {"version": 1, "arguments": [{"index": 2, "value": True}]},
@@ -168,6 +187,15 @@ def test_runtime_scalar_specialization_is_canonical_and_cache_serializable(progr
                 {"index": 2, "value": 64},
                 {"index": 2, "value": 65},
             ],
+        },
+        {
+            "version": 2,
+            "arguments": [{"index": 2, "name": "", "value": 64}],
+        },
+        {
+            "version": 2,
+            "arguments": [{"index": 2, "name": "stride", "value": 64},
+                          {"index": 3, "name": "stride", "value": 65}],
         },
     ],
 )

@@ -15,11 +15,11 @@
 // CHECK: tt.store
 module attributes {
   hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64},
-  hacc.program_mapping_scalar_specialization = {arguments = [{index = 2 : i64, value = 4 : i64}], version = 1 : i64}
+  hacc.program_mapping_scalar_specialization = {arguments = [{index = 99 : i64, name = "stride", value = 4 : i64}], version = 2 : i64}
 } {
-  tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>, %stride: i32) attributes {
+  tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>, %stride: i32 loc("stride")) attributes {
     hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64},
-    hacc.program_mapping_scalar_specialization = {arguments = [{index = 2 : i64, value = 4 : i64}], version = 1 : i64}
+    hacc.program_mapping_scalar_specialization = {arguments = [{index = 99 : i64, name = "stride", value = 4 : i64}], version = 2 : i64}
   } {
     %head = tt.get_program_id y : i32
     %splits = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32>

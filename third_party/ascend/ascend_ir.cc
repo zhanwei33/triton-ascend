@@ -713,6 +713,9 @@ void init_ascend_ir(py::module &&m) {
                specialization->arguments) {
             py::dict item;
             item["index"] = argument.index;
+            if (specialization->version ==
+                mlir::triton::cfg::kProgramMappingScalarSpecializationVersion)
+              item["name"] = argument.name;
             item["value"] = argument.value;
             arguments.append(std::move(item));
           }
@@ -721,16 +724,40 @@ void init_ascend_ir(py::module &&m) {
         });
   m.def(
       "set_program_mapping_scalar_specialization",
-      [](OpState &op, int64_t version,
-         const std::vector<std::pair<uint32_t, int64_t>> &arguments) {
+      [](OpState &op, int64_t version, const py::iterable &arguments) {
         auto module = dyn_cast<ModuleOp>(op.getOperation());
         if (!module)
           throw std::invalid_argument(
               "set_program_mapping_scalar_specialization expects an MLIR module");
         mlir::triton::cfg::ProgramMappingScalarSpecialization specialization;
         specialization.version = version;
-        for (const auto &[index, value] : arguments)
-          specialization.arguments.push_back({index, value});
+        const bool isLegacy =
+            version == mlir::triton::cfg::kProgramMappingScalarSpecializationLegacyVersion;
+        const bool isNamed =
+            version == mlir::triton::cfg::kProgramMappingScalarSpecializationVersion;
+        if (!isLegacy && !isNamed)
+          throw std::invalid_argument(
+              "unsupported program_mapping_scalar_specialization version");
+        for (const py::handle &rawArgument : arguments) {
+          if (!py::isinstance<py::sequence>(rawArgument) ||
+              py::isinstance<py::str>(rawArgument))
+            throw std::invalid_argument(
+                "program_mapping_scalar_specialization argument must be a sequence");
+          py::sequence argument = py::reinterpret_borrow<py::sequence>(rawArgument);
+          const size_t expectedSize = isLegacy ? 2 : 3;
+          if (argument.size() != expectedSize)
+            throw std::invalid_argument(
+                "program_mapping_scalar_specialization argument has invalid arity");
+          uint32_t index = argument[0].cast<uint32_t>();
+          if (isLegacy) {
+            specialization.arguments.push_back(
+                {index, "", argument[1].cast<int64_t>()});
+          } else {
+            specialization.arguments.push_back(
+                {index, argument[1].cast<std::string>(),
+                 argument[2].cast<int64_t>()});
+          }
+        }
         if (failed(mlir::triton::cfg::setProgramMappingScalarSpecialization(
                 module, specialization)))
           throw std::runtime_error(

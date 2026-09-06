@@ -36,6 +36,7 @@ constexpr llvm::StringLiteral kGrid2 = "grid_2";
 constexpr llvm::StringLiteral kRuleMask = "rule_mask";
 constexpr llvm::StringLiteral kArguments = "arguments";
 constexpr llvm::StringLiteral kIndex = "index";
+constexpr llvm::StringLiteral kName = "name";
 constexpr llvm::StringLiteral kValue = "value";
 constexpr uint32_t kProgramMappingRuleMask = (1U << 9) | (1U << 10) | (1U << 11);
 
@@ -52,6 +53,14 @@ std::optional<int64_t> getInteger(DictionaryAttr dictionary,
   if (!value)
     return std::nullopt;
   return value.getInt();
+}
+
+std::optional<llvm::StringRef> getString(DictionaryAttr dictionary,
+                                         llvm::StringRef name) {
+  auto value = dyn_cast_or_null<StringAttr>(dictionary.get(name));
+  if (!value || value.getValue().empty())
+    return std::nullopt;
+  return value.getValue();
 }
 
 void setAttrOnFunctions(ModuleOp module, llvm::StringRef name,
@@ -82,7 +91,8 @@ bool sameScalarSpecialization(
   for (unsigned index = 0; index < lhs.arguments.size(); ++index) {
     const ProgramMappingScalarArgument &left = lhs.arguments[index];
     const ProgramMappingScalarArgument &right = rhs.arguments[index];
-    if (left.index != right.index || left.value != right.value)
+    if (left.index != right.index || left.name != right.name ||
+        left.value != right.value)
       return false;
   }
   return true;
@@ -97,6 +107,23 @@ bool isRepresentableInIntegerType(int64_t value, IntegerType type) {
   const int64_t minimum = -(int64_t{1} << (width - 1));
   const int64_t maximum = (int64_t{1} << (width - 1)) - 1;
   return value >= minimum && value <= maximum;
+}
+
+std::optional<BlockArgument>
+findEntryArgumentByName(triton::FuncOp function, llvm::StringRef name) {
+  std::optional<BlockArgument> found;
+  for (unsigned index = 0; index < function.getNumArguments(); ++index) {
+    BlockArgument argument = function.getArgument(index);
+    auto namedLocation = dyn_cast<NameLoc>(argument.getLoc());
+    if (!namedLocation || namedLocation.getName().getValue() != name)
+      continue;
+    // A duplicate argument spelling cannot prove which original ABI argument
+    // the JIT intended.  Leave it dynamic rather than guessing.
+    if (found)
+      return std::nullopt;
+    found = argument;
+  }
+  return found;
 }
 
 } // namespace
@@ -171,7 +198,9 @@ mlir::triton::cfg::parseProgramMappingScalarSpecialization(
 
   std::optional<int64_t> version = getInteger(dictionary, kVersion);
   auto arguments = dyn_cast_or_null<ArrayAttr>(dictionary.get(kArguments));
-  if (!version || *version != kProgramMappingScalarSpecializationVersion ||
+  if (!version ||
+      (*version != kProgramMappingScalarSpecializationLegacyVersion &&
+       *version != kProgramMappingScalarSpecializationVersion) ||
       !arguments || arguments.empty())
     return failure();
 
@@ -180,16 +209,23 @@ mlir::triton::cfg::parseProgramMappingScalarSpecialization(
   std::optional<int64_t> previousIndex;
   for (Attribute attribute : arguments) {
     auto argument = dyn_cast<DictionaryAttr>(attribute);
-    if (!argument || !hasExactKeys(argument, {kIndex, kValue}))
+    const bool isLegacy =
+        *version == kProgramMappingScalarSpecializationLegacyVersion;
+    if (!argument ||
+        (isLegacy && !hasExactKeys(argument, {kIndex, kValue})) ||
+        (!isLegacy && !hasExactKeys(argument, {kIndex, kName, kValue})))
       return failure();
     std::optional<int64_t> index = getInteger(argument, kIndex);
     std::optional<int64_t> value = getInteger(argument, kValue);
+    std::optional<llvm::StringRef> name =
+        isLegacy ? std::optional<llvm::StringRef>(llvm::StringRef())
+                 : getString(argument, kName);
     if (!index || !value || *index < 0 ||
         *index > std::numeric_limits<uint32_t>::max() ||
-        (previousIndex && *index <= *previousIndex))
+        !name || (previousIndex && *index <= *previousIndex))
       return failure();
     parsed.arguments.push_back(ProgramMappingScalarArgument{
-        static_cast<uint32_t>(*index), *value});
+        static_cast<uint32_t>(*index), name->str(), *value});
     previousIndex = *index;
   }
   return parsed;
@@ -202,12 +238,15 @@ DictionaryAttr mlir::triton::cfg::serializeProgramMappingScalarSpecialization(
   SmallVector<Attribute> arguments;
   arguments.reserve(specialization.arguments.size());
   for (const ProgramMappingScalarArgument &argument : specialization.arguments) {
-    arguments.push_back(DictionaryAttr::get(
-        context,
-        {{builder.getStringAttr(kIndex),
-          builder.getI64IntegerAttr(argument.index)},
-         {builder.getStringAttr(kValue),
-          builder.getI64IntegerAttr(argument.value)}}));
+    SmallVector<NamedAttribute> fields;
+    fields.emplace_back(builder.getStringAttr(kIndex),
+                        builder.getI64IntegerAttr(argument.index));
+    if (specialization.version == kProgramMappingScalarSpecializationVersion)
+      fields.emplace_back(builder.getStringAttr(kName),
+                          builder.getStringAttr(argument.name));
+    fields.emplace_back(builder.getStringAttr(kValue),
+                        builder.getI64IntegerAttr(argument.value));
+    arguments.push_back(DictionaryAttr::get(context, fields));
   }
   return DictionaryAttr::get(
       context,
@@ -276,16 +315,23 @@ LogicalResult mlir::triton::cfg::applyProgramMappingScalarSpecialization(
     builder.setInsertionPointToStart(&entry);
     for (const ProgramMappingScalarArgument &argument :
          specialization->arguments) {
-      if (argument.index >= function.getNumArguments())
+      std::optional<BlockArgument> blockArgument;
+      if (specialization->version ==
+          kProgramMappingScalarSpecializationLegacyVersion) {
+        if (argument.index < function.getNumArguments())
+          blockArgument = function.getArgument(argument.index);
+      } else {
+        blockArgument = findEntryArgumentByName(function, argument.name);
+      }
+      if (!blockArgument)
         continue;
-      BlockArgument blockArgument = function.getArgument(argument.index);
-      auto integerType = dyn_cast<IntegerType>(blockArgument.getType());
+      auto integerType = dyn_cast<IntegerType>(blockArgument->getType());
       if (!integerType ||
           !isRepresentableInIntegerType(argument.value, integerType))
         continue;
       Value constant = builder.create<arith::ConstantIntOp>(
           function.getLoc(), argument.value, integerType.getWidth());
-      blockArgument.replaceAllUsesWith(constant);
+      blockArgument->replaceAllUsesWith(constant);
     }
   }
 
