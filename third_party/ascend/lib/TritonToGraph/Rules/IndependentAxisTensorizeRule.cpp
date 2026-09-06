@@ -312,6 +312,12 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
     return std::nullopt;
 
   constexpr int32_t kTargetAxis = 1;
+  // The Ascend Norm+RoPE IAT kernel has a bounded validated logical-launch
+  // range.  A transformed grid above this boundary reaches a vector-core
+  // runtime failure (the first observed failing shape is 32768 x 16 ->
+  // 32768 x 2 = 65536 logical programs), while 16384 x 16 -> 16384 x 2 is
+  // valid.  Fail closed until that runtime ABI can represent larger IAT grids.
+  constexpr uint64_t kNormRopeMaxTensorizedLaunchPrograms = 32768;
   const int64_t logicalExtent = specialization->grid[kTargetAxis];
   if (logicalExtent < 1)
     return std::nullopt;
@@ -344,6 +350,9 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
         logicalExtent / factor + (logicalExtent % factor != 0);
     uint64_t tasksAfter = 0;
     if (!getGridTaskProduct(transformedGrid, tasksAfter))
+      continue;
+    if (*form == TensorizeForm::NormRope &&
+        tasksAfter > kNormRopeMaxTensorizedLaunchPrograms)
       continue;
 
     IATCandidate prototype;

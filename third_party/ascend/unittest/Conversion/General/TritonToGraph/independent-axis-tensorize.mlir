@@ -112,3 +112,40 @@ module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 1 : i6
     tt.return
   }
 }
+
+// -----
+
+// Norm+RoPE IAT is conservative above its validated transformed launch range.
+// The factor-eight candidate would make this 32768 x 16 input become 65536
+// logical programs, so it must remain unmodified instead of reaching the NPU
+// vector-core runtime with an unsupported launch range.
+// CHECK-NOT: hacc.independent_axis_tensorize
+// CHECK-NOT: hacc.program_grid_transforms
+// CHECK-LABEL: module attributes {hacc.grid_specialization = {grid_0 = 32768 : i64, grid_1 = 16 : i64
+// CHECK-LABEL: tt.func @_indexer_norm_rope_kernel
+// CHECK: tt.get_program_id y
+// CHECK: tt.store
+module attributes {hacc.grid_specialization = {grid_0 = 32768 : i64, grid_1 = 16 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
+  tt.func @_indexer_norm_rope_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
+    %c4 = arith.constant 4 : i32
+    %head = tt.get_program_id y : i32
+    %dims = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
+    %head_offset = arith.muli %head, %c4 : i32
+    %input_base = tt.addptr %input, %head_offset : !tt.ptr<f32>, i32
+    %input_splat = tt.splat %input_base : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
+    %input_ptrs = tt.addptr %input_splat, %dims : tensor<4x!tt.ptr<f32>>, tensor<4xi32>
+    %values = tt.load %input_ptrs : tensor<4x!tt.ptr<f32>>
+    %sum = "tt.reduce"(%values) <{axis = 0 : i32}> ({
+    ^bb0(%lhs: f32, %rhs: f32):
+      %value = arith.addf %lhs, %rhs : f32
+      tt.reduce.return %value : f32
+    }) : (tensor<4xf32>) -> f32
+    %scale = tt.splat %sum : f32 -> tensor<4xf32>
+    %result = arith.mulf %values, %scale : tensor<4xf32>
+    %output_base = tt.addptr %output, %head_offset : !tt.ptr<f32>, i32
+    %output_splat = tt.splat %output_base : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
+    %output_ptrs = tt.addptr %output_splat, %dims : tensor<4x!tt.ptr<f32>>, tensor<4xi32>
+    tt.store %output_ptrs, %result : tensor<4x!tt.ptr<f32>>
+    tt.return
+  }
+}
