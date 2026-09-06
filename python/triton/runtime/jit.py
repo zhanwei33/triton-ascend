@@ -781,8 +781,23 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 # The opt-in backend already validated and canonicalized the
                 # original 3-D grid before cache lookup.  Re-evaluating a
                 # callable here could change tail bounds after compilation.
-                grid_0, grid_1, grid_2 = resolved_launch_grid
+                #
+                # A backend may additionally publish a versioned host-launch
+                # transform in the compiled metadata.  Apply it only after
+                # selecting the exact cache entry, and before handing the
+                # grid to the generated Python launcher.  This makes the
+                # launcher-visible grid agree with the transformed program
+                # count while the backend remains responsible for validating
+                # the original specialization and any persistent-core cap.
+                if hasattr(kernel, "result"):
+                    kernel = kernel.result()
                 launch_grid = resolved_launch_grid
+                finalize_program_mapping_launch_grid = getattr(
+                    backend, "finalize_program_mapping_launch_grid", None)
+                if callable(finalize_program_mapping_launch_grid):
+                    launch_grid = finalize_program_mapping_launch_grid(
+                        resolved_launch_grid, kernel.metadata)
+                grid_0, grid_1, grid_2 = launch_grid
             if hasattr(kernel, "result"):
                 kernel = kernel.result()
             # launch kernel

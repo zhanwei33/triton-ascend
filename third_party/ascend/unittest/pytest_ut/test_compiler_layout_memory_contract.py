@@ -1098,6 +1098,40 @@ def test_backend_prepares_cache_keyed_runtime_scalar_specialization(
     )
 
 
+def test_backend_finalizes_python_launch_grid_once_and_checks_original_extent(
+    compiler_module, monkeypatch,
+):
+    backend = compiler_module.AscendBackend(
+        SimpleNamespace(backend="npu", arch="Ascend910B1"))
+    monkeypatch.setattr(
+        compiler_module,
+        "NPUUtils",
+        lambda: SimpleNamespace(
+            get_aivector_core_num=lambda: 56,
+            get_aicore_num=lambda: 28,
+        ),
+    )
+    metadata = SimpleNamespace(
+        program_grid_specialization=_program_grid_specialization(grid=(512, 16, 1), rule_mask=2560),
+        program_grid_transforms={
+            "version": 1,
+            "transforms": [
+                _program_grid_transform(0, 1, 8, 16),
+                _program_grid_transform(1, 0, 2, 512, persistent=True),
+            ],
+        },
+        mix_mode="aiv",
+    )
+
+    # IAT first gives [512, 2, 1], PTSM then gives [256, 2, 1], and its
+    # verified axis-0 coverage permits the vector-core cap to [28, 2, 1].
+    assert backend.finalize_program_mapping_launch_grid(
+        (512, 16, 1), metadata) == (28, 2, 1)
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        backend.finalize_program_mapping_launch_grid((256, 16, 1), metadata)
+
+
 def test_compiler_injects_and_exports_grid_specialization_without_attr_leak(
     compiler_module, monkeypatch,
 ):

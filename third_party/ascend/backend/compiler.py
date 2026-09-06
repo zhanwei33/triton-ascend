@@ -76,9 +76,11 @@ from triton.backends.ascend.program_grid import (
     PROGRAM_GRID_TRANSFORMS_ATTR,
     PROGRAM_GRID_TRANSFORMS_VERSION,
     ProgramGridContractError,
+    apply_program_grid_transforms,
     canonical_program_mapping_scalar_specialization_json,
     canonical_program_grid_specialization_json,
     canonical_program_grid_transforms_json,
+    get_persistent_transform,
     make_program_mapping_scalar_specialization,
     make_program_grid_specialization,
     normalize_program_mapping_scalar_specialization,
@@ -1829,6 +1831,50 @@ class AscendBackend(BaseBackend):
             compiler_options["program_mapping_scalar_specialization"] = (
                 make_program_mapping_scalar_specialization(runtime_arguments))
         return original_grid, compiler_options
+
+    def finalize_program_mapping_launch_grid(self, original_grid, metadata):
+        """Translate a cache-specialized logical grid into the Python launch grid.
+
+        The JIT invokes this only after it has selected the compiled artifact
+        for ``original_grid``.  Keeping the arithmetic here gives Python
+        launches the same final program count as the generated C ABI while
+        preserving a strict check that the artifact was compiled for this
+        exact logical extent.  The C ABI still receives raw grids and performs
+        the equivalent transform inside its exported entry point.
+        """
+        try:
+            original = tuple(int(value) for value in original_grid)
+            if len(original) != 3 or any(value <= 0 for value in original):
+                raise ProgramGridContractError(
+                    "program-grid launch must contain three positive dimensions")
+
+            raw_specialization = getattr(metadata, "program_grid_specialization", None)
+            if raw_specialization is None:
+                raise ProgramGridContractError(
+                    "program-grid launch transform requires hacc.grid_specialization metadata")
+            specialization = normalize_program_grid_specialization(raw_specialization)
+            expected = tuple(specialization["grid"])
+            if original != expected:
+                raise ProgramGridContractError(
+                    "runtime grid does not match the compiled hacc.grid_specialization")
+
+            raw_transforms = getattr(metadata, "program_grid_transforms", None)
+            if raw_transforms is None:
+                return original
+            transforms = normalize_program_grid_transforms(raw_transforms)
+
+            physical_core_count = None
+            if get_persistent_transform(transforms) is not None:
+                mix_mode = getattr(metadata, "mix_mode", "aiv")
+                npu_utils = NPUUtils()
+                physical_core_count = (
+                    npu_utils.get_aivector_core_num()
+                    if mix_mode == "aiv" else npu_utils.get_aicore_num())
+            return apply_program_grid_transforms(
+                original, transforms, physical_core_count=physical_core_count)
+        except (ProgramGridContractError, TypeError, ValueError) as error:
+            raise RuntimeError(
+                f"cannot finalize program-mapping launch grid: {error}") from error
 
     def pack_metadata(self, metadata):
         # collect necessary metadata to launch kernels

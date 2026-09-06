@@ -298,7 +298,7 @@ def _program_grid_specialization(*, grid=(8, 65, 1), rule_mask=512):
 @patch.object(driver, "force_disable_ffts", return_value=False)
 @patch.object(driver, "is_ffts_supported", return_value=True)
 @patch.object(driver, "get_backend_func", side_effect=_mock_backend_func)
-def test_make_launcher_applies_composable_program_grid_contract_in_both_paths(
+def test_make_launcher_keeps_c_abi_transform_and_marks_python_grid_final(
     _mock_backend_func_patch,
     _mock_ffts,
     _mock_disable_ffts,
@@ -328,10 +328,19 @@ def test_make_launcher_applies_composable_program_grid_contract_in_both_paths(
         "const int logicalGrid1 = gridY;",
         "gridY = (gridY + 4 - 1) / 4;",
     )
-    for launch_path in (c_abi_launch, cpp_launch):
-        positions = [launch_path.index(fragment) for fragment in expected_in_order]
-        assert positions == sorted(positions)
-        assert "ChunkCoalescing" not in launch_path
+    positions = [c_abi_launch.index(fragment) for fragment in expected_in_order]
+    assert positions == sorted(positions)
+    assert "ChunkCoalescing" not in c_abi_launch
+
+    # Python JIT has already turned its exact cache-specialized logical grid
+    # into the final launch grid.  The generated Python entry deliberately
+    # preserves the raw C ABI path behind this guard instead of double-dividing
+    # the program count.
+    assert "bool gridAlreadyTransformed" in cpp_launch
+    assert "if (!gridAlreadyTransformed)" in cpp_launch
+    assert cpp_launch.index("if (!gridAlreadyTransformed)") < cpp_launch.index(
+        "gridX = (gridX + 2 - 1) / 2;")
+    assert "_launch(kernelName, function, stream,\n          true," in src
 
 
 @patch.object(driver, "NPUUtils")
@@ -339,7 +348,7 @@ def test_make_launcher_applies_composable_program_grid_contract_in_both_paths(
 @patch.object(driver, "force_disable_ffts", return_value=False)
 @patch.object(driver, "is_ffts_supported", return_value=True)
 @patch.object(driver, "get_backend_func", side_effect=_mock_backend_func)
-def test_grid_specialization_snapshot_precedes_transforms_and_rejects_both_paths(
+def test_grid_specialization_snapshot_precedes_c_abi_transforms(
     _mock_backend_func_patch,
     _mock_ffts,
     _mock_disable_ffts,
@@ -366,13 +375,20 @@ def test_grid_specialization_snapshot_precedes_transforms_and_rejects_both_paths
         "if (!haccProgramGridSpecializationMatches(",
         "haccGridSpecializationRejected = true;",
     )
-    for launch_path in (c_abi_launch, cpp_launch):
-        positions = [launch_path.index(fragment) for fragment in expected_check]
-        assert positions == sorted(positions)
-        assert launch_path.index("const int originalGrid1 = gridY;") < launch_path.index(
-            "const int logicalGrid1 = gridY;")
-        assert launch_path.index("const int logicalGrid1 = gridY;") < launch_path.index(
-            "gridY = (gridY + 4 - 1) / 4;")
+    positions = [c_abi_launch.index(fragment) for fragment in expected_check]
+    assert positions == sorted(positions)
+    assert c_abi_launch.index("const int originalGrid1 = gridY;") < c_abi_launch.index(
+        "const int logicalGrid1 = gridY;")
+    assert c_abi_launch.index("const int logicalGrid1 = gridY;") < c_abi_launch.index(
+        "gridY = (gridY + 4 - 1) / 4;")
+
+    # The Python path relies on the backend's pre-launch check, then passes a
+    # final grid.  Retaining the raw check only behind this guard keeps C API
+    # mismatch rejection while avoiding a false rejection of the final grid.
+    guard = cpp_launch.index("if (!gridAlreadyTransformed)")
+    assert guard < cpp_launch.index("const int originalGrid1 = gridY;")
+    assert cpp_launch.index("const int originalGrid1 = gridY;") < cpp_launch.index(
+        "const int logicalGrid1 = gridY;")
 
     assert src.count("static bool haccProgramGridSpecializationMatches") == 1
     assert c_abi_launch.count("\n  haccGridSpecializationRejected = false;") == 1

@@ -1032,10 +1032,13 @@ static void release_npu_tensor_handle(void* handle) {{
 }}
 """
 
-    # New program-grid transforms own their complete host-launch contract.  They
-    # are applied once here, in the shared source used by both Python's launch()
-    # entry point and exported triton_launch_kernel().  The old coalesce ABI
-    # remains below as a migration-only path for existing artifacts.
+    # New program-grid transforms own their complete host-launch contract.  The
+    # exported C ABI receives an original logical grid and applies the contract
+    # here.  Python JIT launches receive that same contract through metadata,
+    # validate and finalize it before this generated entry point, so the grid
+    # visible at ``CompiledKernel.run`` is already the final program grid.  The
+    # old coalesce ABI remains below as a migration-only path for existing
+    # artifacts.
     raw_program_grid_transforms = getattr(metadata, "program_grid_transforms", None)
     if raw_program_grid_transforms is not None:
         try:
@@ -1294,6 +1297,32 @@ static bool haccProgramGridSpecializationMatches(
   }}
   ''' if workspace_size > 0 else ''}"""
 
+    # Python JIT passes a final grid after its backend has checked the original
+    # grid-specialization contract and applied the exact same transform.  Do
+    # not replay the transform in the generated Python path: doing so would
+    # double-divide an IAT/PTSM grid and make the wrapper-visible program count
+    # disagree with the actual launch.  The exported C ABI keeps the raw path
+    # above because it has no JIT-side backend hook.
+    _python_launch_preamble = f"""
+  void* workspace_addr_ptr = nullptr;
+  void* workspace_handle = nullptr;
+  if (!gridAlreadyTransformed) {{
+    {program_grid_specialization_check}
+    {program_grid_transform_apply}
+    {persistent_grid_cap}
+  }}
+  {coalesce_grid_div if program_grid_transforms is None else ''}
+  uint32_t blockNum4Workspace = gridX * gridY * gridZ;
+  {get_backend_func("pre_launch", True)}
+  {f'''
+  uint64_t totalWorkSpaceSize = (uint64_t){workspace_size} * blockNum4Workspace;
+  {get_backend_func("allocate_memory", "totalWorkSpaceSize", "stream")}
+  std::shared_ptr<void> workspace_handle_guard(workspace_handle, release_npu_tensor_handle);
+  if (!workspace_addr_ptr) {{
+    {workspace_fail_code}
+  }}
+  ''' if workspace_size > 0 else ''}"""
+
     _launch_lambda_pre = f"""  {'std::function<cann_error()> launch_call = [=]() -> cann_error' if enable_taskqueue else ''} {{
     {get_backend_func("pre_launch", False)}
     uint32_t blockNum = gridX * gridY * gridZ;
@@ -1455,6 +1484,7 @@ void triton_launch_kernel(const char* kernelName, cann_func_handle func, cann_st
 }} // extern "C"
 
 static void _launch(const char* kernelName, cann_func_handle func, cann_stream stream,
+    bool gridAlreadyTransformed,
     int gridX, int gridY, int gridZ,
     std::vector<std::vector<int64_t>> &tensorShapes, std::vector<int> &tensorKinds{(', ' + arg_decls) if len(arg_decls) > 0 else ''}) {{
   // Keep Python launcher on the stable local packing path.
@@ -1462,7 +1492,7 @@ static void _launch(const char* kernelName, cann_func_handle func, cann_stream s
     printf("WARNING: Skipping launch for kernel '%s' due to empty grid (gridX=%d, gridY=%d, gridZ=%d).\\n", kernelName, gridX, gridY, gridZ);
     return;
   }}
-{_launch_preamble}
+{_python_launch_preamble}
 {_launch_lambda_pre}
     struct __attribute__((packed)) {{
       {'void* ffts_addr __attribute__((aligned(8)));' if target_support_ffts else ''}
@@ -1563,6 +1593,7 @@ static PyObject* launch(PyObject* self, PyObject* const* args, Py_ssize_t nargs)
   {newline.join(ptr_decls)}
   {program_grid_specialization_reset}
   _launch(kernelName, function, stream,
+          true,
           gridX, gridY, gridZ,
           tensorShapes, tensorKinds
           {', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
