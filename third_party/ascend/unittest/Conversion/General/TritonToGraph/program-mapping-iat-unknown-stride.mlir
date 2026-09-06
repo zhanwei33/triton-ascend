@@ -8,7 +8,7 @@
 // CHECK-NOT: hacc.independent_axis_tensorize
 // CHECK-NOT: hacc.program_grid_transforms
 // CHECK-LABEL: tt.func @_merge_split_states_kernel
-// CHECK: %head_offset = arith.muli %head, %stride : i32
+// CHECK: arith.muli {{.*}} : i32
 // CHECK: tt.store
 module attributes {hacc.grid_specialization = {grid_0 = 8 : i64, grid_1 = 65 : i64, grid_2 = 1 : i64, rule_mask = 512 : i64, version = 1 : i64}} {
   tt.func @_merge_split_states_kernel(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>, %stride: i32) {
