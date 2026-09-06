@@ -23,6 +23,7 @@ import functools
 import hashlib
 import glob
 import json
+import operator
 import os
 import re
 import shlex
@@ -69,14 +70,18 @@ from triton.backends.ascend.utils import (
 )
 from triton.backends.ascend.driver import (NPUUtils)
 from triton.backends.ascend.program_grid import (
+    PROGRAM_MAPPING_SCALAR_SPECIALIZATION_ATTR,
     PROGRAM_GRID_SPECIALIZATION_ATTR,
     PROGRAM_GRID_SPECIALIZATION_VERSION,
     PROGRAM_GRID_TRANSFORMS_ATTR,
     PROGRAM_GRID_TRANSFORMS_VERSION,
     ProgramGridContractError,
+    canonical_program_mapping_scalar_specialization_json,
     canonical_program_grid_specialization_json,
     canonical_program_grid_transforms_json,
+    make_program_mapping_scalar_specialization,
     make_program_grid_specialization,
+    normalize_program_mapping_scalar_specialization,
     normalize_program_grid_specialization,
     normalize_program_mapping_rule_mask,
     normalize_program_grid_transforms,
@@ -180,10 +185,47 @@ def _get_then_clear_program_grid_specialization(mod):
     return raw
 
 
+def _get_then_clear_program_mapping_scalar_specialization(mod):
+    """Remove the JIT-only scalar contract before vendor lowering.
+
+    GraphOptimize normally consumes this contract before the exporter runs.
+    This fallback covers disabled graph optimization and compiler failures
+    before that pass, so an internal ``hacc.*`` attr can never leak into the
+    downstream toolchain.
+    """
+    get_specialization = getattr(
+        ascend.ir, "get_program_mapping_scalar_specialization", None)
+    clear_specialization = getattr(
+        ascend.ir, "clear_program_mapping_scalar_specialization", None)
+    if get_specialization is None or clear_specialization is None:
+        if PROGRAM_MAPPING_SCALAR_SPECIALIZATION_ATTR in str(mod):
+            raise RuntimeError(
+                "hacc.program_mapping_scalar_specialization requires the "
+                "matching Ascend C++ binding")
+        return None
+    try:
+        raw = get_specialization(mod)
+    except TypeError:
+        if PROGRAM_MAPPING_SCALAR_SPECIALIZATION_ATTR in str(mod):
+            raise RuntimeError(
+                "hacc.program_mapping_scalar_specialization requires an MLIR "
+                "module accepted by the Ascend C++ binding")
+        return None
+    if raw is not None:
+        clear_specialization(mod)
+    return raw
+
+
 def _inject_program_grid_specialization(mod, metadata, opt):
-    """Publish a canonical pre-transform grid before GraphOptimize runs."""
+    """Publish pre-transform grid and exact scalar values before GraphOptimize."""
     raw_specialization = getattr(opt, "program_grid_specialization", None)
+    raw_scalar_specialization = getattr(
+        opt, "program_mapping_scalar_specialization", None)
     if raw_specialization is None:
+        if raw_scalar_specialization is not None:
+            raise RuntimeError(
+                "program_mapping_scalar_specialization requires "
+                "program_grid_specialization")
         # AOT/C API compilation may enable a program-mapping bit without a
         # fixed grid.  Those rules must be no-op rather than inventing an
         # extent, so deliberately inject nothing in that case.
@@ -191,6 +233,10 @@ def _inject_program_grid_specialization(mod, metadata, opt):
 
     try:
         specialization = normalize_program_grid_specialization(raw_specialization)
+        scalar_specialization = (
+            None if raw_scalar_specialization is None else
+            normalize_program_mapping_scalar_specialization(raw_scalar_specialization)
+        )
         rule_mask = normalize_program_mapping_rule_mask(
             getattr(opt, "program_mapping_rule_mask", 0))
     except ProgramGridContractError as error:
@@ -215,11 +261,35 @@ def _inject_program_grid_specialization(mod, metadata, opt):
     except Exception as error:
         raise RuntimeError(f"could not inject hacc.grid_specialization: {error}") from error
 
+    if scalar_specialization is not None:
+        set_scalar_specialization = getattr(
+            ascend.ir, "set_program_mapping_scalar_specialization", None)
+        if set_scalar_specialization is None:
+            raise RuntimeError(
+                "hacc.program_mapping_scalar_specialization requires the "
+                "matching Ascend C++ binding")
+        try:
+            set_scalar_specialization(
+                mod,
+                scalar_specialization["version"],
+                [(argument["index"], argument["value"])
+                 for argument in scalar_specialization["arguments"]],
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "could not inject hacc.program_mapping_scalar_specialization: "
+                f"{error}") from error
+
     # Preserve exactly the canonical object that C++ wrote.  It is part of
     # compiler metadata and is consumed by both generated launcher paths.
     metadata["program_grid_specialization"] = specialization
     metadata["program_grid_specialization_cache_key"] = (
         canonical_program_grid_specialization_json(specialization))
+    if scalar_specialization is not None:
+        metadata["program_mapping_scalar_specialization"] = scalar_specialization
+        metadata["program_mapping_scalar_specialization_cache_key"] = (
+            canonical_program_mapping_scalar_specialization_json(
+                scalar_specialization))
     return specialization
 
 
@@ -263,6 +333,35 @@ def _export_program_grid_metadata(mod, metadata, *, require_row_contract=False):
     Row/Chunk artifacts continue to launch unchanged while new mapping rules
     publish the richer schema.
     """
+    raw_scalar_specialization = _get_then_clear_program_mapping_scalar_specialization(mod)
+    if raw_scalar_specialization is not None:
+        try:
+            scalar_specialization = normalize_program_mapping_scalar_specialization(
+                raw_scalar_specialization)
+        except ProgramGridContractError as error:
+            raise RuntimeError(
+                "invalid hacc.program_mapping_scalar_specialization: "
+                f"{error}") from error
+        requested_scalar_specialization = metadata.get(
+            "program_mapping_scalar_specialization")
+        if requested_scalar_specialization is not None:
+            try:
+                requested_scalar_specialization = (
+                    normalize_program_mapping_scalar_specialization(
+                        requested_scalar_specialization))
+            except ProgramGridContractError as error:
+                raise RuntimeError(
+                    "invalid program_mapping_scalar_specialization metadata: "
+                    f"{error}") from error
+            if requested_scalar_specialization != scalar_specialization:
+                raise RuntimeError(
+                    "hacc.program_mapping_scalar_specialization disagrees "
+                    "with compiler metadata")
+        metadata["program_mapping_scalar_specialization"] = scalar_specialization
+        metadata["program_mapping_scalar_specialization_cache_key"] = (
+            canonical_program_mapping_scalar_specialization_json(
+                scalar_specialization))
+
     raw_specialization = _get_then_clear_program_grid_specialization(mod)
     if raw_specialization is not None:
         try:
@@ -1266,6 +1365,7 @@ class NPUOptions:
     # (and therefore the exact legacy JIT/compiler cache identity).
     program_mapping_rule_mask: InitVar[int] = 0
     program_grid_specialization: InitVar[Any] = None
+    program_mapping_scalar_specialization: InitVar[Any] = None
     # This becomes compiler metadata, so its name must also be valid for the
     # namedtuple constructed by CompiledKernel on Python 3.10.
     target_arch: str = field(init=False, repr=False)
@@ -1366,7 +1466,8 @@ class NPUOptions:
     precision_policy: str = "strict_exact"
 
     def __post_init__(self, arch, program_mapping_rule_mask,
-                      program_grid_specialization):
+                      program_grid_specialization,
+                      program_mapping_scalar_specialization):
         from triton.backends.ascend import _apply_ascend_patch
 
         _apply_ascend_patch()
@@ -1385,6 +1486,11 @@ class NPUOptions:
                 None if program_grid_specialization is None else
                 normalize_program_grid_specialization(program_grid_specialization)
             )
+            normalized_scalar_specialization = (
+                None if program_mapping_scalar_specialization is None else
+                normalize_program_mapping_scalar_specialization(
+                    program_mapping_scalar_specialization)
+            )
         except ProgramGridContractError as error:
             raise ValueError(f"invalid program-grid specialization option: {error}") from error
         if normalized_specialization is not None:
@@ -1396,12 +1502,24 @@ class NPUOptions:
                 raise ValueError(
                     "program_grid_specialization.rule_mask must equal "
                     "program_mapping_rule_mask")
+        if normalized_scalar_specialization is not None:
+            if not program_grid_specialization_enabled(normalized_mapping_rule_mask):
+                raise ValueError(
+                    "program_mapping_scalar_specialization requires an enabled "
+                    "program_mapping_rule_mask")
+            if normalized_specialization is None:
+                raise ValueError(
+                    "program_mapping_scalar_specialization requires "
+                    "program_grid_specialization")
         if normalized_mapping_rule_mask:
             object.__setattr__(self, "program_mapping_rule_mask",
                                normalized_mapping_rule_mask)
         if normalized_specialization is not None:
             object.__setattr__(self, "program_grid_specialization",
                                normalized_specialization)
+        if normalized_scalar_specialization is not None:
+            object.__setattr__(self, "program_mapping_scalar_specialization",
+                               normalized_scalar_specialization)
         # The core compiler serializes ``options.__dict__`` into launch
         # metadata.  An init=False field with its class-level default alone is
         # not present there, so materialize the false state before the
@@ -1663,6 +1781,54 @@ class AscendBackend(BaseBackend):
         except ProgramGridContractError as error:
             raise RuntimeError(f"cannot specialize program grid before cache lookup: {error}") from error
         return original_grid, {"program_grid_specialization": specialization}
+
+    def prepare_program_mapping_specialization(self, grid, bound_args,
+                                               raw_options, params):
+        """Add exact runtime integer values to the pre-cache mapping contract.
+
+        ``params`` is the JIT function's ordered parameter list, allowing this
+        backend hook to translate Python parameter order into TTIR entry
+        argument indices while skipping ``tl.constexpr`` values.  The values
+        are cache-keyed compiler inputs, not launcher arguments: GraphOptimize
+        replaces only compatible integer block arguments and leaves all other
+        runtime values dynamic.
+        """
+        prepared = self.prepare_program_grid_specialization(
+            grid, bound_args, raw_options)
+        if prepared is None:
+            return None
+
+        original_grid, compiler_options = prepared
+        runtime_arguments = []
+        runtime_arg_index = 0
+        for param in params:
+            if param.is_constexpr:
+                continue
+            value = bound_args[param.name]
+            # Tensor-like pointers can implement ``__index__`` for a
+            # zero-dimensional value, but they are still pointer arguments,
+            # never scalar-specialization inputs.
+            if isinstance(value, bool) or hasattr(value, "data_ptr"):
+                runtime_arg_index += 1
+                continue
+            try:
+                scalar = operator.index(value)
+            except TypeError:
+                runtime_arg_index += 1
+                continue
+            scalar = int(scalar)
+            # The C++ contract stores signed int64 values.  Omitting a value
+            # outside that range leaves it dynamic and therefore fail-closed
+            # for dependence analysis instead of truncating it.
+            if -(1 << 63) <= scalar <= (1 << 63) - 1:
+                runtime_arguments.append((runtime_arg_index, scalar))
+            runtime_arg_index += 1
+
+        if runtime_arguments:
+            compiler_options = dict(compiler_options)
+            compiler_options["program_mapping_scalar_specialization"] = (
+                make_program_mapping_scalar_specialization(runtime_arguments))
+        return original_grid, compiler_options
 
     def pack_metadata(self, metadata):
         # collect necessary metadata to launch kernels

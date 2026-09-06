@@ -720,21 +720,32 @@ class JITFunction(JITCallable, KernelInterface[T]):
         # this key and the backend compiler cache; no hook means legacy order,
         # callable evaluation count, and key stay untouched.
         resolved_launch_grid = None
+        # The newer mapping hook additionally receives the ordered JIT
+        # parameters so a backend can safely turn exact launch-time integer
+        # values into cache-keyed compiler inputs.  Keep the older grid-only
+        # hook as a compatibility fallback for backends that predate it.
+        prepare_program_mapping_specialization = getattr(
+            backend, "prepare_program_mapping_specialization", None)
         prepare_program_grid_specialization = getattr(
             backend, "prepare_program_grid_specialization", None)
-        if callable(prepare_program_grid_specialization):
+        if callable(prepare_program_mapping_specialization):
+            prepared = prepare_program_mapping_specialization(
+                grid, bound_args, options, self.params)
+        elif callable(prepare_program_grid_specialization):
             prepared = prepare_program_grid_specialization(grid, bound_args, options)
-            if prepared is not None:
-                resolved_launch_grid, compiler_options = prepared
-                if not isinstance(compiler_options, dict):
-                    raise RuntimeError(
-                        "backend program-grid specialization hook must return a dict of compiler options")
-                # ``options`` is the binder's cache-key dictionary while
-                # ``kwargs`` is reparsed on a cache miss by _pack_args(). Keep
-                # them identical so a cache hit can never launch an artifact
-                # compiled for another original extent.
-                options.update(compiler_options)
-                kwargs.update(compiler_options)
+        else:
+            prepared = None
+        if prepared is not None:
+            resolved_launch_grid, compiler_options = prepared
+            if not isinstance(compiler_options, dict):
+                raise RuntimeError(
+                    "backend program-grid specialization hook must return a dict of compiler options")
+            # ``options`` is the binder's cache-key dictionary while
+            # ``kwargs`` is reparsed on a cache miss by _pack_args(). Keep
+            # them identical so a cache hit can never launch an artifact
+            # compiled for another original extent.
+            options.update(compiler_options)
+            kwargs.update(compiler_options)
 
         key = compute_cache_key(kernel_key_cache, specialization, options)
         kernel = kernel_cache.get(key, None)

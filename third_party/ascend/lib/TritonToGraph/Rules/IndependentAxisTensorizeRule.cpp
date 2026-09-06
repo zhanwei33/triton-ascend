@@ -31,6 +31,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -56,6 +58,8 @@ namespace {
 
 constexpr llvm::StringLiteral kIndependentAxisTensorizeMarkerAttr =
     "hacc.independent_axis_tensorize";
+constexpr llvm::StringLiteral kPersistentTaskStripMiningMarkerAttr =
+    "hacc.persistent_task_strip_mining";
 constexpr llvm::StringLiteral kCoalesceFactorAttr = "hacc.coalesce_factor";
 constexpr llvm::StringLiteral kCoalesceAxisAttr = "hacc.coalesce_axis";
 constexpr llvm::StringLiteral kCoalesceGridCeilDivAttr =
@@ -86,6 +90,10 @@ struct IATCandidate {
   int64_t dimExtent = 0;
   int64_t logicalExtent = 0;
   unsigned factor = 1;
+  // A large Norm+RoPE IAT launch is valid only when this candidate can commit
+  // the following PTSM rewrite in the same transaction.
+  bool requiresPersistentChaining = false;
+  ResourceSnapshot resources;
   CandidateEvaluation evaluation;
 };
 
@@ -210,6 +218,34 @@ bool isIATRuleEnabled(const ProgramGridSpecialization &specialization) {
               GraphOptimizationRuleId::IndependentAxisTensorize)) != 0;
 }
 
+bool isPTSMRuleEnabled(const ProgramGridSpecialization &specialization) {
+  return (specialization.ruleMask &
+          getGraphOptimizationRuleMask(
+              GraphOptimizationRuleId::PersistentTaskStripMining)) != 0;
+}
+
+// The direct IAT launch limit is 32768 logical programs.  For a Norm+RoPE
+// chain we may exceed it transiently only when a later PTSM block candidate
+// can bring the final, launcher-visible logical grid back into that validated
+// range.  Materialization is still revalidated transactionally below.
+bool canPotentiallyFitPersistentNormLaunch(
+    const std::array<int64_t, 3> &iatGrid) {
+  constexpr uint64_t kNormRopeMaxTensorizedLaunchPrograms = 32768;
+  constexpr std::array<unsigned, 3> kPersistentBlockTCandidates = {2, 4, 8};
+  if (iatGrid[0] < 1 || iatGrid[1] < 1 || iatGrid[2] < 1)
+    return false;
+  for (unsigned blockT : kPersistentBlockTCandidates) {
+    std::array<int64_t, 3> finalGrid = iatGrid;
+    finalGrid[0] = finalGrid[0] / static_cast<int64_t>(blockT) +
+                   (finalGrid[0] % static_cast<int64_t>(blockT) != 0);
+    uint64_t tasks = 0;
+    if (getGridTaskProduct(finalGrid, tasks) &&
+        tasks <= kNormRopeMaxTensorizedLaunchPrograms)
+      return true;
+  }
+  return false;
+}
+
 bool hasConflictingLaunchContract(ModuleOp module) {
   return module->hasAttr(kIndependentAxisTensorizeMarkerAttr) ||
          module->hasAttr(kProgramGridTransformsAttr) ||
@@ -313,10 +349,11 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
 
   constexpr int32_t kTargetAxis = 1;
   // The Ascend Norm+RoPE IAT kernel has a bounded validated logical-launch
-  // range.  A transformed grid above this boundary reaches a vector-core
-  // runtime failure (the first observed failing shape is 32768 x 16 ->
-  // 32768 x 2 = 65536 logical programs), while 16384 x 16 -> 16384 x 2 is
-  // valid.  Fail closed until that runtime ABI can represent larger IAT grids.
+  // range.  A standalone transformed grid above this boundary reaches a
+  // vector-core runtime failure (the first observed failing shape is
+  // 32768 x 16 -> 32768 x 2 = 65536 logical programs).  The only exception is
+  // a transactionally materialized IAT->PTSM chain whose final launcher grid
+  // is back inside the same bound.
   constexpr uint64_t kNormRopeMaxTensorizedLaunchPrograms = 32768;
   const int64_t logicalExtent = specialization->grid[kTargetAxis];
   if (logicalExtent < 1)
@@ -343,6 +380,8 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
 
   const LiveByteEstimate &liveBytes =
       context.getResourceCostAnalysis().getLiveByteEstimate();
+  const ResourceSnapshot &resources =
+      context.getResourceCostAnalysis().getResourceSnapshot();
   SmallVector<CandidateEvaluation, 4> evaluations;
   for (unsigned factor : kTensorizeFactors) {
     std::array<int64_t, 3> transformedGrid = specialization->grid;
@@ -351,8 +390,12 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
     uint64_t tasksAfter = 0;
     if (!getGridTaskProduct(transformedGrid, tasksAfter))
       continue;
-    if (*form == TensorizeForm::NormRope &&
-        tasksAfter > kNormRopeMaxTensorizedLaunchPrograms)
+    const bool requiresPersistentChaining =
+        *form == TensorizeForm::NormRope &&
+        tasksAfter > kNormRopeMaxTensorizedLaunchPrograms;
+    if (requiresPersistentChaining &&
+        (!isPTSMRuleEnabled(*specialization) ||
+         !canPotentiallyFitPersistentNormLaunch(transformedGrid)))
       continue;
 
     IATCandidate prototype;
@@ -364,6 +407,8 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
     prototype.dimExtent = reductionShape->dimExtent;
     prototype.logicalExtent = logicalExtent;
     prototype.factor = factor;
+    prototype.requiresPersistentChaining = requiresPersistentChaining;
+    prototype.resources = resources;
     evaluations.push_back(
         context.getResourceCostAnalysis().evaluate(buildResourceCandidate(
             prototype, dependence, liveBytes, tasksBefore, tasksAfter)));
@@ -388,6 +433,17 @@ std::optional<IATCandidate> analyzeCandidate(GraphOptimizationContext &context,
   candidate.logicalExtent = logicalExtent;
   candidate.factor =
       static_cast<unsigned>(evaluations.front().candidate.plan.tensorizeFactor);
+  std::array<int64_t, 3> selectedGrid = specialization->grid;
+  selectedGrid[kTargetAxis] =
+      logicalExtent / candidate.factor +
+      (logicalExtent % candidate.factor != 0);
+  uint64_t selectedTasksAfter = 0;
+  if (!getGridTaskProduct(selectedGrid, selectedTasksAfter))
+    return std::nullopt;
+  candidate.requiresPersistentChaining =
+      *form == TensorizeForm::NormRope &&
+      selectedTasksAfter > kNormRopeMaxTensorizedLaunchPrograms;
+  candidate.resources = resources;
   candidate.evaluation = std::move(evaluations.front());
   return candidate;
 }
@@ -396,7 +452,8 @@ bool sameCandidate(const IATCandidate &lhs, const IATCandidate &rhs) {
   return lhs.function == rhs.function && lhs.form == rhs.form &&
          lhs.axis == rhs.axis && lhs.splitExtent == rhs.splitExtent &&
          lhs.dimExtent == rhs.dimExtent &&
-         lhs.logicalExtent == rhs.logicalExtent && lhs.factor == rhs.factor;
+         lhs.logicalExtent == rhs.logicalExtent && lhs.factor == rhs.factor &&
+         lhs.requiresPersistentChaining == rhs.requiresPersistentChaining;
 }
 
 // Keep the lane next to the logical dimension which carries the data, rather
@@ -1038,6 +1095,91 @@ bool rebuildTensorizedFunction(triton::FuncOp function,
   return true;
 }
 
+LogicalResult runProgramMappingStructuralCleanup(ModuleOp module) {
+  PassManager cleanup(module.getContext(), module.getOperationName());
+  cleanup.addPass(createCanonicalizerPass());
+  cleanup.addPass(createCSEPass());
+  cleanup.addPass(createLoopInvariantCodeMotionPass());
+  cleanup.addPass(createCanonicalizerPass());
+  cleanup.addPass(createCSEPass());
+  return cleanup.run(module);
+}
+
+bool hasBoundedPersistentNormLaunch(ModuleOp module,
+                                    triton::FuncOp function) {
+  constexpr uint64_t kNormRopeMaxTensorizedLaunchPrograms = 32768;
+  std::optional<ProgramGridSpecialization> specialization =
+      getGridSpecialization(function);
+  Attribute rawContract = module->getAttr(kProgramGridTransformsAttr);
+  if (!specialization || !rawContract)
+    return false;
+  FailureOr<ProgramGridTransformContract> parsed =
+      parseProgramGridTransformContract(rawContract);
+  if (failed(parsed) || parsed->transforms.size() != 2)
+    return false;
+
+  const ProgramGridTransform &iat = parsed->transforms[0];
+  const ProgramGridTransform &ptsm = parsed->transforms[1];
+  if (iat.order != 0 || iat.axis != 1 || iat.factor < 2 ||
+      iat.logicalExtent != specialization->grid[1] ||
+      iat.persistentCoverage || iat.gridStrideAbiVerified ||
+      ptsm.order != 1 || ptsm.axis != 0 || ptsm.factor < 2 ||
+      ptsm.logicalExtent != specialization->grid[0] ||
+      !ptsm.persistentCoverage || !ptsm.gridStrideAbiVerified)
+    return false;
+
+  std::array<int64_t, 3> finalGrid = specialization->grid;
+  for (const ProgramGridTransform &transform : parsed->transforms) {
+    const int32_t axis = transform.axis;
+    if (axis < 0 || axis >= static_cast<int32_t>(finalGrid.size()) ||
+        finalGrid[axis] < 1 || transform.factor < 2)
+      return false;
+    finalGrid[axis] = finalGrid[axis] / transform.factor +
+                      (finalGrid[axis] % transform.factor != 0);
+  }
+  uint64_t finalTasks = 0;
+  return getGridTaskProduct(finalGrid, finalTasks) &&
+         finalTasks <= kNormRopeMaxTensorizedLaunchPrograms;
+}
+
+// This path is used only when an IAT-only launch would exceed the validated
+// Norm+RoPE limit.  It runs the ordinary PTSM rule against the IAT clone and
+// commits neither rewrite unless the normal PTSM plan revalidates, applies,
+// and leaves a bounded launcher contract.
+LogicalResult applyRequiredPersistentHandoff(ModuleOp sandbox,
+                                             triton::FuncOp function,
+                                             const ResourceSnapshot &resources) {
+  if (failed(runProgramMappingStructuralCleanup(sandbox)))
+    return failure();
+
+  PersistentTaskStripMiningRuleOptions options;
+  options.enabledForCompileMode = true;
+  std::unique_ptr<GraphOptimizationRule> rule =
+      createPersistentTaskStripMiningRule(options);
+  if (!rule || rule->getId() !=
+                   GraphOptimizationRuleId::PersistentTaskStripMining)
+    return failure();
+
+  GraphOptimizationContext context(function, resources);
+  if (failed(context.ensure(rule->getAnalysisRequirements())))
+    return failure();
+  SmallVector<std::unique_ptr<RewritePlan>> plans;
+  if (failed(rule->findCandidates(context, plans)))
+    return failure();
+  for (std::unique_ptr<RewritePlan> &plan : plans) {
+    if (!plan || plan->getRuleId() !=
+                     GraphOptimizationRuleId::PersistentTaskStripMining ||
+        failed(plan->revalidate(context)))
+      continue;
+    IRRewriter rewriter(sandbox.getContext());
+    if (failed(plan->apply(rewriter)))
+      return failure();
+    return hasBoundedPersistentNormLaunch(sandbox, function) ? success()
+                                                              : failure();
+  }
+  return failure();
+}
+
 class IndependentAxisTensorizePlan final : public RewritePlan {
 public:
   IndependentAxisTensorizePlan(IATCandidate candidate, unsigned epoch)
@@ -1072,6 +1214,11 @@ public:
     // relation, verifier failure, or contract serialization failure) therefore
     // leave the source function and its metadata untouched.
     ModuleOp sandbox = ModuleOp::create(candidate.function.getLoc());
+    if (Attribute specialization =
+            module->getAttr(kProgramGridSpecializationAttr))
+      sandbox->setAttr(kProgramGridSpecializationAttr, specialization);
+    else if (candidate.requiresPersistentChaining)
+      return failure();
     sandbox.getBody()->push_back(candidate.function->clone());
     auto clonedFunction = dyn_cast<triton::FuncOp>(&sandbox.getBody()->front());
     if (!clonedFunction)
@@ -1090,6 +1237,10 @@ public:
       return failure();
     sandbox->setAttr(kIndependentAxisTensorizeMarkerAttr,
                      UnitAttr::get(sandbox.getContext()));
+    if (candidate.requiresPersistentChaining &&
+        failed(applyRequiredPersistentHandoff(sandbox, clonedFunction,
+                                              candidate.resources)))
+      return failure();
     if (failed(mlir::verify(sandbox.getOperation())))
       return failure();
 
@@ -1101,6 +1252,13 @@ public:
                     sandbox->getAttr(kProgramGridTransformsAttr));
     module->setAttr(kIndependentAxisTensorizeMarkerAttr,
                     UnitAttr::get(module.getContext()));
+    if (candidate.requiresPersistentChaining) {
+      Attribute persistentMarker =
+          sandbox->getAttr(kPersistentTaskStripMiningMarkerAttr);
+      if (!persistentMarker)
+        return failure();
+      module->setAttr(kPersistentTaskStripMiningMarkerAttr, persistentMarker);
+    }
     return success();
   }
 

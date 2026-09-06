@@ -14,7 +14,9 @@
 
 #include "TritonToGraph/ProgramGridSpecialization.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -32,6 +34,9 @@ constexpr llvm::StringLiteral kGrid0 = "grid_0";
 constexpr llvm::StringLiteral kGrid1 = "grid_1";
 constexpr llvm::StringLiteral kGrid2 = "grid_2";
 constexpr llvm::StringLiteral kRuleMask = "rule_mask";
+constexpr llvm::StringLiteral kArguments = "arguments";
+constexpr llvm::StringLiteral kIndex = "index";
+constexpr llvm::StringLiteral kValue = "value";
 constexpr uint32_t kProgramMappingRuleMask = (1U << 9) | (1U << 10) | (1U << 11);
 
 bool hasExactKeys(DictionaryAttr dictionary, ArrayRef<llvm::StringRef> keys) {
@@ -62,6 +67,36 @@ void removeAttrFromFunctions(ModuleOp module, llvm::StringRef name) {
     if (operation->getName().getStringRef() == "tt.func")
       operation->removeAttr(name);
   });
+}
+
+bool isPublicEntry(triton::FuncOp function) {
+  auto visibility = function->getAttrOfType<StringAttr>("sym_visibility");
+  return !visibility || visibility.getValue() == "public";
+}
+
+bool sameScalarSpecialization(
+    const ProgramMappingScalarSpecialization &lhs,
+    const ProgramMappingScalarSpecialization &rhs) {
+  if (lhs.version != rhs.version || lhs.arguments.size() != rhs.arguments.size())
+    return false;
+  for (unsigned index = 0; index < lhs.arguments.size(); ++index) {
+    const ProgramMappingScalarArgument &left = lhs.arguments[index];
+    const ProgramMappingScalarArgument &right = rhs.arguments[index];
+    if (left.index != right.index || left.value != right.value)
+      return false;
+  }
+  return true;
+}
+
+bool isRepresentableInIntegerType(int64_t value, IntegerType type) {
+  const unsigned width = type.getWidth();
+  if (width == 0)
+    return false;
+  if (width >= 64)
+    return true;
+  const int64_t minimum = -(int64_t{1} << (width - 1));
+  const int64_t maximum = (int64_t{1} << (width - 1)) - 1;
+  return value >= minimum && value <= maximum;
 }
 
 } // namespace
@@ -125,4 +160,135 @@ LogicalResult mlir::triton::cfg::setProgramGridSpecialization(
 void mlir::triton::cfg::clearProgramGridSpecialization(ModuleOp module) {
   module->removeAttr(kProgramGridSpecializationAttr);
   removeAttrFromFunctions(module, kProgramGridSpecializationAttr);
+}
+
+FailureOr<ProgramMappingScalarSpecialization>
+mlir::triton::cfg::parseProgramMappingScalarSpecialization(
+    Attribute attribute) {
+  auto dictionary = dyn_cast_or_null<DictionaryAttr>(attribute);
+  if (!dictionary || !hasExactKeys(dictionary, {kVersion, kArguments}))
+    return failure();
+
+  std::optional<int64_t> version = getInteger(dictionary, kVersion);
+  auto arguments = dyn_cast_or_null<ArrayAttr>(dictionary.get(kArguments));
+  if (!version || *version != kProgramMappingScalarSpecializationVersion ||
+      !arguments || arguments.empty())
+    return failure();
+
+  ProgramMappingScalarSpecialization parsed;
+  parsed.version = *version;
+  std::optional<int64_t> previousIndex;
+  for (Attribute attribute : arguments) {
+    auto argument = dyn_cast<DictionaryAttr>(attribute);
+    if (!argument || !hasExactKeys(argument, {kIndex, kValue}))
+      return failure();
+    std::optional<int64_t> index = getInteger(argument, kIndex);
+    std::optional<int64_t> value = getInteger(argument, kValue);
+    if (!index || !value || *index < 0 ||
+        *index > std::numeric_limits<uint32_t>::max() ||
+        (previousIndex && *index <= *previousIndex))
+      return failure();
+    parsed.arguments.push_back(ProgramMappingScalarArgument{
+        static_cast<uint32_t>(*index), *value});
+    previousIndex = *index;
+  }
+  return parsed;
+}
+
+DictionaryAttr mlir::triton::cfg::serializeProgramMappingScalarSpecialization(
+    MLIRContext *context,
+    const ProgramMappingScalarSpecialization &specialization) {
+  Builder builder(context);
+  SmallVector<Attribute> arguments;
+  arguments.reserve(specialization.arguments.size());
+  for (const ProgramMappingScalarArgument &argument : specialization.arguments) {
+    arguments.push_back(DictionaryAttr::get(
+        context,
+        {{builder.getStringAttr(kIndex),
+          builder.getI64IntegerAttr(argument.index)},
+         {builder.getStringAttr(kValue),
+          builder.getI64IntegerAttr(argument.value)}}));
+  }
+  return DictionaryAttr::get(
+      context,
+      {{builder.getStringAttr(kVersion),
+        builder.getI64IntegerAttr(specialization.version)},
+       {builder.getStringAttr(kArguments), ArrayAttr::get(context, arguments)}});
+}
+
+LogicalResult mlir::triton::cfg::setProgramMappingScalarSpecialization(
+    ModuleOp module,
+    const ProgramMappingScalarSpecialization &specialization) {
+  DictionaryAttr serialized = serializeProgramMappingScalarSpecialization(
+      module.getContext(), specialization);
+  if (failed(parseProgramMappingScalarSpecialization(serialized)))
+    return failure();
+  module->setAttr(kProgramMappingScalarSpecializationAttr, serialized);
+  setAttrOnFunctions(module, kProgramMappingScalarSpecializationAttr,
+                     serialized);
+  return success();
+}
+
+void mlir::triton::cfg::clearProgramMappingScalarSpecialization(
+    ModuleOp module) {
+  module->removeAttr(kProgramMappingScalarSpecializationAttr);
+  removeAttrFromFunctions(module, kProgramMappingScalarSpecializationAttr);
+}
+
+LogicalResult mlir::triton::cfg::applyProgramMappingScalarSpecialization(
+    ModuleOp module) {
+  Attribute attribute =
+      module->getAttr(kProgramMappingScalarSpecializationAttr);
+  if (!attribute) {
+    // A function-local orphan is never a valid compiler input.  Remove it so
+    // it cannot leak to a lower toolchain, but do not make an otherwise
+    // ordinary graph-optimize invocation fail.
+    clearProgramMappingScalarSpecialization(module);
+    return success();
+  }
+
+  FailureOr<ProgramMappingScalarSpecialization> specialization =
+      parseProgramMappingScalarSpecialization(attribute);
+  if (failed(specialization)) {
+    clearProgramMappingScalarSpecialization(module);
+    return failure();
+  }
+
+  for (triton::FuncOp function : module.getOps<triton::FuncOp>()) {
+    Attribute functionAttribute =
+        function->getAttr(kProgramMappingScalarSpecializationAttr);
+    if (functionAttribute) {
+      FailureOr<ProgramMappingScalarSpecialization> functionSpecialization =
+          parseProgramMappingScalarSpecialization(functionAttribute);
+      if (failed(functionSpecialization) ||
+          !sameScalarSpecialization(*specialization,
+                                    *functionSpecialization)) {
+        clearProgramMappingScalarSpecialization(module);
+        return failure();
+      }
+    }
+    if (!isPublicEntry(function) || function->getNumRegions() != 1 ||
+        function.getBody().empty())
+      continue;
+
+    Block &entry = function.getBody().front();
+    OpBuilder builder(function.getContext());
+    builder.setInsertionPointToStart(&entry);
+    for (const ProgramMappingScalarArgument &argument :
+         specialization->arguments) {
+      if (argument.index >= function.getNumArguments())
+        continue;
+      BlockArgument blockArgument = function.getArgument(argument.index);
+      auto integerType = dyn_cast<IntegerType>(blockArgument.getType());
+      if (!integerType ||
+          !isRepresentableInIntegerType(argument.value, integerType))
+        continue;
+      Value constant = builder.create<arith::ConstantIntOp>(
+          function.getLoc(), argument.value, integerType.getWidth());
+      blockArgument.replaceAllUsesWith(constant);
+    }
+  }
+
+  clearProgramMappingScalarSpecialization(module);
+  return success();
 }

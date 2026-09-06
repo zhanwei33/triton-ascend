@@ -51,6 +51,8 @@
 #include "llvm/IR/Instructions.h"
 #include <Python.h>
 #include <limits>
+#include <utility>
+#include <vector>
 
 using namespace mlir;
 namespace py = pybind11;
@@ -689,6 +691,58 @@ void init_ascend_ir(py::module &&m) {
       throw std::invalid_argument(
           "clear_program_grid_specialization expects an MLIR module");
     mlir::triton::cfg::clearProgramGridSpecialization(module);
+  });
+  m.def("get_program_mapping_scalar_specialization",
+        [](OpState &op) -> py::object {
+          Attribute attribute = op->getAttr(
+              mlir::triton::cfg::kProgramMappingScalarSpecializationAttr);
+          if (!attribute)
+            return py::none();
+          FailureOr<mlir::triton::cfg::ProgramMappingScalarSpecialization>
+              specialization =
+                  mlir::triton::cfg::parseProgramMappingScalarSpecialization(
+                      attribute);
+          if (failed(specialization))
+            throw std::runtime_error(
+                "invalid hacc.program_mapping_scalar_specialization contract");
+
+          py::dict result;
+          result["version"] = specialization->version;
+          py::list arguments;
+          for (const mlir::triton::cfg::ProgramMappingScalarArgument &argument :
+               specialization->arguments) {
+            py::dict item;
+            item["index"] = argument.index;
+            item["value"] = argument.value;
+            arguments.append(std::move(item));
+          }
+          result["arguments"] = std::move(arguments);
+          return std::move(result);
+        });
+  m.def(
+      "set_program_mapping_scalar_specialization",
+      [](OpState &op, int64_t version,
+         const std::vector<std::pair<uint32_t, int64_t>> &arguments) {
+        auto module = dyn_cast<ModuleOp>(op.getOperation());
+        if (!module)
+          throw std::invalid_argument(
+              "set_program_mapping_scalar_specialization expects an MLIR module");
+        mlir::triton::cfg::ProgramMappingScalarSpecialization specialization;
+        specialization.version = version;
+        for (const auto &[index, value] : arguments)
+          specialization.arguments.push_back({index, value});
+        if (failed(mlir::triton::cfg::setProgramMappingScalarSpecialization(
+                module, specialization)))
+          throw std::runtime_error(
+              "invalid hacc.program_mapping_scalar_specialization contract");
+      },
+      py::arg("module"), py::arg("version"), py::arg("arguments"));
+  m.def("clear_program_mapping_scalar_specialization", [](OpState &op) {
+    auto module = dyn_cast<ModuleOp>(op.getOperation());
+    if (!module)
+      throw std::invalid_argument(
+          "clear_program_mapping_scalar_specialization expects an MLIR module");
+    mlir::triton::cfg::clearProgramMappingScalarSpecialization(module);
   });
   m.def(
       "analyze_program_axis_dependence",

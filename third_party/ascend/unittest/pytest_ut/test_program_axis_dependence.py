@@ -44,6 +44,27 @@ module {{
 """
 
 
+def _masked_store_module(name, stride, valid_lanes):
+    return f"""
+module {{
+  tt.func public @{name}(%out: !tt.ptr<i32>) {{
+    %pid = tt.get_program_id x : i32
+    %stride = arith.constant {stride} : i32
+    %base = arith.muli %pid, %stride : i32
+    %range = tt.make_range {{end = 256 : i32, start = 0 : i32}} : tensor<256xi32>
+    %out_base = tt.addptr %out, %base : !tt.ptr<i32>, i32
+    %out_splat = tt.splat %out_base : !tt.ptr<i32> -> tensor<256x!tt.ptr<i32>>
+    %out_ptrs = tt.addptr %out_splat, %range : tensor<256x!tt.ptr<i32>>, tensor<256xi32>
+    %limit = arith.constant dense<{valid_lanes}> : tensor<256xi32>
+    %mask = arith.cmpi slt, %range, %limit : tensor<256xi32>
+    %zero = arith.constant dense<0> : tensor<256xi32>
+    tt.store %out_ptrs, %zero, %mask : tensor<256x!tt.ptr<i32>>
+    tt.return
+  }}
+}}
+"""
+
+
 def _program_grid_module(*, version=1, axis=0, factor=2):
     return f'''
 module attributes {{hacc.program_grid_transforms = {{
@@ -91,6 +112,33 @@ def test_program_axis_analysis_rejects_overlapping_store_intervals(tmp_path):
     x = facts[0]
 
     assert x["stores"][0]["pointer_depends_on_axis"] is True
+    assert x["stores"][0]["address_independence"] == "unknown"
+    assert x["is_independent_axis_transform_candidate"] is False
+
+
+def test_program_axis_analysis_uses_exact_final_store_mask_to_bound_lanes(tmp_path):
+    facts = _facts(
+        _masked_store_module("masked_disjoint", stride=192, valid_lanes=192),
+        tmp_path,
+        "masked_disjoint",
+    )
+    x = facts[0]
+
+    assert x["stores"] == [{
+        "pointer_depends_on_axis": True,
+        "address_independence": "proven_disjoint",
+    }]
+    assert x["is_independent_axis_transform_candidate"] is True
+
+
+def test_program_axis_analysis_rejects_mask_bound_equal_to_program_stride(tmp_path):
+    facts = _facts(
+        _masked_store_module("masked_overlap", stride=192, valid_lanes=193),
+        tmp_path,
+        "masked_overlap",
+    )
+    x = facts[0]
+
     assert x["stores"][0]["address_independence"] == "unknown"
     assert x["is_independent_axis_transform_candidate"] is False
 
@@ -206,6 +254,41 @@ module {
     ascend_ir.clear_program_grid_specialization(module)
     assert ascend_ir.get_program_grid_specialization(module) is None
     assert ascend_ir.get_program_grid_specialization(function) is None
+
+
+def test_cxx_runtime_scalar_specialization_is_versioned_and_cleared_from_module_and_function(
+    tmp_path,
+):
+    context = ir.context()
+    ir.load_dialects(context)
+    ascend_ir.load_dialects(context)
+    path = Path(tmp_path) / "runtime-scalar-specialization.mlir"
+    path.write_text("""
+module {
+  tt.func public @runtime_scalar_specialization_fixture(%stride: i32) {
+    tt.return
+  }
+}
+""")
+    module = ir.parse_mlir_module(str(path), context)
+    function = module.get_function("runtime_scalar_specialization_fixture")
+
+    ascend_ir.set_program_mapping_scalar_specialization(
+        module, 1, [(2, 64), (10, -4)])
+    expected = {
+        "version": 1,
+        "arguments": [
+            {"index": 2, "value": 64},
+            {"index": 10, "value": -4},
+        ],
+    }
+    assert ascend_ir.get_program_mapping_scalar_specialization(module) == expected
+    assert ascend_ir.get_program_mapping_scalar_specialization(function) == expected
+    assert "hacc.program_mapping_scalar_specialization" in str(module)
+
+    ascend_ir.clear_program_mapping_scalar_specialization(module)
+    assert ascend_ir.get_program_mapping_scalar_specialization(module) is None
+    assert ascend_ir.get_program_mapping_scalar_specialization(function) is None
 
 
 @pytest.mark.parametrize(

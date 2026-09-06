@@ -135,6 +135,49 @@ def test_program_mapping_specialization_is_canonical_and_cache_serializable(prog
     )
 
 
+def test_runtime_scalar_specialization_is_canonical_and_cache_serializable(program_grid):
+    specialization = program_grid.make_program_mapping_scalar_specialization(
+        [(2, 64), (10, -4)],
+    )
+
+    assert specialization == {
+        "version": 1,
+        "arguments": [
+            {"index": 2, "value": 64},
+            {"index": 10, "value": -4},
+        ],
+    }
+    assert program_grid.canonical_program_mapping_scalar_specialization_json(
+        specialization,
+    ) == (
+        '{"arguments":[{"index":2,"value":64},{"index":10,"value":-4}],'
+        '"version":1}'
+    )
+
+
+@pytest.mark.parametrize(
+    "specialization",
+    [
+        {"version": 2, "arguments": [{"index": 2, "value": 64}]},
+        {"version": 1, "arguments": []},
+        {"version": 1, "arguments": [{"index": -1, "value": 64}]},
+        {"version": 1, "arguments": [{"index": 2, "value": True}]},
+        {
+            "version": 1,
+            "arguments": [
+                {"index": 2, "value": 64},
+                {"index": 2, "value": 65},
+            ],
+        },
+    ],
+)
+def test_runtime_scalar_specialization_rejects_invalid_contracts(
+    program_grid, specialization,
+):
+    with pytest.raises(program_grid.ProgramGridContractError):
+        program_grid.normalize_program_mapping_scalar_specialization(specialization)
+
+
 def test_program_mapping_specialization_rejects_unknown_bits_and_noncanonical_grid(program_grid):
     with pytest.raises(program_grid.ProgramGridContractError, match="unsupported bits"):
         program_grid.normalize_program_mapping_rule_mask(1)

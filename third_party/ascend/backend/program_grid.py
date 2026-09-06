@@ -37,6 +37,18 @@ PROGRAM_GRID_TRANSFORMS_VERSION = 1
 PROGRAM_GRID_SPECIALIZATION_ATTR = "hacc.grid_specialization"
 PROGRAM_GRID_SPECIALIZATION_VERSION = 1
 
+# Runtime scalar values are normally intentionally dynamic in TTIR.  Program
+# mapping, however, needs a proof for the *particular* launch before it can
+# turn one physical program into multiple logical lanes.  This opt-in contract
+# carries exact integer argument values from the JIT cache key to
+# GraphOptimize, where they are substituted into the entry function before
+# the dependence analysis runs.  It is separate from the launch-grid contract:
+# the scalar values never reach the generated launcher ABI.
+PROGRAM_MAPPING_SCALAR_SPECIALIZATION_ATTR = (
+    "hacc.program_mapping_scalar_specialization"
+)
+PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION = 1
+
 # These values are owned by the append-only GraphOptimize registry (task_0001).
 # Keep the bridge's trigger set explicit: unrelated future rules must not make
 # a legacy JIT launch evaluate its grid before cache lookup.
@@ -65,6 +77,11 @@ _TRANSFORM_KEYS = frozenset((
     "grid_stride_abi_verified",
 ))
 _SPECIALIZATION_KEYS = frozenset(("version", "grid", "rule_mask"))
+_SCALAR_SPECIALIZATION_KEYS = frozenset(("version", "arguments"))
+_SCALAR_ARGUMENT_KEYS = frozenset(("index", "value"))
+_INT64_MIN = -(1 << 63)
+_INT64_MAX = (1 << 63) - 1
+_UINT32_MAX = (1 << 32) - 1
 
 
 def _integer(value: Any, name: str, *, minimum: int | None = None) -> int:
@@ -217,6 +234,112 @@ def canonical_program_grid_specialization_json(raw: Any) -> str:
     """Return the stable compiler-cache representation of an original grid."""
     return json.dumps(
         normalize_program_grid_specialization(raw), sort_keys=True, separators=(",", ":"))
+
+
+def normalize_program_mapping_scalar_specialization(raw: Any) -> dict[str, Any]:
+    """Validate exact runtime integer arguments used by program mapping.
+
+    A value is keyed by its TTIR entry-function argument index, not by a
+    Python parameter name.  That makes the contract independent of frontend
+    spelling while retaining a stable compiler-cache representation.  Empty,
+    duplicate, unsorted, out-of-range, and bool values are rejected rather
+    than silently changing which argument is specialized.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ProgramGridContractError(
+                "program_mapping_scalar_specialization must be valid JSON "
+                "when encoded as text") from error
+
+    contract = _mapping(raw, "program_mapping_scalar_specialization")
+    if set(contract) != _SCALAR_SPECIALIZATION_KEYS:
+        missing = sorted(_SCALAR_SPECIALIZATION_KEYS - set(contract))
+        unknown = sorted(set(contract) - _SCALAR_SPECIALIZATION_KEYS)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if unknown:
+            detail.append("unknown " + ", ".join(unknown))
+        raise ProgramGridContractError(
+            "program_mapping_scalar_specialization has an invalid schema" +
+            (": " + "; ".join(detail) if detail else ""))
+
+    version = _integer(
+        contract["version"],
+        "program_mapping_scalar_specialization.version",
+        minimum=1,
+    )
+    if version != PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION:
+        raise ProgramGridContractError(
+            "unsupported program_mapping_scalar_specialization version "
+            f"{version}; expected {PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION}")
+
+    raw_arguments = contract["arguments"]
+    if isinstance(raw_arguments, (str, bytes)) or not isinstance(raw_arguments, Sequence):
+        raise ProgramGridContractError(
+            "program_mapping_scalar_specialization.arguments must be a sequence")
+    if not raw_arguments:
+        raise ProgramGridContractError(
+            "program_mapping_scalar_specialization.arguments must not be empty")
+
+    arguments: list[dict[str, int]] = []
+    previous_index = -1
+    for position, raw_argument in enumerate(raw_arguments):
+        argument = _mapping(raw_argument, f"arguments[{position}]")
+        if set(argument) != _SCALAR_ARGUMENT_KEYS:
+            missing = sorted(_SCALAR_ARGUMENT_KEYS - set(argument))
+            unknown = sorted(set(argument) - _SCALAR_ARGUMENT_KEYS)
+            detail = []
+            if missing:
+                detail.append("missing " + ", ".join(missing))
+            if unknown:
+                detail.append("unknown " + ", ".join(unknown))
+            raise ProgramGridContractError(
+                f"arguments[{position}] has an invalid schema" +
+                (": " + "; ".join(detail) if detail else ""))
+        index = _integer(argument["index"], f"arguments[{position}].index", minimum=0)
+        value = _integer(argument["value"], f"arguments[{position}].value")
+        if index > _UINT32_MAX:
+            raise ProgramGridContractError(
+                f"arguments[{position}].index must fit in uint32")
+        if value < _INT64_MIN or value > _INT64_MAX:
+            raise ProgramGridContractError(
+                f"arguments[{position}].value must fit in int64")
+        if index <= previous_index:
+            raise ProgramGridContractError(
+                "program_mapping_scalar_specialization argument indices must be "
+                "strictly increasing")
+        arguments.append({"index": index, "value": value})
+        previous_index = index
+
+    return {
+        "version": PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION,
+        "arguments": arguments,
+    }
+
+
+def make_program_mapping_scalar_specialization(
+    arguments: Sequence[tuple[int, int]],
+) -> dict[str, Any]:
+    """Create canonical scalar-specialization metadata from exact JIT values."""
+    return normalize_program_mapping_scalar_specialization({
+        "version": PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION,
+        "arguments": [
+            {"index": index, "value": value}
+            for index, value in arguments
+        ],
+    })
+
+
+def canonical_program_mapping_scalar_specialization_json(raw: Any) -> str:
+    """Return the stable cache representation of scalar specialization."""
+    return json.dumps(
+        normalize_program_mapping_scalar_specialization(raw),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def normalize_program_grid_transforms(raw: Any) -> dict[str, Any]:

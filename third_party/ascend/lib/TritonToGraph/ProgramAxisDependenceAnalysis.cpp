@@ -24,6 +24,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <limits>
@@ -65,6 +66,19 @@ std::optional<int64_t> getConstantInt(Value value) {
   if (!matchPattern(value, m_ConstantInt(&constant)))
     return std::nullopt;
   return constant.getSExtValue();
+}
+
+// Triton canonicalization commonly materializes a runtime scalar as a splat
+// DenseElementsAttr before graph optimization.  Keep this helper deliberately
+// narrow: only integer splats are exact scalar bounds.
+std::optional<int64_t> getUniformConstantInt(Value value) {
+  if (std::optional<int64_t> constant = getConstantInt(value))
+    return constant;
+  DenseElementsAttr elements;
+  if (!matchPattern(value, m_Constant(&elements)) || !elements.isSplat() ||
+      !isa<IntegerType>(elements.getElementType()))
+    return std::nullopt;
+  return elements.getSplatValue<APInt>().getSExtValue();
 }
 
 OffsetForm invalidOffsetForm() {
@@ -252,6 +266,88 @@ OffsetForm analyzePointerOffset(Value pointer, int32_t targetAxis,
                     : OffsetForm{});
 }
 
+// Return a proven exclusive upper bound only when an active store lane must
+// satisfy `offset < constant`.  It is safe to discover that condition through
+// conjunctions: every true `andi` result implies each operand.  Do not infer
+// bounds through ors, selects, casts, or arbitrary boolean arithmetic.
+std::optional<int64_t> getConjunctiveOffsetUpperBound(
+    Value mask, Value offset, DenseSet<Value> &visited) {
+  if (!mask || !visited.insert(mask).second)
+    return std::nullopt;
+  if (auto compare = mask.getDefiningOp<arith::CmpIOp>()) {
+    if (compare.getPredicate() == arith::CmpIPredicate::slt &&
+        compare.getLhs() == offset) {
+      std::optional<int64_t> bound = getUniformConstantInt(compare.getRhs());
+      if (bound && *bound > 0)
+        return bound;
+    }
+    return std::nullopt;
+  }
+  if (auto conjunction = mask.getDefiningOp<arith::AndIOp>()) {
+    std::optional<int64_t> lhs = getConjunctiveOffsetUpperBound(
+        conjunction.getLhs(), offset, visited);
+    std::optional<int64_t> rhs = getConjunctiveOffsetUpperBound(
+        conjunction.getRhs(), offset, visited);
+    if (lhs && rhs)
+      return std::min(*lhs, *rhs);
+    return lhs ? lhs : rhs;
+  }
+  return std::nullopt;
+}
+
+Value peelPointerShapeOps(Value pointer) {
+  while (true) {
+    if (auto splat = pointer.getDefiningOp<triton::SplatOp>()) {
+      pointer = splat.getSrc();
+      continue;
+    }
+    if (auto broadcast = pointer.getDefiningOp<triton::BroadcastOp>()) {
+      pointer = broadcast.getSrc();
+      continue;
+    }
+    if (auto expand = pointer.getDefiningOp<triton::ExpandDimsOp>()) {
+      pointer = expand.getSrc();
+      continue;
+    }
+    return pointer;
+  }
+}
+
+// `analyzePointerOffset` intentionally knows nothing about a memory op's
+// mask.  For a final addptr, however, an exact offset bound in that store's
+// mask narrows the active lane interval and is sufficient to prove a padded
+// row's non-overlap.  Restrict this to the exact final offset Value so a
+// superficially similar mask cannot be applied to a different address term.
+OffsetForm analyzeStorePointerOffset(triton::StoreOp store,
+                                     int32_t targetAxis) {
+  Value pointer = peelPointerShapeOps(store.getPtr());
+  auto finalAddPtr = pointer.getDefiningOp<triton::AddPtrOp>();
+  if (!finalAddPtr) {
+    DenseSet<Value> pointerSeen;
+    return analyzePointerOffset(store.getPtr(), targetAxis, pointerSeen);
+  }
+
+  DenseSet<Value> baseSeen;
+  OffsetForm base =
+      analyzePointerOffset(finalAddPtr.getPtr(), targetAxis, baseSeen);
+  DenseSet<Value> offsetSeen;
+  OffsetForm offset =
+      analyzeOffset(finalAddPtr.getOffset(), targetAxis, offsetSeen);
+  if (!base.valid || !offset.valid)
+    return invalidOffsetForm();
+
+  DenseSet<Value> maskSeen;
+  std::optional<int64_t> exclusiveBound =
+      getConjunctiveOffsetUpperBound(store.getMask(),
+                                     finalAddPtr.getOffset(), maskSeen);
+  if (exclusiveBound && *exclusiveBound > offset.laneMin) {
+    const int64_t maskedMax = *exclusiveBound - 1;
+    if (maskedMax < offset.laneMax)
+      offset.laneMax = maskedMax;
+  }
+  return addOffsetForms(base, offset, /*subtractRhs=*/false);
+}
+
 StoreAddressIndependence classifyStoreAddress(triton::StoreOp store,
                                               int32_t targetAxis,
                                               bool &pointerDependsOnAxis) {
@@ -261,9 +357,7 @@ StoreAddressIndependence classifyStoreAddress(triton::StoreOp store,
   if (!pointerDependsOnAxis)
     return StoreAddressIndependence::NotProgramDependent;
 
-  DenseSet<Value> pointerSeen;
-  OffsetForm offset =
-      analyzePointerOffset(store.getPtr(), targetAxis, pointerSeen);
+  OffsetForm offset = analyzeStorePointerOffset(store, targetAxis);
   if (!offset.valid ||
       (!offset.symbolicStride && offset.programCoefficient == 0) ||
       offset.laneMax < offset.laneMin)

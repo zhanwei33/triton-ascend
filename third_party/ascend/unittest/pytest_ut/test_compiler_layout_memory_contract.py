@@ -803,6 +803,9 @@ def _install_program_grid_attr_shim(monkeypatch, compiler_module):
     def get_program_grid_specialization(module):
         return module.attrs.get("hacc.grid_specialization")
 
+    def get_program_mapping_scalar_specialization(module):
+        return module.attrs.get("hacc.program_mapping_scalar_specialization")
+
     def set_program_grid_specialization(module, version, grid_0, grid_1, grid_2, rule_mask):
         module.attrs["hacc.grid_specialization"] = {
             "version": version,
@@ -812,6 +815,18 @@ def _install_program_grid_attr_shim(monkeypatch, compiler_module):
 
     def clear_program_grid_specialization(module):
         module.attrs.pop("hacc.grid_specialization", None)
+
+    def set_program_mapping_scalar_specialization(module, version, arguments):
+        module.attrs["hacc.program_mapping_scalar_specialization"] = {
+            "version": version,
+            "arguments": [
+                {"index": index, "value": value}
+                for index, value in arguments
+            ],
+        }
+
+    def clear_program_mapping_scalar_specialization(module):
+        module.attrs.pop("hacc.program_mapping_scalar_specialization", None)
 
     def remove_attr(module, name):
         module.attrs.pop(name, None)
@@ -823,8 +838,14 @@ def _install_program_grid_attr_shim(monkeypatch, compiler_module):
             get_int_attr=get_int_attr,
             get_program_grid_transforms=get_program_grid_transforms,
             get_program_grid_specialization=get_program_grid_specialization,
+            get_program_mapping_scalar_specialization=(
+                get_program_mapping_scalar_specialization),
             set_program_grid_specialization=set_program_grid_specialization,
+            set_program_mapping_scalar_specialization=(
+                set_program_mapping_scalar_specialization),
             clear_program_grid_specialization=clear_program_grid_specialization,
+            clear_program_mapping_scalar_specialization=(
+                clear_program_mapping_scalar_specialization),
             remove_attr=remove_attr,
         )),
     )
@@ -960,6 +981,16 @@ def _program_grid_specialization(*, grid=(8, 65, 1), rule_mask=512):
     return {"version": 1, "grid": list(grid), "rule_mask": rule_mask}
 
 
+def _program_mapping_scalar_specialization(*, arguments=((2, 64), (10, 4))):
+    return {
+        "version": 1,
+        "arguments": [
+            {"index": index, "value": value}
+            for index, value in arguments
+        ],
+    }
+
+
 def test_program_grid_specialization_options_preserve_legacy_state_when_disabled(
     compiler_module,
 ):
@@ -970,14 +1001,19 @@ def test_program_grid_specialization_options_preserve_legacy_state_when_disabled
         arch="Ascend910B1",
         program_mapping_rule_mask=512,
         program_grid_specialization=_program_grid_specialization(),
+        program_mapping_scalar_specialization=(
+            _program_mapping_scalar_specialization()),
     )
 
     for options in (legacy, explicit_disabled):
         assert "program_mapping_rule_mask" not in options.__dict__
         assert "program_grid_specialization" not in options.__dict__
+        assert "program_mapping_scalar_specialization" not in options.__dict__
     assert legacy.hash() == explicit_disabled.hash()
     assert enabled.__dict__["program_mapping_rule_mask"] == 512
     assert enabled.__dict__["program_grid_specialization"] == _program_grid_specialization()
+    assert enabled.__dict__["program_mapping_scalar_specialization"] == (
+        _program_mapping_scalar_specialization())
     assert enabled.hash() != legacy.hash()
 
 
@@ -989,6 +1025,11 @@ def test_program_grid_specialization_options_preserve_legacy_state_when_disabled
         {
             "program_mapping_rule_mask": 512,
             "program_grid_specialization": _program_grid_specialization(rule_mask=1024),
+        },
+        {
+            "program_mapping_rule_mask": 512,
+            "program_mapping_scalar_specialization": (
+                _program_mapping_scalar_specialization()),
         },
     ],
 )
@@ -1029,6 +1070,34 @@ def test_backend_prepares_reproducible_grid_before_cache_and_rejects_stale_input
             })
 
 
+def test_backend_prepares_cache_keyed_runtime_scalar_specialization(
+    compiler_module,
+):
+    backend = compiler_module.AscendBackend(
+        SimpleNamespace(backend="npu", arch="Ascend910B1"))
+    params = [
+        SimpleNamespace(name="ptr", is_constexpr=False),
+        SimpleNamespace(name="stride", is_constexpr=False),
+        SimpleNamespace(name="BLOCK", is_constexpr=True),
+        SimpleNamespace(name="count", is_constexpr=False),
+    ]
+    prepared = backend.prepare_program_mapping_specialization(
+        (8, 65),
+        {"ptr": object(), "stride": 64, "BLOCK": 128, "count": 4},
+        {"program_mapping_rule_mask": 512},
+        params,
+    )
+
+    assert prepared == (
+        (8, 65, 1),
+        {
+            "program_grid_specialization": _program_grid_specialization(),
+            "program_mapping_scalar_specialization": (
+                _program_mapping_scalar_specialization(arguments=((1, 64), (2, 4)))),
+        },
+    )
+
+
 def test_compiler_injects_and_exports_grid_specialization_without_attr_leak(
     compiler_module, monkeypatch,
 ):
@@ -1038,14 +1107,22 @@ def test_compiler_injects_and_exports_grid_specialization_without_attr_leak(
     option = SimpleNamespace(
         program_mapping_rule_mask=512,
         program_grid_specialization=_program_grid_specialization(),
+        program_mapping_scalar_specialization=(
+            _program_mapping_scalar_specialization()),
     )
 
     compiler_module._inject_program_grid_specialization(module, metadata, option)
-    assert module.attrs == {"hacc.grid_specialization": _program_grid_specialization()}
+    assert module.attrs == {
+        "hacc.grid_specialization": _program_grid_specialization(),
+        "hacc.program_mapping_scalar_specialization": (
+            _program_mapping_scalar_specialization()),
+    }
     assert metadata["program_grid_specialization"] == _program_grid_specialization()
     assert metadata["program_grid_specialization_cache_key"] == (
         '{"grid":[8,65,1],"rule_mask":512,"version":1}'
     )
+    assert metadata["program_mapping_scalar_specialization"] == (
+        _program_mapping_scalar_specialization())
 
     compiler_module._export_program_grid_metadata(module, metadata)
     assert module.attrs == {}
@@ -1053,6 +1130,8 @@ def test_compiler_injects_and_exports_grid_specialization_without_attr_leak(
     assert metadata["program_grid_specialization_cache_key"] == (
         '{"grid":[8,65,1],"rule_mask":512,"version":1}'
     )
+    assert metadata["program_mapping_scalar_specialization"] == (
+        _program_mapping_scalar_specialization())
 
 
 def test_aot_program_mapping_without_fixed_grid_stays_attr_free(

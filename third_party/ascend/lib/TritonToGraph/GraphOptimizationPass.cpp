@@ -23,9 +23,11 @@
 #include "TritonToGraph/GraphOptimizationContext.h"
 #include "TritonToGraph/GraphOptimizationRule.h"
 #include "TritonToGraph/Passes.h"
+#include "TritonToGraph/ProgramGridSpecialization.h"
 #include "TritonToGraph/ResourceCostModel.h"
 #include "Utils/Utils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
@@ -144,7 +146,7 @@ public:
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<tensor::TensorDialect>();
+    registry.insert<arith::ArithDialect, tensor::TensorDialect>();
   }
 
   void runOnOperation() override;
@@ -247,6 +249,19 @@ void GraphOptimizePass::runOnOperation() {
     return;
   }
 
+  ModuleOp module = getOperation();
+  // The JIT has already placed every exact scalar value in the compiler cache
+  // key.  Materialize compatible integer entry arguments before any analysis
+  // observes program-dependent addresses; all incompatible arguments remain
+  // dynamic and therefore retain the normal fail-closed no-transform path.
+  if (failed(applyProgramMappingScalarSpecialization(module))) {
+    module.emitError()
+        << "graph-optimize received an invalid program-mapping scalar "
+           "specialization";
+    signalPassFailure();
+    return;
+  }
+
   SmallVector<std::unique_ptr<GraphOptimizationRule>> ownedRules;
   populateBuiltinGraphOptimizationRules(options, ownedRules);
 
@@ -275,7 +290,6 @@ void GraphOptimizePass::runOnOperation() {
     enabledRules.push_back(rule.get());
   }
 
-  ModuleOp module = getOperation();
   for (triton::FuncOp function : module.getOps<triton::FuncOp>()) {
     const ResourceSnapshot resources = ResourceSnapshot::fromExplicit(
         options.ubCapacityBytes, options.deviceCoreCount,

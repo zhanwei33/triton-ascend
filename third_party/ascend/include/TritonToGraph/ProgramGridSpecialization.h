@@ -17,6 +17,7 @@
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/SmallVector.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -34,10 +35,29 @@ inline constexpr llvm::StringLiteral kProgramGridSpecializationAttr =
     "hacc.grid_specialization";
 inline constexpr int64_t kProgramGridSpecializationVersion = 1;
 
+// Exact integer JIT arguments that are safe to substitute into a TTIR entry
+// function before program-axis dependence analysis.  The JIT includes this
+// contract in its cache key, so a compiled artifact can never be reused for a
+// different runtime value.  It is consumed by GraphOptimize and never forms
+// part of the launcher ABI.
+inline constexpr llvm::StringLiteral kProgramMappingScalarSpecializationAttr =
+    "hacc.program_mapping_scalar_specialization";
+inline constexpr int64_t kProgramMappingScalarSpecializationVersion = 1;
+
 struct ProgramGridSpecialization {
   int64_t version = kProgramGridSpecializationVersion;
   std::array<int64_t, 3> grid = {1, 1, 1};
   uint32_t ruleMask = 0;
+};
+
+struct ProgramMappingScalarArgument {
+  uint32_t index = 0;
+  int64_t value = 0;
+};
+
+struct ProgramMappingScalarSpecialization {
+  int64_t version = kProgramMappingScalarSpecializationVersion;
+  SmallVector<ProgramMappingScalarArgument> arguments;
 };
 
 // Parse the fixed v1 generic attribute.  The bridge intentionally knows only
@@ -55,6 +75,23 @@ DictionaryAttr serializeProgramGridSpecialization(
 LogicalResult setProgramGridSpecialization(
     ModuleOp module, const ProgramGridSpecialization &specialization);
 void clearProgramGridSpecialization(ModuleOp module);
+
+FailureOr<ProgramMappingScalarSpecialization>
+parseProgramMappingScalarSpecialization(Attribute attribute);
+
+DictionaryAttr serializeProgramMappingScalarSpecialization(
+    MLIRContext *context,
+    const ProgramMappingScalarSpecialization &specialization);
+
+LogicalResult setProgramMappingScalarSpecialization(
+    ModuleOp module, const ProgramMappingScalarSpecialization &specialization);
+void clearProgramMappingScalarSpecialization(ModuleOp module);
+
+// Replace only compatible public-entry integer block arguments with exact
+// constants and then remove every copy of the transient contract.  Incompatible
+// argument indices/types are deliberately left dynamic; program mapping then
+// remains fail-closed through its ordinary dependence analysis.
+LogicalResult applyProgramMappingScalarSpecialization(ModuleOp module);
 
 } // namespace cfg
 } // namespace triton
