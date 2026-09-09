@@ -1451,8 +1451,12 @@ selectMergeSplitLargeCandidate(GraphOptimizationContext &context,
       continue;
     if (emitRemarks)
       emitCandidateRemark(candidate->anchor, candidate->evaluation);
-    if (!candidate->evaluation.accepted ||
-        candidate->evaluation.benefitScore <= 0)
+    // The generic score prices the extra F lane as a live-byte penalty.  It
+    // can therefore be negative even after this MergeSplit-only candidate has
+    // passed the explicit small-grid, full-launch, alias, tail, cleanup, and
+    // final-UB checks.  Its dedicated ordering below is the selection policy;
+    // a positive generic score is not an additional legality requirement.
+    if (!candidate->evaluation.accepted)
       continue;
     if (!selected ||
         isBetterMergeSplitLargeCandidate(*candidate, *selected))
@@ -1840,7 +1844,7 @@ public:
               candidate, headDependence,
               estimatePeakLiveBytes(candidate.function.getOperation()), *before,
               after, &finalLiveBytes));
-      if (!finalEvaluation.accepted || finalEvaluation.benefitScore <= 0 ||
+      if (!finalEvaluation.accepted ||
           finalEvaluation.benefitScore != candidate.evaluation.benefitScore ||
           finalEvaluation.candidate.estimatedPeakLiveBytes !=
               candidate.evaluation.candidate.estimatedPeakLiveBytes)

@@ -1,9 +1,8 @@
-// RUN: triton-opt %s --verify-each -graph-optimize='rule-mask=512 ub-capacity-bytes=1048576 device-core-count=56 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simd_simt_template' -o - | FileCheck %s
+// RUN: triton-opt %s --verify-each -graph-optimize='rule-mask=512 ub-capacity-bytes=1048576 device-core-count=16 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simd_simt_template' -o - | FileCheck %s
 //
-// The F32 candidate is only legal for the MergeSplit-only static small grid:
-// eight token programs times ceil_div(64 heads, 32) gives 16 nonpersistent
-// programs.  It must retain the split reduction on axis zero and publish one
-// IAT grid contract, not a legacy RowCoalescing contract.
+// With a 16-vector-core target, F16 would leave 32 programs and is outside the
+// one-wave small-grid policy.  F32 leaves exactly 16 nonpersistent programs,
+// so this fixture exercises the F32 materializer and its one IAT contract.
 
 // CHECK: hacc.independent_axis_tensorize
 // CHECK: hacc.program_grid_transforms = {{.*}}axis = 1 : i32{{.*}}factor = 32 : i64{{.*}}persistent_coverage = false
