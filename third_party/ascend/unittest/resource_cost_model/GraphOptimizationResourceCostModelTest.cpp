@@ -166,6 +166,40 @@ TEST(GraphOptimizationResourceCostModelTest,
 }
 
 TEST(GraphOptimizationResourceCostModelTest,
+     MergeSplitSubCorePolicyIsNarrowAndDoesNotRelaxDefaultParallelism) {
+  CandidateCost candidate = makeCandidate();
+  candidate.logicalTasksAfter = 8;
+  candidate.actualProgramsAfter = 8;
+
+  // The ordinary min-programs-per-core contract remains 16 on this fixture.
+  EXPECT_EQ(evaluateCandidateCost(knownResources(), candidate).reason,
+            ResourceCostRejectReason::InsufficientParallelism);
+
+  candidate.parallelismPolicy =
+      ParallelismPolicy::MergeSplitSmallGridAllowSubCore;
+  CandidateEvaluation allowed =
+      evaluateCandidateCost(knownResources(), candidate);
+  ASSERT_TRUE(allowed.accepted);
+  EXPECT_EQ(allowed.requiredParallelPrograms, 16u);
+
+  CandidateCost persistent = candidate;
+  persistent.persistent = true;
+  EXPECT_EQ(evaluateCandidateCost(knownResources(), persistent).reason,
+            ResourceCostRejectReason::InvalidCandidate);
+
+  CandidateCost capped = candidate;
+  capped.actualProgramsAfter = 7;
+  EXPECT_EQ(evaluateCandidateCost(knownResources(), capped).reason,
+            ResourceCostRejectReason::InvalidCandidate);
+
+  CandidateCost overCore = candidate;
+  overCore.logicalTasksAfter = 9;
+  overCore.actualProgramsAfter = 9;
+  EXPECT_EQ(evaluateCandidateCost(knownResources(), overCore).reason,
+            ResourceCostRejectReason::InvalidCandidate);
+}
+
+TEST(GraphOptimizationResourceCostModelTest,
      PersistentCandidatesPriceLogicalTasksAndActualProgramsSeparately) {
   CandidateCost candidate = makeCandidate();
   candidate.plan = CandidatePlan{2, 4, 1, "persistent", 0};
@@ -227,6 +261,36 @@ TEST(
   ASSERT_TRUE(factor8Projection);
   EXPECT_EQ(factor8Projection->logicalGrid, (std::array<uint64_t, 3>{8, 8, 1}));
   EXPECT_EQ(factor8Projection->physicalPrograms, 64u);
+
+  const ProgramGridTransform factor16 = {0,
+                                         1,
+                                         16,
+                                         64,
+                                         /*persistentCoverage=*/false,
+                                         /*gridStrideAbiVerified=*/false};
+  auto factor16Projection =
+      projectProgramMappingLaunch(example1, {factor16}, resources);
+  ASSERT_TRUE(factor16Projection);
+  EXPECT_EQ(factor16Projection->logicalGrid,
+            (std::array<uint64_t, 3>{8, 4, 1}));
+  EXPECT_EQ(factor16Projection->physicalPrograms, 32u);
+  EXPECT_FALSE(factor16Projection->persistentCoverage);
+  EXPECT_FALSE(factor16Projection->legacyAutoMap);
+
+  const ProgramGridTransform factor32 = {0,
+                                         1,
+                                         32,
+                                         64,
+                                         /*persistentCoverage=*/false,
+                                         /*gridStrideAbiVerified=*/false};
+  auto factor32Projection =
+      projectProgramMappingLaunch(example1, {factor32}, resources);
+  ASSERT_TRUE(factor32Projection);
+  EXPECT_EQ(factor32Projection->logicalGrid,
+            (std::array<uint64_t, 3>{8, 2, 1}));
+  EXPECT_EQ(factor32Projection->physicalPrograms, 16u);
+  EXPECT_FALSE(factor32Projection->persistentCoverage);
+  EXPECT_FALSE(factor32Projection->legacyAutoMap);
 
   const ProgramGridTransform factor4 = {0,
                                         1,

@@ -574,14 +574,31 @@ cfg::evaluateCandidateCost(const ResourceSnapshot &resources,
       candidate.actualProgramsAfter > candidate.logicalTasksAfter)
     return reject(candidate, ResourceCostRejectReason::InvalidCandidate,
                   *safeBudget, requiredParallelPrograms);
-  // A plan that cannot occupy the required number of vector cores is
-  // unconditionally unprofitable.  Diagnose that primary launch-contract
+  // A plan that cannot occupy the required number of vector cores is normally
+  // unconditionally unprofitable. Diagnose that primary launch-contract
   // failure before UB so a K=128 candidate that is both oversized and only
   // exposes 32 tiles is recorded as insufficient parallelism, rather than
   // obscuring the actionable 32 < 56 rejection behind its secondary UB cost.
-  if (candidate.actualProgramsAfter < requiredParallelPrograms)
-    return reject(candidate, ResourceCostRejectReason::InsufficientParallelism,
-                  *safeBudget, requiredParallelPrograms);
+  //
+  // MergeSplit's large head tile is the deliberately narrow exception. It is
+  // valid only when the transformed nonpersistent grid is completely launched
+  // (no persistent replay and no physical cap) and contains at most one wave
+  // of vector cores. The rule can set this policy only after its structural,
+  // alias, tail, and cleanup checks have established that contract.
+  switch (candidate.parallelismPolicy) {
+  case ParallelismPolicy::DefaultMinProgramsPerCore:
+    if (candidate.actualProgramsAfter < requiredParallelPrograms)
+      return reject(candidate, ResourceCostRejectReason::InsufficientParallelism,
+                    *safeBudget, requiredParallelPrograms);
+    break;
+  case ParallelismPolicy::MergeSplitSmallGridAllowSubCore:
+    if (candidate.persistent ||
+        candidate.actualProgramsAfter != candidate.logicalTasksAfter ||
+        candidate.actualProgramsAfter > resources.deviceCoreCount)
+      return reject(candidate, ResourceCostRejectReason::InvalidCandidate,
+                    *safeBudget, requiredParallelPrograms);
+    break;
+  }
   if (candidate.estimatedPeakLiveBytes > *safeBudget)
     return reject(candidate, ResourceCostRejectReason::UBOverflow, *safeBudget,
                   requiredParallelPrograms);

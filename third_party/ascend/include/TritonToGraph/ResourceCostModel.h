@@ -57,6 +57,17 @@ enum class ResourceCostRejectReason : uint8_t {
 
 const char *getResourceCostRejectReasonName(ResourceCostRejectReason reason);
 
+// The normal policy requires every candidate to expose at least
+// deviceCoreCount * minProgramsPerCore programs.  MergeSplit is the one
+// validated exception: a nonpersistent, fully launched small grid may use
+// fewer programs than cores after its head lanes have been tensorized.  Keep
+// that exception explicit on the candidate instead of relaxing the global
+// resource snapshot or the default policy used by other rules.
+enum class ParallelismPolicy : uint8_t {
+  DefaultMinProgramsPerCore,
+  MergeSplitSmallGridAllowSubCore,
+};
+
 // A per-device snapshot.  A snapshot is intentionally explicit rather than a
 // collection of target-name heuristics: callers must not accidentally apply a
 // 910B default to a different device.  A zero capacity/core count therefore
@@ -125,6 +136,8 @@ struct CandidatePlan {
 // increasing Block Num because it is no longer eligible for legacy auto-map.
 struct CandidateCost {
   CandidatePlan plan;
+  ParallelismPolicy parallelismPolicy =
+      ParallelismPolicy::DefaultMinProgramsPerCore;
   uint64_t logicalTasksBefore = 0;
   uint64_t logicalTasksAfter = 0;
   uint64_t actualProgramsBefore = 0;
