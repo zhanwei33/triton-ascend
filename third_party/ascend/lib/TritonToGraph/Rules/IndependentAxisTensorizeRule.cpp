@@ -1556,12 +1556,13 @@ bool rebuildMergeSplitD192Function(triton::FuncOp function) {
     if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
       auto dense = dyn_cast<DenseElementsAttr>(constant.getValue());
       std::optional<Type> type = getD192TileType(constant.getResult().getType());
-      auto tensor = type ? dyn_cast<RankedTensorType>(*type) : nullptr;
+      RankedTensorType tensor =
+          type ? dyn_cast<RankedTensorType>(*type) : RankedTensorType();
       if (!dense || !dense.isSplat() || !tensor)
         return false;
       SmallVector<Attribute, 1> elements = {dense.getSplatValue<Attribute>()};
       auto replacement = rewriter.create<arith::ConstantOp>(
-          operation->getLoc(), *tensor, DenseElementsAttr::get(*tensor, elements));
+          operation->getLoc(), tensor, DenseElementsAttr::get(tensor, elements));
       if (!mapResults(operation, replacement.getOperation()))
         return false;
       continue;
@@ -1571,11 +1572,12 @@ bool rebuildMergeSplitD192Function(triton::FuncOp function) {
       if (makeRange != *range)
         return false;
       std::optional<Type> type = getD192TileType(makeRange.getType());
-      auto tensor = type ? dyn_cast<RankedTensorType>(*type) : nullptr;
+      RankedTensorType tensor =
+          type ? dyn_cast<RankedTensorType>(*type) : RankedTensorType();
       if (!tensor)
         return false;
       auto replacement = rewriter.create<triton::MakeRangeOp>(
-          operation->getLoc(), *tensor, makeRange.getStart(),
+          operation->getLoc(), tensor, makeRange.getStart(),
           kMergeSplitD192TargetTile);
       if (!mapResults(operation, replacement.getOperation()))
         return false;
@@ -1643,7 +1645,7 @@ bool tryMaterializeMergeSplitD192Tile(ModuleOp module,
       failed(runProgramMappingStructuralCleanup(trial)) ||
       failed(mlir::verify(trial.getOperation())))
     return false;
-  function.getRegion(0).takeBody(trialFunction.getRegion(0));
+  function.getRegion().takeBody(trialFunction.getRegion());
   return true;
 }
 
