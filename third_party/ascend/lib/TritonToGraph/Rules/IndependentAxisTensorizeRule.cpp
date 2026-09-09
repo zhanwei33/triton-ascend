@@ -88,6 +88,14 @@ constexpr std::array<unsigned, 7> kNormPersistentBlockTCandidates = {
 // BLOCK_S=8 and rejects larger unvalidated planes instead of over-tiling.
 constexpr uint64_t kMergeSplitMaxTensorizedPlanes = 16;
 
+// Phase B is deliberately narrower than the large-factor mapping policy: it
+// removes the known padding tail only after the original DSL has materialized
+// the exact ``range(0, 256) < 192`` data-tile form.  Do not turn this into a
+// generic non-power-of-two tile rewrite; the matcher below validates the full
+// local dataflow before changing any tensor type.
+constexpr int64_t kMergeSplitD192SourceTile = 256;
+constexpr int64_t kMergeSplitD192TargetTile = 192;
+
 enum class TensorizeForm : uint8_t {
   MergeSplit,
   NormRope,
@@ -116,6 +124,9 @@ struct IATCandidate {
   // This is set only after the static small-grid checks for MergeSplit F16/F32
   // succeed. It is consumed by CandidateCost, not by any global graph option.
   bool usesMergeSplitSubCorePolicy = false;
+  // Set only when a detached post-IAT sandbox proves that the primary D256
+  // data-tile can be rewritten to its statically masked D192 extent.
+  bool usesMergeSplitD192Tile = false;
   // With both mapping bits enabled a Norm+RoPE IAT candidate is a joint IAT
   // plus PTSM transaction. No launcher-visible IAT-only intermediate is ever
   // committed when that required second half cannot validate.
@@ -363,7 +374,9 @@ buildResourceCandidate(const IATCandidate &candidate,
                                                     : "iat.merge")
           : "iat.norm";
   cost.plan.stableId =
-      (llvm::Twine(stablePrefix) + ".f" + llvm::Twine(candidate.factor)).str();
+      (llvm::Twine(stablePrefix) + ".f" + llvm::Twine(candidate.factor) +
+       (candidate.usesMergeSplitD192Tile ? ".d192" : ""))
+          .str();
   cost.logicalTasksBefore = before.logicalPrograms;
   cost.logicalTasksAfter = after.logicalPrograms;
   cost.actualProgramsBefore = before.physicalPrograms;
@@ -608,6 +621,7 @@ bool sameCandidate(const IATCandidate &lhs, const IATCandidate &rhs) {
          lhs.logicalExtent == rhs.logicalExtent && lhs.factor == rhs.factor &&
          lhs.usesMergeSplitSubCorePolicy ==
              rhs.usesMergeSplitSubCorePolicy &&
+         lhs.usesMergeSplitD192Tile == rhs.usesMergeSplitD192Tile &&
          lhs.requiresPersistentChaining == rhs.requiresPersistentChaining;
 }
 
@@ -1332,6 +1346,307 @@ ModuleOp createProgramMappingSandbox(ModuleOp module, triton::FuncOp function) {
   return sandbox;
 }
 
+bool hasD192SourceTile(Type type) {
+  auto tensor = dyn_cast<RankedTensorType>(type);
+  if (!tensor)
+    return false;
+  return llvm::any_of(tensor.getShape(), [](int64_t extent) {
+    return extent == kMergeSplitD192SourceTile;
+  });
+}
+
+std::optional<Type> getD192TileType(Type originalType) {
+  auto tensor = dyn_cast<RankedTensorType>(originalType);
+  if (!tensor)
+    return originalType;
+
+  SmallVector<int64_t> shape(tensor.getShape().begin(),
+                             tensor.getShape().end());
+  unsigned sourceTileCount = 0;
+  for (int64_t &extent : shape) {
+    if (extent != kMergeSplitD192SourceTile)
+      continue;
+    extent = kMergeSplitD192TargetTile;
+    ++sourceTileCount;
+  }
+  // A rank-two [256, 256] value has no unambiguous D-axis interpretation in
+  // this narrow rule. Keep the rule fail-closed instead of shrinking both.
+  if (sourceTileCount > 1)
+    return std::nullopt;
+  if (sourceTileCount == 0)
+    return originalType;
+  return RankedTensorType::get(shape, tensor.getElementType());
+}
+
+bool isD192Bound(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return false;
+  auto dense = dyn_cast<DenseElementsAttr>(constant.getValue());
+  if (!dense || !dense.isSplat() || !isa<IntegerType>(dense.getElementType()))
+    return false;
+  auto tensor = dyn_cast<RankedTensorType>(value.getType());
+  return tensor && tensor.getRank() == 1 && tensor.getShape().front() ==
+                       kMergeSplitD192SourceTile &&
+         dense.getSplatValue<llvm::APInt>().getSExtValue() ==
+             kMergeSplitD192TargetTile;
+}
+
+std::optional<triton::MakeRangeOp>
+findMergeSplitD192Range(triton::FuncOp function) {
+  std::optional<triton::MakeRangeOp> result;
+  bool ambiguous = false;
+  function.walk([&](triton::MakeRangeOp range) {
+    auto tensor = dyn_cast<RankedTensorType>(range.getType());
+    if (!tensor || tensor.getRank() != 1 ||
+        tensor.getShape().front() != kMergeSplitD192SourceTile ||
+        range.getStart() != 0 || range.getEnd() != kMergeSplitD192SourceTile)
+      return;
+
+    unsigned boundMasks = 0;
+    for (Operation *user : range.getResult().getUsers()) {
+      auto compare = dyn_cast<arith::CmpIOp>(user);
+      if (!compare || compare.getPredicate() != arith::CmpIPredicate::slt ||
+          compare.getLhs() != range.getResult() ||
+          !isD192Bound(compare.getRhs()))
+        continue;
+      ++boundMasks;
+    }
+    if (boundMasks != 1)
+      return;
+    if (result)
+      ambiguous = true;
+    else
+      result = range;
+  });
+  return ambiguous ? std::nullopt : result;
+}
+
+bool operationTouchesD192SourceTile(Operation *operation) {
+  for (Value operand : operation->getOperands())
+    if (hasD192SourceTile(operand.getType()))
+      return true;
+  for (Value result : operation->getResults())
+    if (hasD192SourceTile(result.getType()))
+      return true;
+  return false;
+}
+
+// Rebuild only the closed D256 dataflow rooted at the exact range/mask pair.
+// This is intentionally not a generic shape substitution: any unrelated D256
+// tensor, non-splat constant, control-flow edge, or multi-D256 value rejects
+// the Phase-B tile while leaving the already-valid Phase-A IAT candidate intact.
+bool rebuildMergeSplitD192Function(triton::FuncOp function) {
+  if (!hasSupportedControlFlow(function))
+    return false;
+  std::optional<triton::MakeRangeOp> range = findMergeSplitD192Range(function);
+  if (!range)
+    return false;
+
+  Block &block = function.getBody().front();
+  SmallVector<Operation *> originals;
+  originals.reserve(block.getOperations().size());
+  for (Operation &operation : block)
+    originals.push_back(&operation);
+
+  DenseSet<Operation *> tileClosure;
+  SmallVector<Operation *> worklist;
+  auto addToClosure = [&](Operation *operation) {
+    if (!operation || operation->getBlock() != &block ||
+        !tileClosure.insert(operation).second)
+      return;
+    worklist.push_back(operation);
+  };
+  addToClosure(range->getOperation());
+  for (size_t index = 0; index < worklist.size(); ++index) {
+    Operation *operation = worklist[index];
+    for (Value result : operation->getResults())
+      for (Operation *user : result.getUsers())
+        addToClosure(user);
+    for (Value operand : operation->getOperands()) {
+      if (!hasD192SourceTile(operand.getType()))
+        continue;
+      Operation *definingOperation = operand.getDefiningOp();
+      if (!definingOperation || definingOperation->getBlock() != &block)
+        return false;
+      addToClosure(definingOperation);
+    }
+  }
+
+  bool hasTileLoad = false;
+  bool hasTileStore = false;
+  bool hasTileReduce = false;
+  for (Operation *operation : originals) {
+    if (operationTouchesD192SourceTile(operation) &&
+        !tileClosure.contains(operation))
+      return false;
+    if (!tileClosure.contains(operation))
+      continue;
+    hasTileLoad |= isa<triton::LoadOp>(operation);
+    hasTileStore |= isa<triton::StoreOp>(operation);
+    hasTileReduce |= isa<triton::ReduceOp>(operation);
+    if (operation->getNumSuccessors() != 0 ||
+        (operation->getNumRegions() != 0 &&
+         !isa<triton::ReduceOp>(operation)))
+      return false;
+  }
+  if (!hasTileLoad || !hasTileStore || !hasTileReduce)
+    return false;
+
+  IRRewriter rewriter(function.getContext());
+  DenseMap<Value, Value> values;
+  auto mapValue = [&](Value value) -> std::optional<Value> {
+    if (auto it = values.find(value); it != values.end())
+      return it->second;
+    if (isa<BlockArgument>(value))
+      return value;
+    return std::nullopt;
+  };
+  auto mapResults = [&](Operation *original, Operation *replacement) -> bool {
+    if (!replacement || original->getNumResults() !=
+                            replacement->getNumResults())
+      return false;
+    for (auto [oldResult, newResult] :
+         llvm::zip(original->getResults(), replacement->getResults()))
+      values[oldResult] = newResult;
+    return true;
+  };
+  auto collectMappedOperands =
+      [&](Operation *operation,
+          SmallVectorImpl<Value> &operands) -> bool {
+    operands.clear();
+    operands.reserve(operation->getNumOperands());
+    for (Value operand : operation->getOperands()) {
+      std::optional<Value> mapped = mapValue(operand);
+      if (!mapped)
+        return false;
+      operands.push_back(*mapped);
+    }
+    return true;
+  };
+  auto collectD192ResultTypes =
+      [&](Operation *operation,
+          SmallVectorImpl<Type> &resultTypes) -> bool {
+    resultTypes.clear();
+    resultTypes.reserve(operation->getNumResults());
+    for (Value result : operation->getResults()) {
+      std::optional<Type> type = getD192TileType(result.getType());
+      if (!type)
+        return false;
+      resultTypes.push_back(*type);
+    }
+    return true;
+  };
+
+  for (Operation *operation : originals) {
+    rewriter.setInsertionPoint(operation);
+    if (!tileClosure.contains(operation)) {
+      IRMapping mapping;
+      for (Value operand : operation->getOperands()) {
+        std::optional<Value> mapped = mapValue(operand);
+        if (!mapped)
+          return false;
+        mapping.map(operand, *mapped);
+      }
+      if (!mapResults(operation, rewriter.clone(*operation, mapping)))
+        return false;
+      continue;
+    }
+
+    if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
+      auto dense = dyn_cast<DenseElementsAttr>(constant.getValue());
+      std::optional<Type> type = getD192TileType(constant.getResult().getType());
+      auto tensor = type ? dyn_cast<RankedTensorType>(*type) : nullptr;
+      if (!dense || !dense.isSplat() || !tensor)
+        return false;
+      SmallVector<Attribute, 1> elements = {dense.getSplatValue<Attribute>()};
+      auto replacement = rewriter.create<arith::ConstantOp>(
+          operation->getLoc(), *tensor, DenseElementsAttr::get(*tensor, elements));
+      if (!mapResults(operation, replacement.getOperation()))
+        return false;
+      continue;
+    }
+
+    if (auto makeRange = dyn_cast<triton::MakeRangeOp>(operation)) {
+      if (makeRange != *range)
+        return false;
+      std::optional<Type> type = getD192TileType(makeRange.getType());
+      auto tensor = type ? dyn_cast<RankedTensorType>(*type) : nullptr;
+      if (!tensor)
+        return false;
+      auto replacement = rewriter.create<triton::MakeRangeOp>(
+          operation->getLoc(), *tensor, makeRange.getStart(),
+          kMergeSplitD192TargetTile);
+      if (!mapResults(operation, replacement.getOperation()))
+        return false;
+      continue;
+    }
+
+    SmallVector<Value> operands;
+    SmallVector<Type> resultTypes;
+    if (!collectMappedOperands(operation, operands) ||
+        !collectD192ResultTypes(operation, resultTypes))
+      return false;
+
+    if (auto reduce = dyn_cast<triton::ReduceOp>(operation)) {
+      auto replacement = rewriter.create<triton::ReduceOp>(
+          operation->getLoc(), operands, reduce.getAxis());
+      rewriter.cloneRegionBefore(reduce.getCombineOp(),
+                                 replacement.getCombineOp(),
+                                 replacement.getCombineOp().end());
+      for (NamedAttribute attribute : operation->getAttrs())
+        if (!replacement->hasAttr(attribute.getName()))
+          replacement->setAttr(attribute.getName(), attribute.getValue());
+      if (replacement.getResults().size() != resultTypes.size())
+        return false;
+      for (auto [result, expected] :
+           llvm::zip(replacement.getResults(), resultTypes))
+        if (result.getType() != expected)
+          return false;
+      if (!mapResults(operation, replacement.getOperation()))
+        return false;
+      continue;
+    }
+
+    if (operation->getNumRegions() != 0 || operation->getNumSuccessors() != 0)
+      return false;
+    OperationState state(operation->getLoc(), operation->getName());
+    state.addOperands(operands);
+    state.addTypes(resultTypes);
+    state.addAttributes(operation->getAttrs());
+    if (!mapResults(operation, rewriter.create(state)))
+      return false;
+  }
+
+  for (Operation *operation : llvm::reverse(originals)) {
+    operation->dropAllUses();
+    rewriter.eraseOp(operation);
+  }
+  return succeeded(mlir::verify(function.getOperation()));
+}
+
+bool tryMaterializeMergeSplitD192Tile(ModuleOp module,
+                                      triton::FuncOp function,
+                                      const IATCandidate &candidate) {
+  if (!module || candidate.form != TensorizeForm::MergeSplit ||
+      !candidate.usesMergeSplitSubCorePolicy ||
+      !isMergeSplitLargeFactor(candidate.factor) ||
+      candidate.dimExtent != kMergeSplitD192SourceTile)
+    return false;
+
+  // Phase B is an independent transaction inside the already detached IAT
+  // sandbox. Its rejection must retain the valid D256 Phase-A body rather than
+  // rejecting the complete mapping candidate.
+  ModuleOp trial = createProgramMappingSandbox(module, function);
+  auto trialFunction = dyn_cast<triton::FuncOp>(&trial.getBody()->front());
+  if (!trialFunction || !rebuildMergeSplitD192Function(trialFunction) ||
+      failed(runProgramMappingStructuralCleanup(trial)) ||
+      failed(mlir::verify(trial.getOperation())))
+    return false;
+  function.getRegion(0).takeBody(trialFunction.getRegion(0));
+  return true;
+}
+
 bool hasExpectedMergeSplitLargeLaunch(
     ModuleOp module, triton::FuncOp function, const IATCandidate &candidate,
     const ResourceSnapshot &resources,
@@ -1405,6 +1720,11 @@ evaluateMergeSplitLargeCandidate(GraphOptimizationContext &context,
       failed(runProgramMappingStructuralCleanup(sandbox)) ||
       failed(mlir::verify(sandbox.getOperation())))
     return std::nullopt;
+
+  // D192 is a separate, fail-closed optimization transaction. A mismatch
+  // leaves this candidate as the already-validated D256 Phase-A plan.
+  iat->usesMergeSplitD192Tile =
+      tryMaterializeMergeSplitD192Tile(sandbox, clonedFunction, *iat);
 
   ProgramMappingLaunchProjection after;
   if (!hasExpectedMergeSplitLargeLaunch(sandbox, clonedFunction, *iat,
@@ -1822,6 +2142,10 @@ public:
     if (candidate.usesMergeSplitSubCorePolicy) {
       if (failed(runProgramMappingStructuralCleanup(sandbox)) ||
           failed(mlir::verify(sandbox.getOperation())))
+        return failure();
+      if (candidate.usesMergeSplitD192Tile &&
+          !tryMaterializeMergeSplitD192Tile(sandbox, clonedFunction,
+                                            candidate))
         return failure();
       std::optional<ProgramGridSpecialization> specialization =
           getGridSpecialization(candidate.function);
