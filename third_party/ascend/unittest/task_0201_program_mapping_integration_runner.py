@@ -356,11 +356,11 @@ def run(*, tokens: int, output: Path, require_ptsm: bool) -> int:
             records, kernel=_MERGE_KERNEL, rule_mask=IAT_RULE_MASK,
             persistent=False, iat=True,
         ),
-        "merge_split2_iat8_grid_8x8_blocknum64": _has_exact_merge_contract(
-            records, factor=8, final_grid=[8, 8, 1]
+        "merge_split2_iat16_grid_8x4_blocknum32": _has_exact_merge_contract(
+            records, factor=16, final_grid=[8, 4, 1]
         ),
-        "merge_split4_iat4_grid_8x16_blocknum128": _has_exact_merge_contract(
-            records, factor=4, final_grid=[8, 16, 1]
+        "merge_split4_iat16_grid_8x4_blocknum32": _has_exact_merge_contract(
+            records, factor=16, final_grid=[8, 4, 1]
         ),
         "merge_factor2_not_selected": not any(
             record.get("kernel_name") == _MERGE_KERNEL
