@@ -268,8 +268,14 @@ constexpr GraphOptimizationRuleMask kFixedDefaultOffGraphOptimizationRuleMask =
     getGraphOptimizationRuleMask(
         GraphOptimizationRuleId::ContiguousBlockAccessFormation);
 
+constexpr GraphOptimizationRuleMask kDefaultProgramMappingRuleMask =
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::IndependentAxisTensorize) |
+    getGraphOptimizationRuleMask(
+        GraphOptimizationRuleId::PersistentTaskStripMining);
+
 constexpr GraphOptimizationRuleMask kDefaultGraphOptimizationRuleMask =
-    kLegacyGraphOptimizationRuleMask;
+    kLegacyGraphOptimizationRuleMask | kDefaultProgramMappingRuleMask;
 
 // Kept for source compatibility with callers that used the old name.  Unlike
 // the default, this denotes every currently known identity.
@@ -279,8 +285,16 @@ constexpr GraphOptimizationRuleMask kAllGraphOptimizationRuleMask =
 static_assert(kLegacyGraphOptimizationRuleMask == 511,
               "legacy graph optimization rule mask is an ABI contract");
 static_assert(kDefaultGraphOptimizationRuleMask ==
-                  kLegacyGraphOptimizationRuleMask,
-              "stage-00 rules must remain disabled by default");
+                  (kLegacyGraphOptimizationRuleMask |
+                   getGraphOptimizationRuleMask(
+                       GraphOptimizationRuleId::IndependentAxisTensorize) |
+                   getGraphOptimizationRuleMask(
+                       GraphOptimizationRuleId::PersistentTaskStripMining)),
+              "IAT and PTSM must be enabled by default");
+static_assert((kDefaultGraphOptimizationRuleMask &
+               getGraphOptimizationRuleMask(
+                   GraphOptimizationRuleId::StaticProgramAxisFusion)) == 0,
+              "SPAF must remain explicit opt-in");
 static_assert(kKnownGraphOptimizationRuleMask ==
                   (kDefaultEligibleGraphOptimizationRuleMask |
                    kFixedDefaultOffGraphOptimizationRuleMask),

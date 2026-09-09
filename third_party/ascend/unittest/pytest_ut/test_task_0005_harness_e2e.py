@@ -100,7 +100,7 @@ def test_logits_independent_runner_freezes_shape_and_oracle():
     os.environ.get("TASK0005_ENABLE_GRID_E2E") != "1",
     reason="set TASK0005_ENABLE_GRID_E2E=1 to run the original-wrapper grid contract",
 )
-def test_unchanged_dsl_grid_specialization_default_off_contract():
+def test_unchanged_dsl_grid_specialization_explicit_legacy_opt_out_contract():
     report = run_unchanged_dsl_grid_baseline()
     assert report["passed"], report
     assert report["mode"]["effective_rule_mask"] == 511

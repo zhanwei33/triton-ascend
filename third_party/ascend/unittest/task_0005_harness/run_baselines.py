@@ -427,7 +427,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def run_grid_observation(args: argparse.Namespace) -> int:
-    """Emit the task_0002-v2-ready unchanged-DSL default-off observation."""
+    """Emit the explicit legacy-opt-out unchanged-DSL observation."""
 
     if not npu_available():
         raise RuntimeError("NPU unavailable; grid observation cannot be claimed")
@@ -636,7 +636,7 @@ def parse_args() -> argparse.Namespace:
     _common_run_arguments(run_parser)
     grid_parser = subparsers.add_parser(
         "grid-observation",
-        help="run original wrappers across raw grids and emit the default-off contract",
+        help="run original wrappers across raw grids and emit the explicit legacy-opt-out contract",
     )
     grid_parser.add_argument("--artifact-root", type=Path, required=True)
     grid_parser.add_argument("--label")

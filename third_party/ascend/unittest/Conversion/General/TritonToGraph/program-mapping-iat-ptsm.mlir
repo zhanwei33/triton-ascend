@@ -1,4 +1,4 @@
-// RUN: triton-opt %s --verify-each -graph-optimize='rule-mask=2560 ub-capacity-bytes=1048576 device-core-count=1 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simd_simt_template' -o - | FileCheck %s
+// RUN: triton-opt %s --verify-each -graph-optimize='ub-capacity-bytes=1048576 device-core-count=1 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simd_simt_template' -o - | FileCheck %s
 //
 // IAT first tensorizes the independent head axis. PTSM must then rediscover
 // the token axis in a fresh epoch even though the pointer operands now pass

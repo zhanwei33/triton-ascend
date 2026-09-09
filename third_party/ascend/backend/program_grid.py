@@ -56,14 +56,19 @@ PROGRAM_MAPPING_SCALAR_SPECIALIZATION_LEGACY_VERSION = 1
 PROGRAM_MAPPING_SCALAR_SPECIALIZATION_VERSION = 2
 
 # These values are owned by the append-only GraphOptimize registry (task_0001).
-# Keep the bridge's trigger set explicit: unrelated future rules must not make
-# a legacy JIT launch evaluate its grid before cache lookup.
+# Only the production-approved IAT/PTSM pair resolves a JIT grid by default;
+# SPAF and unrelated future rules remain explicit so they cannot silently
+# change cache-key construction or callable-grid evaluation.
 INDEPENDENT_AXIS_TENSORIZE_RULE_BIT = 1 << 9
 STATIC_PROGRAM_AXIS_FUSION_RULE_BIT = 1 << 10
 PERSISTENT_TASK_STRIP_MINING_RULE_BIT = 1 << 11
 PROGRAM_MAPPING_RULE_MASK = (
     INDEPENDENT_AXIS_TENSORIZE_RULE_BIT
     | STATIC_PROGRAM_AXIS_FUSION_RULE_BIT
+    | PERSISTENT_TASK_STRIP_MINING_RULE_BIT
+)
+DEFAULT_PROGRAM_MAPPING_RULE_MASK = (
+    INDEPENDENT_AXIS_TENSORIZE_RULE_BIT
     | PERSISTENT_TASK_STRIP_MINING_RULE_BIT
 )
 
@@ -114,12 +119,11 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
 
 
 def normalize_program_mapping_rule_mask(raw: Any) -> int:
-    """Validate the explicit opt-in bits which require original grid state.
+    """Validate the narrow mapping selector which requires original grid state.
 
-    This is deliberately not the legacy GraphOptimize rule mask.  The legacy
-    mask remains backend-managed (and default-off for these bits); exposing a
-    separate narrow option prevents an old ``graph_optimize_rule_mask`` value
-    from silently changing when JIT evaluates callable grids.
+    It remains separate from the legacy GraphOptimize rule mask, so callers
+    can explicitly disable (``0``) or narrow a default IAT/PTSM launch without
+    accidentally exposing unrelated graph-rule identities.
     """
     mask = _integer(raw, "program_mapping_rule_mask", minimum=0)
     unknown = mask & ~PROGRAM_MAPPING_RULE_MASK

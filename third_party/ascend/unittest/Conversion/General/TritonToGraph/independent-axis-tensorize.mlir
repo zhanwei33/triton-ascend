@@ -1,4 +1,4 @@
-// RUN: triton-opt --split-input-file %s --verify-each -graph-optimize='rule-mask=512 ub-capacity-bytes=1048576 device-core-count=1 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simd_simt_template' -o - | FileCheck %s
+// RUN: triton-opt --split-input-file %s --verify-each -graph-optimize='ub-capacity-bytes=1048576 device-core-count=1 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simd_simt_template' -o - | FileCheck %s
 //
 // This fixture uses the same direct two-PID / affine-pointer form as the
 // unchanged-DSL kernels.  It intentionally keeps the tensors small so the

@@ -9,22 +9,23 @@
 // RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=32768' -o - | FileCheck %s --check-prefix=NOOP
 // RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=65024' -o - | FileCheck %s --check-prefix=NOOP
 // RUN: triton-opt --verify-each %s -graph-optimize='rule-mask=65535' -o - | FileCheck %s --check-prefix=NOOP
-// RUN: triton-opt --debug-only=graph-optimize --verify-each %s -graph-optimize -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFAULT-OFF --allow-empty
+// RUN: triton-opt --debug-only=graph-optimize --verify-each %s -graph-optimize -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFAULT-NO-SPAF --allow-empty
 // RUN: not triton-opt --verify-each %s -graph-optimize='rule-mask=65536' -o - 2>&1 | FileCheck %s --check-prefix=UNKNOWN
 // RUN: not triton-opt --verify-each %s -graph-optimize='rule-mask=4294967296' -o - 2>&1 | FileCheck %s --check-prefix=OUT-OF-RANGE
 
 // Every reserved rule must be a stable no-op until its matcher/materializer
-// implementation lands. The commands above also prove that every new bit is
-// independently accepted, while 0 still disables all native graph rules.
+// implementation lands. Dedicated IAT/PTSM fixtures exercise their default
+// materialization; this no-op fixture only checks that SPAF and the fixed
+// reservations remain absent from the default registration surface. The
+// commands above also prove that every new bit is independently accepted,
+// while 0 still disables all native graph rules.
 // NOOP-LABEL: tt.func @registry_noop(
 // NOOP: tt.return
-// DEFAULT-OFF-NOT: IndependentAxisTensorizeRule
-// DEFAULT-OFF-NOT: StaticProgramAxisFusionRule
-// DEFAULT-OFF-NOT: PersistentTaskStripMiningRule
-// DEFAULT-OFF-NOT: ResidentLoadForwardingRule
-// DEFAULT-OFF-NOT: IntermediatePrecisionBoundaryElisionRule
-// DEFAULT-OFF-NOT: StoreCoveragePlanningRule
-// DEFAULT-OFF-NOT: ContiguousBlockAccessFormationRule
+// DEFAULT-NO-SPAF-NOT: StaticProgramAxisFusionRule
+// DEFAULT-NO-SPAF-NOT: ResidentLoadForwardingRule
+// DEFAULT-NO-SPAF-NOT: IntermediatePrecisionBoundaryElisionRule
+// DEFAULT-NO-SPAF-NOT: StoreCoveragePlanningRule
+// DEFAULT-NO-SPAF-NOT: ContiguousBlockAccessFormationRule
 tt.func @registry_noop(%value: i32) -> i32 {
   tt.return %value : i32
 }

@@ -75,10 +75,17 @@ def test_primary_contract_is_template_simd_not_explicit_simt_only():
     assert "simt_only" not in COMPILE_MODE
 
 
-def test_logits_runner_compile_options_keep_legacy_default_and_allow_spaf():
+def test_logits_runner_compile_options_use_backend_default_and_allow_opt_out_or_spaf():
     assert _compile_kwargs(True) == {
         "compile_mode": COMPILE_MODE,
         "enable_graph_optimize": True,
+    }
+    assert _compile_kwargs(
+        True, program_mapping_rule_mask=0
+    ) == {
+        "compile_mode": COMPILE_MODE,
+        "enable_graph_optimize": True,
+        "program_mapping_rule_mask": 0,
     }
     assert _compile_kwargs(
         True, program_mapping_rule_mask=1024

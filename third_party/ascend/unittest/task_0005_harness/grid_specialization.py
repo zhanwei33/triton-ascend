@@ -42,9 +42,9 @@ from .runtime import make_logits_inputs, make_merge_inputs, make_norm_rope_input
 
 GRID_SPECIALIZATION_SCHEMA_VERSION = 1
 
-# These values are owned by task_0001's append-only registry.  task_0005
-# freezes them here so the harness can prove that the default legacy mask does
-# not accidentally opt into a grid-specialized path before task_0002 v2.
+# These values are owned by task_0001's append-only registry.  task_0005 keeps
+# the legacy mask as an *explicit opt-out baseline* so it can continue to
+# verify compatibility after IAT/PTSM become the production default.
 GRID_SPECIALIZATION_RULE_BITS = {
     "IndependentAxisTensorizeRule": 512,
     "StaticProgramAxisFusionRule": 1024,
@@ -806,7 +806,7 @@ def _grid_tuple(event: Mapping[str, Any], field: str) -> tuple[int, int, int] | 
 
 
 def assert_grid_specialization_off(report: Mapping[str, Any]) -> None:
-    """Validate the current default-off baseline without guessing future behavior."""
+    """Validate an explicit legacy opt-out baseline."""
 
     mode = report.get("mode", {})
     bits = mode.get("bits", {}) if isinstance(mode, Mapping) else {}

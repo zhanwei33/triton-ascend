@@ -71,6 +71,7 @@ from triton.backends.ascend.utils import (
 )
 from triton.backends.ascend.driver import (NPUUtils)
 from triton.backends.ascend.program_grid import (
+    DEFAULT_PROGRAM_MAPPING_RULE_MASK,
     PROGRAM_MAPPING_SCALAR_SPECIALIZATION_ATTR,
     PROGRAM_GRID_SPECIALIZATION_ATTR,
     PROGRAM_GRID_SPECIALIZATION_VERSION,
@@ -485,18 +486,21 @@ def _graph_optimize_device_core_count() -> int:
 
 
 def _graph_optimize_kwargs(opt):
-    """Keep legacy graph optimization byte-for-byte unchanged by default."""
+    """Build graph optimization options for the native and mapping defaults."""
     kwargs = {
         "ub_capacity_bytes": graph_ub_budget_bytes_for_arch(opt.target_arch),
         "compile_mode": opt.compile_mode,
     }
-    mapping_mask = normalize_program_mapping_rule_mask(
-        getattr(opt, "program_mapping_rule_mask", 0))
+    raw_mapping_mask = getattr(opt, "program_mapping_rule_mask", None)
+    mapping_mask = (None if raw_mapping_mask is None else
+                    normalize_program_mapping_rule_mask(raw_mapping_mask))
+    if mapping_mask is not None:
+        # Keep the native graph bundle enabled while adding the approved
+        # program-mapping rules.  The mapping selector stays separate from
+        # this complete pass mask because the JIT grid contract only records
+        # the rules which consume original launch extents.
+        kwargs["rule_mask"] = 511 | mapping_mask
     if mapping_mask:
-        # Mapping bits have a distinct enablement boundary from the legacy
-        # graph bundle.  Forward the exact mask so RowCoalescing cannot
-        # compete with a program-grid transform through the legacy mask.
-        kwargs["rule_mask"] = mapping_mask
         kwargs["device_core_count"] = _graph_optimize_device_core_count()
         kwargs["min_programs_per_core"] = 1
         kwargs["ub_safety_percent"] = 80
@@ -1377,10 +1381,9 @@ class NPUOptions:
     # Backend-only construction input.  AscendBackend.parse_options injects
     # GPUTarget.arch and never forwards a user-supplied compile option.
     arch: InitVar[str] = ""
-    # Explicit opt-in bridge trigger.  Both are InitVars so a legacy launch
-    # with all new bits closed retains the exact pre-bridge options.__dict__
-    # (and therefore the exact legacy JIT/compiler cache identity).
-    program_mapping_rule_mask: InitVar[int] = 0
+    # ``None`` selects the production IAT/PTSM default.  Passing ``0`` is an
+    # explicit opt-out and keeps the grid-before-cache bridge closed.
+    program_mapping_rule_mask: InitVar[Optional[int]] = None
     program_grid_specialization: InitVar[Any] = None
     program_mapping_scalar_specialization: InitVar[Any] = None
     # This becomes compiler metadata, so its name must also be valid for the
@@ -1497,6 +1500,10 @@ class NPUOptions:
             isinstance(arch, str) and arch.startswith(("Ascend910_95", "Ascend950")),
         )
         try:
+            if program_mapping_rule_mask is None:
+                program_mapping_rule_mask = (
+                    DEFAULT_PROGRAM_MAPPING_RULE_MASK
+                    if self.enable_graph_optimize else 0)
             normalized_mapping_rule_mask = normalize_program_mapping_rule_mask(
                 program_mapping_rule_mask)
             normalized_specialization = (
@@ -1528,12 +1535,14 @@ class NPUOptions:
                 raise ValueError(
                     "program_mapping_scalar_specialization requires "
                     "program_grid_specialization")
+        # Always materialize the resolved selector.  This makes the default
+        # and an explicit ``0`` unambiguous to subsequent pass construction
+        # and keeps the cache contract aligned with the pre-cache JIT hook.
+        object.__setattr__(self, "program_mapping_rule_mask",
+                           normalized_mapping_rule_mask)
         if normalized_mapping_rule_mask:
-            object.__setattr__(self, "program_mapping_rule_mask",
-                               normalized_mapping_rule_mask)
             # The physical-UB mapping model is an implementation/cache schema,
-            # not a public knob.  Materialize it only for enabled mapping so
-            # legacy no-bit option dictionaries and hashes remain unchanged.
+            # not a public knob.  Materialize it only for enabled mapping.
             object.__setattr__(self,
                                "program_mapping_resource_model_schema_version",
                                2)
@@ -1776,16 +1785,21 @@ class AscendBackend(BaseBackend):
         return options
 
     def prepare_program_grid_specialization(self, grid, bound_args, raw_options):
-        """Resolve an enabled JIT grid before cache lookup, or fail closed.
+        """Resolve a default-enabled JIT grid before cache lookup.
 
-        The core JIT calls this optional backend hook only after it has bound
-        arguments but before it computes its cache key.  Returning ``None``
-        preserves the legacy ordering and key byte-for-byte for all-disabled
-        program-mapping rules.
+        An explicit ``program_mapping_rule_mask=0`` or
+        ``enable_graph_optimize=False`` keeps the bridge closed.  All other
+        launches use the approved IAT/PTSM selector and cache the exact
+        original grid before GraphOptimize sees it.
         """
         try:
-            rule_mask = normalize_program_mapping_rule_mask(
-                raw_options.get("program_mapping_rule_mask", 0))
+            if "program_mapping_rule_mask" in raw_options:
+                rule_mask = normalize_program_mapping_rule_mask(
+                    raw_options["program_mapping_rule_mask"])
+            elif raw_options.get("enable_graph_optimize", True):
+                rule_mask = DEFAULT_PROGRAM_MAPPING_RULE_MASK
+            else:
+                rule_mask = 0
         except ProgramGridContractError as error:
             raise RuntimeError(f"invalid program_mapping_rule_mask: {error}") from error
         if not program_grid_specialization_enabled(rule_mask):
@@ -1803,7 +1817,10 @@ class AscendBackend(BaseBackend):
             specialization = make_program_grid_specialization(original_grid, rule_mask)
         except ProgramGridContractError as error:
             raise RuntimeError(f"cannot specialize program grid before cache lookup: {error}") from error
-        return original_grid, {"program_grid_specialization": specialization}
+        return original_grid, {
+            "program_mapping_rule_mask": rule_mask,
+            "program_grid_specialization": specialization,
+        }
 
     def prepare_program_mapping_specialization(self, grid, bound_args,
                                                raw_options, params):

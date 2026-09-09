@@ -1,5 +1,5 @@
-// RUN: triton-opt --split-input-file %s --verify-each -graph-optimize='rule-mask=2048 ub-capacity-bytes=1048576 device-core-count=1 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simd_simt_template' -o - | FileCheck %s
-// RUN: triton-opt --split-input-file %s --verify-each -graph-optimize='rule-mask=2048 ub-capacity-bytes=1048576 device-core-count=1 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simt_only' -o - | FileCheck %s --check-prefix=SIMT
+// RUN: triton-opt --split-input-file %s --verify-each -graph-optimize='ub-capacity-bytes=1048576 device-core-count=1 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simd_simt_template' -o - | FileCheck %s
+// RUN: triton-opt --split-input-file %s --verify-each -graph-optimize='ub-capacity-bytes=1048576 device-core-count=1 min-programs-per-core=1 ub-safety-percent=80 compile-mode=simt_only' -o - | FileCheck %s --check-prefix=SIMT
 //
 // PTSM owns the token (x) axis.  The input/output pointers are token-derived,
 // while the weight load is invariant and must stay outside the strip-mined

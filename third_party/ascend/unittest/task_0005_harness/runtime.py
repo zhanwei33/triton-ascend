@@ -148,13 +148,13 @@ def make_logits_inputs(
 
 
 def _compile_kwargs(
-    graph_optimize: bool, *, program_mapping_rule_mask: int = 0
+    graph_optimize: bool, *, program_mapping_rule_mask: int | None = None
 ) -> dict[str, Any]:
     kwargs = {
         "compile_mode": COMPILE_MODE,
         "enable_graph_optimize": graph_optimize,
     }
-    if program_mapping_rule_mask:
+    if program_mapping_rule_mask is not None:
         kwargs["program_mapping_rule_mask"] = program_mapping_rule_mask
     return kwargs
 
@@ -164,7 +164,7 @@ def launch_merge_split(
     case: MergeCase,
     *,
     graph_optimize: bool,
-    program_mapping_rule_mask: int = 0,
+    program_mapping_rule_mask: int | None = None,
 ) -> LaunchResult:
     module = load_fixture("merge_split")
     partial_out = inputs["partial_out"]
@@ -222,7 +222,7 @@ def _launch_norm_specialization(
     subtract_mean: bool,
     weight_bias: float,
     graph_optimize: bool,
-    program_mapping_rule_mask: int,
+    program_mapping_rule_mask: int | None,
 ) -> tuple[int, ...]:
     grid = (case.tokens, num_heads)
     module._indexer_norm_rope_kernel[grid](
@@ -257,8 +257,8 @@ def launch_norm_rope(
     case: NormRopeCase,
     *,
     graph_optimize: bool,
-    q_program_mapping_rule_mask: int = 0,
-    k_program_mapping_rule_mask: int = 0,
+    q_program_mapping_rule_mask: int | None = None,
+    k_program_mapping_rule_mask: int | None = None,
 ) -> LaunchResult:
     module = load_fixture("norm_rope")
     q_out = torch.empty_like(inputs["q"])
@@ -310,7 +310,7 @@ def launch_indexer_logits(
     case: LogitsCase = LOGITS_PRIMARY,
     *,
     graph_optimize: bool,
-    program_mapping_rule_mask: int = 0,
+    program_mapping_rule_mask: int | None = None,
 ) -> LaunchResult:
     module = load_fixture("indexer_logits")
     q = module.round_activations_e4m3(inputs["q"])

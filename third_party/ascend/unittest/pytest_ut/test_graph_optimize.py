@@ -368,7 +368,7 @@ def test_default_generic_graph_mask_excludes_legacy_memory_compatibility(tmp_pat
     The generic GraphOptimizePass runs at early TTIR.  Row, Axis, Chunk, and
     StridedLoadStoreRewrite retain their original compatibility-pass slots, so
     this strided memory shape must not acquire either coalescing metadata or
-    an indirect-memory op merely because the default mask is 511.
+    an indirect-memory op merely because the default mask is 3071.
     """
     options = NPUOptions(arch="Ascend910_95", enable_graph_optimize=True)
     default_result = make_ttir(
@@ -387,8 +387,7 @@ def test_default_generic_graph_mask_excludes_legacy_memory_compatibility(tmp_pat
 
 
 def test_default_graph_mask_preserves_native_graph_rule_bundle(monkeypatch, tmp_path):
-    """Default 511 retains native 1|2|4 behavior, including StoreCoalescing,
-    without running legacy rules.
+    """Default 3071 retains native 1|2|4 behavior, including StoreCoalescing.
 
     This input has the LoadStoreTranspose (bit 1) structural signature.  The
     default all-identity mask must retain that native rewrite.  Together with

@@ -571,12 +571,15 @@ def _run_make_ttir_with_recorded_graph_options(compiler, monkeypatch, options):
     return events, graph_calls
 
 
-def test_make_ttir_passes_canonical_compile_mode_to_graph_optimize(compiler_module, monkeypatch):
+def test_make_ttir_explicit_program_mapping_opt_out_keeps_canonical_compile_mode(
+    compiler_module, monkeypatch,
+):
     options = SimpleNamespace(
         enable_graph_optimize=True,
         target_arch="Ascend910B1",
         compile_mode="simt_only",
         debug=False,
+        program_mapping_rule_mask=0,
     )
 
     events, graph_calls = _run_make_ttir_with_recorded_graph_options(compiler_module, monkeypatch, options)
@@ -584,20 +587,21 @@ def test_make_ttir_passes_canonical_compile_mode_to_graph_optimize(compiler_modu
     assert graph_calls == [{
         "ub_capacity_bytes": 96 * 1024,
         "compile_mode": "simt_only",
+        "rule_mask": 511,
     }]
     assert events[-1] == "run_row"
 
 
-def test_make_ttir_forwards_iat_rule_and_explicit_resource_snapshot(
+def test_make_ttir_forwards_default_iat_ptsm_rules_and_resource_snapshot(
     compiler_module, monkeypatch,
 ):
-    """IAT must be opt-in and receive real target facts, never defaults."""
+    """The default mapping pair receives real target facts before scoring."""
     options = SimpleNamespace(
         enable_graph_optimize=True,
         target_arch="Ascend910B1",
         compile_mode="simd_simt_template",
         debug=False,
-        program_mapping_rule_mask=512,
+        program_mapping_rule_mask=2560,
     )
     monkeypatch.setattr(
         compiler_module,
@@ -612,7 +616,7 @@ def test_make_ttir_forwards_iat_rule_and_explicit_resource_snapshot(
     assert graph_calls == [{
         "ub_capacity_bytes": 96 * 1024,
         "compile_mode": "simd_simt_template",
-        "rule_mask": 512,
+        "rule_mask": 3071,
         "device_core_count": 40,
         "min_programs_per_core": 1,
         "ub_safety_percent": 80,
@@ -649,7 +653,7 @@ def test_make_ttir_forwards_static_axis_fusion_rule_and_resource_snapshot(
     assert graph_calls == [{
         "ub_capacity_bytes": 96 * 1024,
         "compile_mode": "simd_simt_template",
-        "rule_mask": 1024,
+        "rule_mask": 1535,
         "device_core_count": 40,
         "min_programs_per_core": 1,
         "ub_safety_percent": 80,
@@ -1012,31 +1016,36 @@ def _program_mapping_scalar_specialization(*, arguments=((2, 64), (10, 4))):
     }
 
 
-def test_program_grid_specialization_options_preserve_legacy_state_when_disabled(
+def test_program_grid_specialization_options_default_iat_ptsm_and_allow_opt_out(
     compiler_module,
 ):
-    legacy = compiler_module.NPUOptions(arch="Ascend910B1")
+    default_enabled = compiler_module.NPUOptions(arch="Ascend910B1")
     explicit_disabled = compiler_module.NPUOptions(
         arch="Ascend910B1", program_mapping_rule_mask=0)
     enabled = compiler_module.NPUOptions(
         arch="Ascend910B1",
-        program_mapping_rule_mask=512,
-        program_grid_specialization=_program_grid_specialization(),
+        program_mapping_rule_mask=2560,
+        program_grid_specialization=_program_grid_specialization(rule_mask=2560),
         program_mapping_scalar_specialization=(
             _program_mapping_scalar_specialization()),
     )
 
-    for options in (legacy, explicit_disabled):
-        assert "program_mapping_rule_mask" not in options.__dict__
+    assert default_enabled.__dict__["program_mapping_rule_mask"] == 2560
+    assert default_enabled.__dict__["program_mapping_resource_model_schema_version"] == 2
+    assert "program_grid_specialization" not in default_enabled.__dict__
+    assert "program_mapping_scalar_specialization" not in default_enabled.__dict__
+    assert explicit_disabled.__dict__["program_mapping_rule_mask"] == 0
+    for options in (explicit_disabled,):
         assert "program_grid_specialization" not in options.__dict__
         assert "program_mapping_scalar_specialization" not in options.__dict__
-    assert legacy.hash() == explicit_disabled.hash()
-    assert enabled.__dict__["program_mapping_rule_mask"] == 512
+    assert default_enabled.hash() != explicit_disabled.hash()
+    assert enabled.__dict__["program_mapping_rule_mask"] == 2560
     assert enabled.__dict__["program_mapping_resource_model_schema_version"] == 2
-    assert enabled.__dict__["program_grid_specialization"] == _program_grid_specialization()
+    assert enabled.__dict__["program_grid_specialization"] == _program_grid_specialization(
+        rule_mask=2560)
     assert enabled.__dict__["program_mapping_scalar_specialization"] == (
         _program_mapping_scalar_specialization())
-    assert enabled.hash() != legacy.hash()
+    assert enabled.hash() != default_enabled.hash()
 
 
 @pytest.mark.parametrize(
@@ -1073,17 +1082,23 @@ def test_backend_prepares_reproducible_grid_before_cache_and_rejects_stale_input
         return (bound["extent"], 16)
 
     prepared = backend.prepare_program_grid_specialization(
-        stable_grid, {"extent": 65}, {"program_mapping_rule_mask": 512})
+        stable_grid, {"extent": 65}, {})
     assert prepared == (
         (65, 16, 1),
-        {"program_grid_specialization": _program_grid_specialization(grid=(65, 16, 1))},
+        {
+            "program_mapping_rule_mask": 2560,
+            "program_grid_specialization": _program_grid_specialization(
+                grid=(65, 16, 1), rule_mask=2560),
+        },
     )
     assert calls == [65, 65]
+    assert backend.prepare_program_grid_specialization(
+        (8, 1), {}, {"program_mapping_rule_mask": 0}) is None
 
     unstable = iter(((8, 1), (9, 1)))
     with pytest.raises(RuntimeError, match="not reproducible"):
         backend.prepare_program_grid_specialization(
-            lambda _bound: next(unstable), {}, {"program_mapping_rule_mask": 512})
+            lambda _bound: next(unstable), {}, {})
     with pytest.raises(RuntimeError, match="JIT resolves"):
         backend.prepare_program_grid_specialization(
             (8, 1), {}, {
@@ -1106,14 +1121,15 @@ def test_backend_prepares_cache_keyed_runtime_scalar_specialization(
     prepared = backend.prepare_program_mapping_specialization(
         (8, 65),
         {"ptr": object(), "stride": 64, "BLOCK": 128, "count": 4},
-        {"program_mapping_rule_mask": 512},
+        {},
         params,
     )
 
     assert prepared == (
         (8, 65, 1),
         {
-            "program_grid_specialization": _program_grid_specialization(),
+            "program_mapping_rule_mask": 2560,
+            "program_grid_specialization": _program_grid_specialization(rule_mask=2560),
             "program_mapping_scalar_specialization": (
                 {
                     "version": 2,
