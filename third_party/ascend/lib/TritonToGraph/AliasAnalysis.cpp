@@ -127,9 +127,6 @@ void AliasAnalysis::analyzePointerAliases(ControlFlowGraph &cfg) {
       } else if (auto splatOp = dyn_cast<triton::SplatOp>(op)) {
         analyzeSplatOp(splatOp);
         aliasOpsFound++;
-      } else if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(op)) {
-        analyzeExpandDimsOp(expandDimsOp);
-        aliasOpsFound++;
       }
     }
   });
@@ -274,21 +271,4 @@ void AliasAnalysis::analyzeSplatOp(mlir::triton::SplatOp splatOp) {
     LLVM_DEBUG(llvm::dbgs() << "  Splat: " << result << " -> " << basePtr
                             << " [" << tensor->getName() << "]\n");
   }
-}
-
-void AliasAnalysis::analyzeExpandDimsOp(
-    mlir::triton::ExpandDimsOp expandDimsOp) {
-  Value src = expandDimsOp.getSrc();
-  Value result = expandDimsOp.getResult();
-  if (!isPointerType(getElementTypeOrSelf(src.getType())))
-    return;
-
-  Value basePtr = getBasePointer(src);
-  TensorObject *tensor = getTensorObject(basePtr);
-  if (!tensor)
-    return;
-
-  addAlias(result, basePtr, tensor);
-  LLVM_DEBUG(llvm::dbgs() << "  ExpandDims: " << result << " -> " << basePtr
-                          << " [" << tensor->getName() << "]\n");
 }
