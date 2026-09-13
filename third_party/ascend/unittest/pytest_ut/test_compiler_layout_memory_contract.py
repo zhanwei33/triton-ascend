@@ -607,7 +607,7 @@ def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypa
 
 
 def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
-    """Check the pure-SIMT policy, blacklist, and RowCoalescing argv gates."""
+    """Keep the internal-policy-and-safety pure-SIMT auto-blockify argv contract."""
     common_options = ["--common-before-pure-simt", "--common-after-pure-simt"]
     pure_simt_prefix = [
         "--enable-hivm-compile=false",
@@ -645,7 +645,7 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
                 disable_fma=True,
             )
 
-        second_injection = env_enabled and not blacklisted and not row_applied
+        second_injection = env_enabled and not row_applied
         case = f"E={env_enabled}, B={blacklisted}, R={row_applied}, superblock={superblock}"
 
         expected_options = [*common_options, *pure_simt_prefix]
@@ -654,7 +654,7 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
             if superblock > 0:
                 expected_options.append(f"--super-block-factor={superblock}")
 
-        # Pure-SIMT option emission retains the blacklist and RowCoalescing gates.
+        # The compiler and launcher now agree on the single policy/safety gate.
         assert command[0] == "/fake/bisheng", case
         assert Path(command[1]).name == "kernel.ttir.mlir", case
         assert command[2:-2] == expected_options, case
