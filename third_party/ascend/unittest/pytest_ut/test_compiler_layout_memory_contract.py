@@ -313,6 +313,17 @@ def _make_opt(
     )
 
 
+def _make_program_grid_contract(*transforms):
+    return {
+        "version": 2,
+        "extent_source": "runtime_original_grid",
+        "hidden_extent_axes": [0, 1],
+        "hidden_argument_order": ["originalGridX", "originalGridY"],
+        "hidden_argument_types": ["i32", "i32"],
+        "transforms": list(transforms),
+    }
+
+
 def _run_ttir_to_npubin(
     compiler,
     monkeypatch,
@@ -607,7 +618,7 @@ def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypa
 
 
 def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
-    """Keep the internal-policy-and-safety pure-SIMT auto-blockify argv contract."""
+    """Check the pure-SIMT policy, blacklist, and RowCoalescing argv gates."""
     common_options = ["--common-before-pure-simt", "--common-after-pure-simt"]
     pure_simt_prefix = [
         "--enable-hivm-compile=false",
@@ -645,7 +656,7 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
                 disable_fma=True,
             )
 
-        second_injection = env_enabled and not row_applied
+        second_injection = env_enabled and not blacklisted and not row_applied
         case = f"E={env_enabled}, B={blacklisted}, R={row_applied}, superblock={superblock}"
 
         expected_options = [*common_options, *pure_simt_prefix]
@@ -654,12 +665,59 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):
             if superblock > 0:
                 expected_options.append(f"--super-block-factor={superblock}")
 
-        # The compiler and launcher now agree on the single policy/safety gate.
+        # Pure-SIMT option emission retains the blacklist and RowCoalescing gates.
         assert command[0] == "/fake/bisheng", case
         assert Path(command[1]).name == "kernel.ttir.mlir", case
         assert command[2:-2] == expected_options, case
         assert command[-2] == "-o", case
         assert Path(command[-1]).name == "kernel", case
+
+
+@pytest.mark.parametrize(
+    ("auto_map_enabled", "blacklisted", "row_applied", "transforms", "expected_auto", "expected_ptsm"),
+    (
+        (False, False, False, None, False, False),
+        (True, False, False, None, True, False),
+        (True, False, True, None, True, False),
+        (True, True, False, None, False, False),
+        (True, False, False, ((0, 1, 16, False, False), ), True, False),
+        (True, False, False, ((0, 0, 64, True, True), ), False, True),
+        (True, False, False, ((0, 1, 16, False, False), (1, 0, 4, True, True)), False, True),
+    ),
+)
+def test_finalize_program_launch_policy_uses_linalg_ptsm_gate(
+    compiler_module,
+    monkeypatch,
+    auto_map_enabled,
+    blacklisted,
+    row_applied,
+    transforms,
+    expected_auto,
+    expected_ptsm,
+):
+    contract = None
+    if transforms is not None:
+        contract = _make_program_grid_contract(*(dict(
+            order=order,
+            kind="ceil_div",
+            axis=axis,
+            factor=factor,
+            persistent_coverage=persistent,
+            grid_stride_abi_verified=grid_stride,
+        ) for order, axis, factor, persistent, grid_stride in transforms))
+    metadata = {
+        "program_grid_transforms": contract,
+        "program_grid_mapping_applied": contract is not None,
+        "row_coalescing_applied": row_applied,
+        "has_auto_blockify_blacklist_op": blacklisted,
+        "mix_mode": "aiv",
+    }
+    monkeypatch.setattr(compiler_module, "_is_auto_map_parallel_blocks_enabled", lambda: auto_map_enabled)
+
+    compiler_module._finalize_program_launch_policy(metadata, SimpleNamespace(is_pure_simt=False))
+
+    assert metadata["auto_blockify_enabled"] is expected_auto
+    assert metadata["ptsm_cap_authorized"] is expected_ptsm
 
 
 def test_default_compile_mode_keeps_the_91095_layout_memory_gate_prepared(compiler_module):

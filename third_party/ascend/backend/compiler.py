@@ -224,10 +224,6 @@ def _finalize_program_launch_policy(metadata, opt):
     if mapping_applied and row_coalescing_applied:
         raise RuntimeError("program-grid mapping conflicts with legacy RowCoalescing")
 
-    blacklist_policy_allows = bool(opt.is_pure_simt) or not has_auto_blockify_blacklist_op
-    auto_blockify_enabled = (_is_auto_map_parallel_blocks_enabled() and blacklist_policy_allows
-                             and not row_coalescing_applied and not mapping_applied)
-
     persistent_transform = get_persistent_transform(transforms) if transforms is not None else None
     ptsm_cap_authorized = False
     if persistent_transform is not None:
@@ -237,8 +233,16 @@ def _finalize_program_launch_policy(metadata, opt):
             raise RuntimeError("persistent program-grid transform lacks coverage/ABI verification")
         ptsm_cap_authorized = True
 
+    if opt.is_pure_simt:
+        auto_blockify_enabled = (_is_auto_map_parallel_blocks_enabled() and not has_auto_blockify_blacklist_op
+                                 and not row_coalescing_applied)
+    else:
+        auto_blockify_enabled = (_is_auto_map_parallel_blocks_enabled() and not has_auto_blockify_blacklist_op
+                                 and not ptsm_cap_authorized)
+
     if auto_blockify_enabled and ptsm_cap_authorized:
         raise RuntimeError("AutoBlockify and persistent-grid cap cannot both be enabled")
+
     metadata["auto_blockify_enabled"] = auto_blockify_enabled
     metadata["ptsm_cap_authorized"] = ptsm_cap_authorized
 
@@ -1406,7 +1410,8 @@ def ttir_to_npubin(mod, metadata, opt):
             if bisheng_options is not None:
                 _compile_option_list += [f"--append-bisheng-options={bisheng_options}"]
 
-            if metadata["auto_blockify_enabled"]:
+            if (_is_auto_map_parallel_blocks_enabled() and not metadata.get("has_auto_blockify_blacklist_op", False)
+                    and not metadata.get("row_coalescing_applied", False)):
                 _compile_option_list += ["--enable-auto-blockify-loop"]
                 if opt.superblock_factor > 1:
                     _compile_option_list += [f"--super-block-factor={opt.superblock_factor}"]
