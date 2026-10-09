@@ -126,6 +126,7 @@ def compiler_module():
             "_is_debug_line_info_disabled",
             "_is_auto_map_parallel_blocks_enabled",
             "force_disable_ffts",
+            "is_cann_version_at_least",
     ):
         setattr(utils_stub, name, return_false)
     for name in (
