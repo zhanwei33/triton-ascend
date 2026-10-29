@@ -484,11 +484,16 @@ void init_ascend_ir(py::module &&m) {
       "computation placement in the Ascend NPU compiler.";
 
   py::enum_<hivm::AddressSpace>(m, "AddressSpace", py::module_local())
+      .value("Zero", hivm::AddressSpace::Zero)
+      .value("GM", hivm::AddressSpace::GM)
       .value("L1", hivm::AddressSpace::L1)
-      .value("UB", hivm::AddressSpace::UB)
       .value("L0A", hivm::AddressSpace::L0A)
       .value("L0B", hivm::AddressSpace::L0B)
       .value("L0C", hivm::AddressSpace::L0C)
+      .value("UB", hivm::AddressSpace::UB)
+      .value("SSBUF", hivm::AddressSpace::SSBUF)
+      .value("FixBUF", hivm::AddressSpace::FixBUF)
+      .value("BiasBUF", hivm::AddressSpace::BiasBUF)
       .export_values();
 
   py::enum_<hivm::TCoreType>(m, "CoreType", py::module_local())
@@ -578,6 +583,7 @@ void init_ascend_ir(py::module &&m) {
   py::enum_<hivm::DataLayout>(m, "DataLayout", py::module_local())
       .value("nZ", hivm::DataLayout::nZ)
       .value("zN", hivm::DataLayout::zN)
+      .value("Fractal", hivm::DataLayout::Fractal)
       .export_values();
 
   m.def("load_dialects", [](MLIRContext &context) {
@@ -1233,6 +1239,12 @@ void init_ascend_ir(py::module &&m) {
            [](AscendNPUIROpBuilder &self, hivm::VFMode mode) -> Attribute {
              return self.getBuilder().getAttr<hivm::VFModeAttr>(mode);
            })
+      .def(
+          "get_data_layout_attr",
+          [](AscendNPUIROpBuilder &self, hivm::DataLayout layout) -> Attribute {
+            auto *ctx = self.getBuilder().getContext();
+            return hivm::DataLayoutAttr::get(ctx, layout);
+          })
       .def("get_iterator_types_attr",
            [](AscendNPUIROpBuilder &self,
               const std::vector<hivm::IteratorType> &array) {
